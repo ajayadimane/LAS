@@ -1,0 +1,22 @@
+# systemd unit for the LAS middleware.
+#   sudo cp deploy/las-backend.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now las-backend
+#   journalctl -u las-backend -f        # logs
+#
+# /opt/las and the `las` user are assumptions; change both to match the server.
+# .env is read from WorkingDirectory.
+
+[Unit]
+Description=LAS Dashboard Middleware (FastAPI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=las
+WorkingDirectory=/opt/las
+ExecStart=/opt/las/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 9000 --workers 1
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

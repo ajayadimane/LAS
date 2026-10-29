@@ -1,0 +1,92 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Theme tokens, copied from the demo. Values are oklch "L C H" triplets. */
+:root {
+  --background: 0.968 0.004 240; --foreground: 0.21 0.04 255; --card: 1 0 0;
+  --primary: 0.47 0.075 172; --primary-foreground: 0.98 0.01 170;
+  --secondary: 0.955 0.006 240; --secondary-foreground: 0.21 0.04 255;
+  --muted: 0.955 0.006 240; --muted-foreground: 0.52 0.03 250;
+  --accent: 0.94 0.02 172; --accent-foreground: 0.35 0.07 172;
+  --destructive: 0.577 0.245 27.3; --border: 0.915 0.008 250; --input: 0.9 0.01 250; --ring: 0.47 0.075 172;
+  --navy: 0.2 0.045 258; --navy-foreground: 0.97 0.005 250; --navy-muted: 0.72 0.03 255;
+  --info: 0.93 0.035 250; --info-foreground: 0.42 0.11 262;
+  --warning: 0.94 0.06 80; --warning-foreground: 0.5 0.12 55;
+  --success: 0.93 0.06 160; --success-foreground: 0.45 0.1 160;
+  --neutral: 0.945 0.006 250; --neutral-foreground: 0.5 0.02 250;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --background: 0.16 0.03 258; --foreground: 0.97 0.005 250; --card: 0.21 0.04 255;
+    --primary: 0.6 0.09 172; --primary-foreground: 0.16 0.03 172;
+    --secondary: 0.27 0.04 258; --secondary-foreground: 0.97 0.005 250;
+    --muted: 0.27 0.04 258; --muted-foreground: 0.7 0.03 255;
+    --accent: 0.3 0.05 172; --accent-foreground: 0.9 0.05 172;
+    --destructive: 0.704 0.191 22.2; --border: 0.3 0.03 255; --input: 0.34 0.03 255; --ring: 0.6 0.09 172;
+    --navy: 0.14 0.03 258; --navy-foreground: 0.97 0.005 250; --navy-muted: 0.65 0.03 255;
+    --info: 0.3 0.06 260; --info-foreground: 0.85 0.08 255;
+    --warning: 0.32 0.06 70; --warning-foreground: 0.88 0.1 85;
+    --success: 0.3 0.06 160; --success-foreground: 0.85 0.1 160;
+    --neutral: 0.28 0.02 255; --neutral-foreground: 0.75 0.02 250;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --background: 0.16 0.03 258; --foreground: 0.97 0.005 250; --card: 0.21 0.04 255;
+  --primary: 0.6 0.09 172; --primary-foreground: 0.16 0.03 172;
+  --secondary: 0.27 0.04 258; --secondary-foreground: 0.97 0.005 250;
+  --muted: 0.27 0.04 258; --muted-foreground: 0.7 0.03 255;
+  --accent: 0.3 0.05 172; --accent-foreground: 0.9 0.05 172;
+  --destructive: 0.704 0.191 22.2; --border: 0.3 0.03 255; --input: 0.34 0.03 255; --ring: 0.6 0.09 172;
+  --navy: 0.14 0.03 258; --navy-foreground: 0.97 0.005 250; --navy-muted: 0.65 0.03 255;
+  --info: 0.3 0.06 260; --info-foreground: 0.85 0.08 255;
+  --warning: 0.32 0.06 70; --warning-foreground: 0.88 0.1 85;
+  --success: 0.3 0.06 160; --success-foreground: 0.85 0.1 160;
+  --neutral: 0.28 0.02 255; --neutral-foreground: 0.75 0.02 250;
+  color-scheme: dark;
+}
+
+@layer base {
+  :root { box-sizing: border-box; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+  html { height: 100%; scroll-padding-top: env(safe-area-inset-top, 0px); }
+  body {
+    min-height: 100%; margin: 0;
+    background: oklch(var(--background)); color: oklch(var(--foreground));
+    @apply font-sans antialiased;
+  }
+  #root { min-height: 100%; }
+  *, ::before, ::after { border-color: oklch(var(--border)); }
+  select.field { appearance: auto; }
+}
+
+@layer components {
+  .mobile-bar { top: env(safe-area-inset-top, 0px); }
+  .field:focus, .field-wrap:focus-within { outline: none; border-color: oklch(var(--ring)); box-shadow: 0 0 0 3px oklch(var(--ring) / 0.18); }
+  button:focus-visible, label:focus-within > .check, .btn:focus-within { outline: 2px solid oklch(var(--ring)); outline-offset: 2px; }
+  .check { width: 1rem; height: 1rem; accent-color: oklch(var(--primary)); flex-shrink: 0; }
+  .otp { letter-spacing: 0.6em; }
+  .filepick::file-selector-button {
+    margin-right: .75rem; border: 0; border-radius: .5rem; padding: .4rem .75rem; font: inherit; font-size: .75rem; font-weight: 600;
+    background: oklch(var(--muted)); color: oklch(var(--foreground)); cursor: pointer;
+  }
+  .toast-host {
+    position: fixed; right: 1rem; bottom: calc(1rem + env(safe-area-inset-bottom, 0px)); z-index: 60;
+    display: flex; flex-direction: column; gap: .5rem; max-width: min(92vw, 380px);
+  }
+  .toast { animation: toast-in .2s ease-out; }
+  .dialog { animation: pop .16s ease-out; max-height: calc(100% - 2rem); overflow-y: auto; }
+  .drawer { animation: slide .18s ease-out; padding-top: env(safe-area-inset-top, 0px); }
+}
+
+@keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
+@keyframes pop { from { opacity: 0; transform: scale(.97); } }
+@keyframes slide { from { transform: translateX(-100%); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .toast, .dialog, .drawer { animation: none; }
+  * { transition: none !important; }
+}

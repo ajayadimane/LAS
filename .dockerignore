@@ -1,0 +1,23 @@
+# Secrets: settings are passed at run time with --env-file, never baked in.
+.env
+**/.env
+
+# Local environments and caches
+.venv/
+venv/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Not part of the backend image
+frontend/
+tests/
+api_docs/
+docs/
+scripts/
+deploy/
+.claude/
+CLAUDE.md
+requirements-dev.txt

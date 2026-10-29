@@ -1,0 +1,2654 @@
+{
+	"info": {
+		"_postman_id": "cb3dc258-cb75-430b-b094-5d2dbd0c9534",
+		"name": "iWallet LAS Loan (via API Gateway)",
+		"description": "End-to-end API collection through the API gateway. Scope (programManagerId, groupId, tagId) and every request value come from collection variables.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "37916221",
+		"_collection_link": "https://iwallet-testscript.postman.co/workspace/updated-Header-~9e0d74bc-e28a-4a4a-bb84-cd1c7d29d420/collection/37916221-cb3dc258-cb75-430b-b094-5d2dbd0c9534?action=share&source=collection_link&creator=37916221"
+	},
+	"item": [
+		{
+			"name": "01 customerMgmt",
+			"item": [
+				{
+					"name": "Admin Login",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"login ok\", () => pm.expect(pm.response.code).to.eql(200));",
+									"pm.collectionVariables.set(\"access_token\", pm.response.json().access_token);"
+								],
+								"type": "text/javascript",
+								"packages": {},
+								"requests": {}
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Original-Forwarded-For",
+								"value": "{{$randomIP}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Latitude",
+								"value": "{{latitude}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Longitude",
+								"value": "{{longitude}}",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"userId\": \"{{iamUserId}}\",\n  \"programMngrId\": \"{{programManagerId}}\",\n  \"password\": \"{{iamPassword}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{amount}}/IdentityAccessMgmt/user/login",
+							"host": [
+								"{{amount}}"
+							],
+							"path": [
+								"IdentityAccessMgmt",
+								"user",
+								"login"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "1. Program manager level custom field configuration",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"1. Program manager level custom field configuration: status is one of [200, 201]\", () => pm.expect([200, 201]).to.include(pm.response.code));",
+									"try { const j = pm.response.json(); if (j && j.transactionId) pm.collectionVariables.set(\"transactionId\", j.transactionId); } catch (e) {}"
+								],
+								"type": "text/javascript",
+								"packages": {},
+								"requests": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Original-Forwarded-For",
+								"value": "{{$randomIP}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Latitude",
+								"value": "{{latitude}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Longitude",
+								"value": "{{longitude}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"programManagerId\": \"{{programManagerId}}\",\n  \"customFieldId\": \"{{personCustomFieldId}}\",\n  \"customFieldDataType\": \"Text\",\n  \"customFieldName\": \"{{personCustomFieldName}}\",\n  \"customFieldDescription\": \"{{personCustomFieldDescription}}\",\n  \"isSearchable\": true,\n  \"searchScope\": \"PROGRAM_MANAGER\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{apigateway}}/customermgmt/customField/programManager",
+							"host": [
+								"{{apigateway}}"
+							],
+							"path": [
+								"customermgmt",
+								"customField",
+								"programManager"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "2. Person registration (add person)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"2. Person registration (add person): status is one of [200, 201]\", () => pm.expect([200, 201]).to.include(pm.response.code));",
+									"try { const j = pm.response.json(); if (j && j.transactionId) pm.collectionVariables.set(\"transactionId\", j.transactionId); } catch (e) {}"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Original-Forwarded-For",
+								"value": "{{$randomIP}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Latitude",
+								"value": "{{latitude}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Longitude",
+								"value": "{{longitude}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"personId\": \"{{personId}}\",\n  \"brokerId\": \"{{brokerId}}\",\n  \"emailAddress\": \"{{personEmail}}\",\n  \"addressStreetAddress\": \"{{addressStreet}}\",\n  \"addressCity\": \"{{addressCity}}\",\n  \"addressStateProvince\": \"{{addressState}}\",\n  \"addressPostalCode\": \"{{addressPostalCode}}\",\n  \"addressCountryCode\": \"{{addressCountryCode}}\",\n  \"mobileNumber\": \"{{mobileNumber}}\",\n  \"mobileCountryCode\": \"{{mobileCountryCode}}\",\n  \"firstName\": \"{{personFirstName}}\",\n  \"lastName\": \"{{personLastName}}\",\n  \"settlementAccountNo\": \"{{settlementAccountNo}}\",\n  \"settlementAccountIfscCode\": \"{{settlementAccountIfsc}}\",\n  \"programManagerId\": \"{{programManagerId}}\",\n  \"groupId\": \"{{groupId}}\",\n  \"customFields\": {\n    \"{{personCustomFieldId}}\": \"{{personCustomFieldValue}}\"\n  }\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{apigateway}}/customermgmt/person",
+							"host": [
+								"{{apigateway}}"
+							],
+							"path": [
+								"customermgmt",
+								"person"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "2b. Person registration - second person (receiver)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"2b. Person registration - second person (receiver): status is one of [200, 201]\", () => pm.expect([200, 201]).to.include(pm.response.code));",
+									"try { const j = pm.response.json(); if (j && j.transactionId) pm.collectionVariables.set(\"transactionId\", j.transactionId); } catch (e) {}"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Original-Forwarded-For",
+								"value": "{{$randomIP}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Latitude",
+								"value": "{{latitude}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Longitude",
+								"value": "{{longitude}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"personId\": \"{{personIdB}}\",\n  \"brokerId\": \"{{brokerId}}\",\n  \"emailAddress\": \"{{personEmailB}}\",\n  \"addressStreetAddress\": \"{{addressStreet}}\",\n  \"addressCity\": \"{{addressCity}}\",\n  \"addressStateProvince\": \"{{addressState}}\",\n  \"addressPostalCode\": \"{{addressPostalCode}}\",\n  \"addressCountryCode\": \"{{addressCountryCode}}\",\n  \"mobileNumber\": \"{{mobileNumberB}}\",\n  \"mobileCountryCode\": \"{{mobileCountryCode}}\",\n  \"firstName\": \"Loan\",\n  \"lastName\": \"Receiver\",\n  \"settlementAccountNo\": \"{{settlementAccountNo}}\",\n  \"settlementAccountIfscCode\": \"{{settlementAccountIfsc}}\",\n  \"programManagerId\": \"{{programManagerId}}\",\n  \"groupId\": \"{{groupId}}\",\n  \"customFields\": {\n    \"{{personCustomFieldId}}\": \"{{personCustomFieldValue}}\"\n  }\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{apigateway}}/customermgmt/person",
+							"host": [
+								"{{apigateway}}"
+							],
+							"path": [
+								"customermgmt",
+								"person"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "3. Update person custom field value",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"3. Update person custom field value: status is one of [200]\", () => pm.expect([200]).to.include(pm.response.code));",
+									"try { const j = pm.response.json(); if (j && j.transactionId) pm.collectionVariables.set(\"transactionId\", j.transactionId); } catch (e) {}"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "PUT",
+						"header": [
+							{
+								"key": "X-Original-Forwarded-For",
+								"value": "{{$randomIP}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Latitude",
+								"value": "{{latitude}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Longitude",
+								"value": "{{longitude}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"programManagerId\": \"{{programManagerId}}\",\n  \"personId\": \"{{personId}}\",\n  \"customFieldId\": \"{{personCustomFieldId}}\",\n  \"customFieldValue\": \"{{personCustomFieldNewValue}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{apigateway}}/customermgmt/person/customField/value",
+							"host": [
+								"{{apigateway}}"
+							],
+							"path": [
+								"customermgmt",
+								"person",
+								"customField",
+								"value"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "4. Change email address",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"4. Change email address: status is one of [200]\", () => pm.expect([200]).to.include(pm.response.code));",
+									"try { const j = pm.response.json(); if (j && j.transactionId) pm.collectionVariables.set(\"transactionId\", j.transactionId); } catch (e) {}"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "PUT",
+						"header": [
+							{
+								"key": "X-Original-Forwarded-For",
+								"value": "{{$randomIP}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Latitude",
+								"value": "{{latitude}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Longitude",
+								"value": "{{longitude}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"programManagerId\": \"{{programManagerId}}\",\n  \"personId\": \"{{personId}}\",\n  \"emailAddress\": \"{{personNewEmail}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{apigateway}}/customermgmt/person/emailAddress",
+							"host": [
+								"{{apigateway}}"
+							],
+							"path": [
+								"customermgmt",
+								"person",
+								"emailAddress"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "5. Change person address",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"5. Change person address: status is one of [200]\", () => pm.expect([200]).to.include(pm.response.code));",
+									"try { const j = pm.response.json(); if (j && j.transactionId) pm.collectionVariables.set(\"transactionId\", j.transactionId); } catch (e) {}"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "PUT",
+						"header": [
+							{
+								"key": "X-Original-Forwarded-For",
+								"value": "{{$randomIP}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Latitude",
+								"value": "{{latitude}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Longitude",
+								"value": "{{longitude}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"programManagerId\": \"{{programManagerId}}\",\n  \"personId\": \"{{personId}}\",\n  \"addressStreetAddress\": \"{{newAddressStreet}}\",\n  \"addressCity\": \"{{newAddressCity}}\",\n  \"addressStateProvince\": \"{{newAddressState}}\",\n  \"addressPostalCode\": \"{{newAddressPostalCode}}\",\n  \"addressCountryCode\": \"{{addressCountryCode}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{apigateway}}/customermgmt/person/address",
+							"host": [
+								"{{apigateway}}"
+							],
+							"path": [
+								"customermgmt",
+								"person",
+								"address"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "02 IAM",
+			"item": [
+				{
+					"name": "1. Add user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"1. Add user: status is one of [200, 201, 409]\", () => pm.expect([200, 201, 409]).to.include(pm.response.code));",
+									"try { const j = pm.response.json(); if (j && j.transactionId) pm.collectionVariables.set(\"transactionId\", j.transactionId); } catch (e) {}"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Original-Forwarded-For",
+								"value": "{{$randomIP}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Latitude",
+								"value": "{{latitude}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Longitude",
+								"value": "{{longitude}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"userName\": \"{{iamUserId}}\",\n  \"email\": \"{{iamUserEmail}}\",\n  \"firstName\": \"{{iamFirstName}}\",\n  \"lastName\": \"{{iamLastName}}\",\n  \"programManagerId\": \"{{programManagerId}}\",\n  \"groupName\": \"{{iamGroupName}}\",\n  \"mobileCountryCode\": \"{{mobileCountryCode}}\",\n  \"mobileNumber\": \"{{iamMobileNumber}}\",\n  \"twoFactorAuthCodeType\": \"OTP\",\n  \"twoFactorAuthCodeDeliveryChannel\": \"SMS\",\n  \"password\": \"{{iamPassword}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{apigateway}}/IdentityAccessMgmt/user",
+							"host": [
+								"{{apigateway}}"
+							],
+							"path": [
+								"IdentityAccessMgmt",
+								"user"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "2. Login",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"2. Login: status is one of [200, 201]\", () => pm.expect([200, 201]).to.include(pm.response.code));"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Original-Forwarded-For",
+								"value": "{{$randomIP}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Latitude",
+								"value": "{{latitude}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Longitude",
+								"value": "{{longitude}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"userId\": \"{{iamUserId}}\",\n  \"programMngrId\": \"{{programManagerId}}\",\n  \"password\": \"{{iamPassword}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{apigateway}}/IdentityAccessMgmt/user/login",
+							"host": [
+								"{{apigateway}}"
+							],
+							"path": [
+								"IdentityAccessMgmt",
+								"user",
+								"login"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "3. Forgot password",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"3. Forgot password: status is one of [200, 201]\", () => pm.expect([200, 201]).to.include(pm.response.code));",
+									"try { const j = pm.response.json(); if (j && j.transactionId) pm.collectionVariables.set(\"transactionId\", j.transactionId); } catch (e) {}"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Original-Forwarded-For",
+								"value": "{{$randomIP}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Latitude",
+								"value": "{{latitude}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Longitude",
+								"value": "{{longitude}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"userId\": \"{{iamUserId}}\",\n  \"programMngrId\": \"{{programManagerId}}\",\n  \"email\": \"{{iamUserEmail}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{apigateway}}/IdentityAccessMgmt/user/password/forgot",
+							"host": [
+								"{{apigateway}}"
+							],
+							"path": [
+								"IdentityAccessMgmt",
+								"user",
+								"password",
+								"forgot"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "03 walletMgmt",
+			"item": [
+				{
+					"name": "1. Add wallet prefix",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"1. Add wallet prefix: status is one of [200]\", () => pm.expect([200]).to.include(pm.response.code));",
+									"try { const j = pm.response.json(); if (j && j.transactionId) pm.collectionVariables.set(\"transactionId\", j.transactionId); } catch (e) {}"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "PUT",
+						"header": [
+							{
+								"key": "X-Original-Forwarded-For",
+								"value": "{{$randomIP}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Latitude",
+								"value": "{{latitude}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Longitude",
+								"value": "{{longitude}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"programManagerId\": \"{{programManagerId}}\",\n  \"regularWalletIdPrefix\": \"{{walletIdPrefix}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{apigateway}}/walletmgmt/regularWalletMetaInfo/regularWalletId/prefix",
+							"host": [
+								"{{apigateway}}"
+							],
+							"path": [
+								"walletmgmt",
+								"regularWalletMetaInfo",
+								"regularWalletId",
+								"prefix"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "2. Add wallet suffix",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"2. Add wallet suffix: status is one of [200]\", () => pm.expect([200]).to.include(pm.response.code));",
+									"try { const j = pm.response.json(); if (j && j.transactionId) pm.collectionVariables.set(\"transactionId\", j.transactionId); } catch (e) {}"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "PUT",
+						"header": [
+							{
+								"key": "X-Original-Forwarded-For",
+								"value": "{{$randomIP}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Latitude",
+								"value": "{{latitude}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Longitude",
+								"value": "{{longitude}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"programManagerId\": \"{{programManagerId}}\",\n  \"regularWalletIdSuffix\": \"{{walletIdSuffix}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{apigateway}}/walletmgmt/regularWalletMetaInfo/regularWalletId/suffix",
+							"host": [
+								"{{apigateway}}"
+							],
+							"path": [
+								"walletmgmt",
+								"regularWalletMetaInfo",
+								"regularWalletId",
+								"suffix"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "3. Open wallet",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"3. Open wallet: status is one of [200, 201]\", () => pm.expect([200, 201]).to.include(pm.response.code));",
+									"try { const j = pm.response.json(); if (j && j.transactionId) pm.collectionVariables.set(\"transactionId\", j.transactionId); } catch (e) {}"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Original-Forwarded-For",
+								"value": "{{$randomIP}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Latitude",
+								"value": "{{latitude}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Longitude",
+								"value": "{{longitude}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"programMngrId\": \"{{programManagerId}}\",\n  \"personId\": \"{{personId}}\",\n  \"groupId\": \"{{groupId}}\",\n  \"tagId\": \"{{tagId}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{apigateway}}/regularWallet",
+							"host": [
+								"{{apigateway}}"
+							],
+							"path": [
+								"regularWallet"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "3b. Open wallet - second person (receiver)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"3b. Open wallet - second person (receiver): status is one of [200, 201]\", () => pm.expect([200, 201]).to.include(pm.response.code));",
+									"try { const j = pm.response.json(); if (j && j.transactionId) pm.collectionVariables.set(\"transactionId\", j.transactionId); } catch (e) {}"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Original-Forwarded-For",
+								"value": "{{$randomIP}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Latitude",
+								"value": "{{latitude}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Longitude",
+								"value": "{{longitude}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"programMngrId\": \"{{programManagerId}}\",\n  \"personId\": \"{{personIdB}}\",\n  \"groupId\": \"{{groupId}}\",\n  \"tagId\": \"{{tagId}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{apigateway}}/regularWallet",
+							"host": [
+								"{{apigateway}}"
+							],
+							"path": [
+								"regularWallet"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "04 walletTransfer",
+			"item": [
+				{
+					"name": "1. Create transfer type (system account -> wallet)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"1. Create transfer type (system account -> wallet): status is one of [200, 201]\", () => pm.expect([200, 201]).to.include(pm.response.code));",
+									"try { const j = pm.response.json(); if (j && j.transactionId) pm.collectionVariables.set(\"transactionId\", j.transactionId); } catch (e) {}"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Original-Forwarded-For",
+								"value": "{{$randomIP}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Latitude",
+								"value": "{{latitude}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Longitude",
+								"value": "{{longitude}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"programManagerId\": \"{{programManagerId}}\",\n  \"transferTypeId\": \"{{transferTypeSysToWallet}}\",\n  \"name\": \"{{transferTypeSysToWalletName}}\",\n  \"description\": \"{{transferTypeSysToWalletName}}\",\n  \"debitFromType\": \"SYSTEM_ACCOUNT\",\n  \"creditToType\": \"REGULAR_WALLET\",\n  \"systemAccountId\": \"{{systemAccountId}}\",\n  \"authorization\": false\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{apigateway}}/transfer/transferType",
+							"host": [
+								"{{apigateway}}"
+							],
+							"path": [
+								"transfer",
+								"transferType"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "1b. Create transfer type (wallet -> wallet)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"1b. Create transfer type (wallet -> wallet): status is one of [200, 201]\", () => pm.expect([200, 201]).to.include(pm.response.code));",
+									"try { const j = pm.response.json(); if (j && j.transactionId) pm.collectionVariables.set(\"transactionId\", j.transactionId); } catch (e) {}"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Original-Forwarded-For",
+								"value": "{{$randomIP}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Latitude",
+								"value": "{{latitude}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Longitude",
+								"value": "{{longitude}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"programManagerId\": \"{{programManagerId}}\",\n  \"transferTypeId\": \"{{transferTypeWalletToWallet}}\",\n  \"name\": \"{{transferTypeWalletToWalletName}}\",\n  \"description\": \"{{transferTypeWalletToWalletName}}\",\n  \"debitFromType\": \"REGULAR_WALLET\",\n  \"creditToType\": \"REGULAR_WALLET\",\n  \"systemAccountId\": \"\",\n  \"authorization\": false\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{apigateway}}/transfer/transferType",
+							"host": [
+								"{{apigateway}}"
+							],
+							"path": [
+								"transfer",
+								"transferType"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "2. Create custom field",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"2. Create custom field: status is one of [200, 201]\", () => pm.expect([200, 201]).to.include(pm.response.code));",
+									"try { const j = pm.response.json(); if (j && j.transactionId) pm.collectionVariables.set(\"transactionId\", j.transactionId); } catch (e) {}"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Original-Forwarded-For",
+								"value": "{{$randomIP}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Latitude",
+								"value": "{{latitude}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Longitude",
+								"value": "{{longitude}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"programManagerId\": \"{{programManagerId}}\",\n  \"customFieldId\": \"{{transferCustomFieldId}}\",\n  \"customFieldName\": \"{{transferCustomFieldName}}\",\n  \"customFieldDescription\": \"{{transferCustomFieldDescription}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{apigateway}}/customField",
+							"host": [
+								"{{apigateway}}"
+							],
+							"path": [
+								"customField"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "3. Link custom field with transfer type (sys -> wallet)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"3. Link custom field with transfer type (sys -> wallet): status is one of [200]\", () => pm.expect([200]).to.include(pm.response.code));",
+									"try { const j = pm.response.json(); if (j && j.transactionId) pm.collectionVariables.set(\"transactionId\", j.transactionId); } catch (e) {}"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "PUT",
+						"header": [
+							{
+								"key": "X-Original-Forwarded-For",
+								"value": "{{$randomIP}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Latitude",
+								"value": "{{latitude}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Longitude",
+								"value": "{{longitude}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"programManagerId\": \"{{programManagerId}}\",\n  \"transferTypeId\": \"{{transferTypeSysToWallet}}\",\n  \"customFieldIds\": [\n    \"{{transferCustomFieldId}}\"\n  ]\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{apigateway}}/transfer/transferType/linkCustomField",
+							"host": [
+								"{{apigateway}}"
+							],
+							"path": [
+								"transfer",
+								"transferType",
+								"linkCustomField"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "3b. Link custom field with transfer type (wallet -> wallet)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"3b. Link custom field with transfer type (wallet -> wallet): status is one of [200]\", () => pm.expect([200]).to.include(pm.response.code));",
+									"try { const j = pm.response.json(); if (j && j.transactionId) pm.collectionVariables.set(\"transactionId\", j.transactionId); } catch (e) {}"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "PUT",
+						"header": [
+							{
+								"key": "X-Original-Forwarded-For",
+								"value": "{{$randomIP}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Latitude",
+								"value": "{{latitude}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Longitude",
+								"value": "{{longitude}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"programManagerId\": \"{{programManagerId}}\",\n  \"transferTypeId\": \"{{transferTypeWalletToWallet}}\",\n  \"customFieldIds\": [\n    \"{{transferCustomFieldId}}\"\n  ]\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{apigateway}}/transfer/transferType/linkCustomField",
+							"host": [
+								"{{apigateway}}"
+							],
+							"path": [
+								"transfer",
+								"transferType",
+								"linkCustomField"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "4. Create system account",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"4. Create system account: status is one of [200, 201]\", () => pm.expect([200, 201]).to.include(pm.response.code));",
+									"try { const j = pm.response.json(); if (j && j.transactionId) pm.collectionVariables.set(\"transactionId\", j.transactionId); } catch (e) {}"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Original-Forwarded-For",
+								"value": "{{$randomIP}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Latitude",
+								"value": "{{latitude}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Longitude",
+								"value": "{{longitude}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"systemAccountId\": \"{{systemAccountId}}\",\n  \"programManagerId\": \"{{programManagerId}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{apigateway}}/systemAccount",
+							"host": [
+								"{{apigateway}}"
+							],
+							"path": [
+								"systemAccount"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "6. System to wallet payment",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"6. System to wallet payment: status is one of [200]\", () => pm.expect([200]).to.include(pm.response.code));",
+									"try { const j = pm.response.json(); if (j && j.transactionId) pm.collectionVariables.set(\"transactionId\", j.transactionId); } catch (e) {}"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "PUT",
+						"header": [
+							{
+								"key": "X-Original-Forwarded-For",
+								"value": "{{$randomIP}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Latitude",
+								"value": "{{latitude}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Longitude",
+								"value": "{{longitude}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"programManagerId\": \"{{programManagerId}}\",\n  \"transferTypeId\": \"{{transferTypeSysToWallet}}\",\n  \"debitFrom\": \"{{systemAccountId}}\",\n  \"creditTo\": \"{{walletId}}\",\n  \"creditToTagId\": \"{{tagId}}\",\n  \"creditToGroupId\": \"{{groupId}}\",\n  \"amount\": {{systemToWalletAmount}},\n  \"customFields\": {\n    \"{{transferCustomFieldId}}\": \"{{transferCustomFieldValue}}\"\n  },\n  \"location\": {\n    \"latitude\": {{latitude}},\n    \"longitude\": {{longitude}}\n  }\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{apigateway}}/transfer/systemAccountPayment",
+							"host": [
+								"{{apigateway}}"
+							],
+							"path": [
+								"transfer",
+								"systemAccountPayment"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "5. Wallet to wallet payment",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"5. Wallet to wallet payment: status is one of [200]\", () => pm.expect([200]).to.include(pm.response.code));",
+									"try { const j = pm.response.json(); if (j && j.transactionId) pm.collectionVariables.set(\"transactionId\", j.transactionId); } catch (e) {}"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "PUT",
+						"header": [
+							{
+								"key": "X-Original-Forwarded-For",
+								"value": "{{$randomIP}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Latitude",
+								"value": "{{latitude}}",
+								"type": "text"
+							},
+							{
+								"key": "X-Geolocation-Longitude",
+								"value": "{{longitude}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"programManagerId\": \"{{programManagerId}}\",\n  \"transferTypeId\": \"{{transferTypeWalletToWallet}}\",\n  \"debitFrom\": \"{{walletId}}\",\n  \"debitFromTagId\": \"{{tagId}}\",\n  \"debitFromGroupId\": \"{{groupId}}\",\n  \"creditTo\": \"{{walletIdB}}\",\n  \"creditToTagId\": \"{{tagId}}\",\n  \"creditToGroupId\": \"{{groupId}}\",\n  \"amount\": {{walletToWalletAmount}},\n  \"customFields\": {\n    \"{{transferCustomFieldId}}\": \"{{transferCustomFieldValue}}\"\n  },\n  \"location\": {\n    \"latitude\": {{latitude}},\n    \"longitude\": {{longitude}}\n  }\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{apigateway}}/transfer/regularWalletPayment",
+							"host": [
+								"{{apigateway}}"
+							],
+							"path": [
+								"transfer",
+								"regularWalletPayment"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "05 walletInfo",
+			"item": [
+				{
+					"name": "customerMgmt",
+					"item": [
+						{
+							"name": "1. List customers by broker id",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test(\"1. List customers by broker id: status is one of [200]\", () => pm.expect([200]).to.include(pm.response.code));"
+										]
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{access_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "X-Original-Forwarded-For",
+										"value": "{{$randomIP}}",
+										"type": "text"
+									},
+									{
+										"key": "X-Geolocation-Latitude",
+										"value": "{{latitude}}",
+										"type": "text"
+									},
+									{
+										"key": "X-Geolocation-Longitude",
+										"value": "{{longitude}}",
+										"type": "text"
+									},
+									{
+										"key": "Content-Type",
+										"value": "application/json",
+										"type": "text"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"brokerId\": \"{{brokerId}}\",\n  \"programManagerId\": \"{{programManagerId}}\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{apigateway}}/walletInfoRetrieval/customerMgmtService/getPersonDetailsByBrokerId",
+									"host": [
+										"{{apigateway}}"
+									],
+									"path": [
+										"walletInfoRetrieval",
+										"customerMgmtService",
+										"getPersonDetailsByBrokerId"
+									]
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "2. Person details by person id",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test(\"2. Person details by person id: status is one of [200]\", () => pm.expect([200]).to.include(pm.response.code));"
+										]
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{access_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "X-Original-Forwarded-For",
+										"value": "{{$randomIP}}",
+										"type": "text"
+									},
+									{
+										"key": "X-Geolocation-Latitude",
+										"value": "{{latitude}}",
+										"type": "text"
+									},
+									{
+										"key": "X-Geolocation-Longitude",
+										"value": "{{longitude}}",
+										"type": "text"
+									},
+									{
+										"key": "Content-Type",
+										"value": "application/json",
+										"type": "text"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"personId\": \"{{personId}}\",\n  \"programManagerId\": \"{{programManagerId}}\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{apigateway}}/walletInfoRetrieval/customerMgmtService/getPersonDetailsByPersonId",
+									"host": [
+										"{{apigateway}}"
+									],
+									"path": [
+										"walletInfoRetrieval",
+										"customerMgmtService",
+										"getPersonDetailsByPersonId"
+									]
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "3. Person details by mobile number",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test(\"3. Person details by mobile number: status is one of [200]\", () => pm.expect([200]).to.include(pm.response.code));"
+										]
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{access_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "X-Original-Forwarded-For",
+										"value": "{{$randomIP}}",
+										"type": "text"
+									},
+									{
+										"key": "X-Geolocation-Latitude",
+										"value": "{{latitude}}",
+										"type": "text"
+									},
+									{
+										"key": "X-Geolocation-Longitude",
+										"value": "{{longitude}}",
+										"type": "text"
+									},
+									{
+										"key": "Content-Type",
+										"value": "application/json",
+										"type": "text"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"mobileNumber\": \"{{mobileNumber}}\",\n  \"programManagerId\": \"{{programManagerId}}\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{apigateway}}/walletInfoRetrieval/customerMgmtService/getPersonDetailsByMobileNumber",
+									"host": [
+										"{{apigateway}}"
+									],
+									"path": [
+										"walletInfoRetrieval",
+										"customerMgmtService",
+										"getPersonDetailsByMobileNumber"
+									]
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "4. List custom fields by program manager id",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test(\"4. List custom fields by program manager id: status is one of [200]\", () => pm.expect([200]).to.include(pm.response.code));"
+										]
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{access_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "X-Original-Forwarded-For",
+										"value": "{{$randomIP}}",
+										"type": "text"
+									},
+									{
+										"key": "X-Geolocation-Latitude",
+										"value": "{{latitude}}",
+										"type": "text"
+									},
+									{
+										"key": "X-Geolocation-Longitude",
+										"value": "{{longitude}}",
+										"type": "text"
+									},
+									{
+										"key": "Content-Type",
+										"value": "application/json",
+										"type": "text"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"programManagerId\": \"{{programManagerId}}\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{apigateway}}/walletInfoRetrieval/customerMgmtService/customFields",
+									"host": [
+										"{{apigateway}}"
+									],
+									"path": [
+										"walletInfoRetrieval",
+										"customerMgmtService",
+										"customFields"
+									]
+								}
+							},
+							"response": []
+						}
+					]
+				},
+				{
+					"name": "walletMgmt",
+					"item": [
+						{
+							"name": "1a. Wallet details by person id",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test(\"1a. Wallet details by person id: status is one of [200]\", () => pm.expect([200]).to.include(pm.response.code));"
+										]
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{access_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "X-Original-Forwarded-For",
+										"value": "{{$randomIP}}",
+										"type": "text"
+									},
+									{
+										"key": "X-Geolocation-Latitude",
+										"value": "{{latitude}}",
+										"type": "text"
+									},
+									{
+										"key": "X-Geolocation-Longitude",
+										"value": "{{longitude}}",
+										"type": "text"
+									},
+									{
+										"key": "Content-Type",
+										"value": "application/json",
+										"type": "text"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"personId\": \"{{personId}}\",\n  \"programManagerId\": \"{{programManagerId}}\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{apigateway}}/walletInfoRetrieval/walletMgmtService/getWalletDetailsByPersonId",
+									"host": [
+										"{{apigateway}}"
+									],
+									"path": [
+										"walletInfoRetrieval",
+										"walletMgmtService",
+										"getWalletDetailsByPersonId"
+									]
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "1b. Wallet details by mobile number",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test(\"1b. Wallet details by mobile number: status is one of [200]\", () => pm.expect([200]).to.include(pm.response.code));"
+										]
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{access_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "X-Original-Forwarded-For",
+										"value": "{{$randomIP}}",
+										"type": "text"
+									},
+									{
+										"key": "X-Geolocation-Latitude",
+										"value": "{{latitude}}",
+										"type": "text"
+									},
+									{
+										"key": "X-Geolocation-Longitude",
+										"value": "{{longitude}}",
+										"type": "text"
+									},
+									{
+										"key": "Content-Type",
+										"value": "application/json",
+										"type": "text"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"mobileNumber\": \"{{mobileNumber}}\",\n  \"programManagerId\": \"{{programManagerId}}\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{apigateway}}/walletInfoRetrieval/walletMgmtService/getWalletDetailsByMobileNumber",
+									"host": [
+										"{{apigateway}}"
+									],
+									"path": [
+										"walletInfoRetrieval",
+										"walletMgmtService",
+										"getWalletDetailsByMobileNumber"
+									]
+								}
+							},
+							"response": []
+						}
+					]
+				},
+				{
+					"name": "walletTransfer",
+					"item": [
+						{
+							"name": "1. Transaction history by person id",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test(\"1. Transaction history by person id: status is one of [200]\", () => pm.expect([200]).to.include(pm.response.code));"
+										]
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{access_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "X-Original-Forwarded-For",
+										"value": "{{$randomIP}}",
+										"type": "text"
+									},
+									{
+										"key": "X-Geolocation-Latitude",
+										"value": "{{latitude}}",
+										"type": "text"
+									},
+									{
+										"key": "X-Geolocation-Longitude",
+										"value": "{{longitude}}",
+										"type": "text"
+									},
+									{
+										"key": "Content-Type",
+										"value": "application/json",
+										"type": "text"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"programManagerId\": \"{{programManagerId}}\",\n  \"personId\": \"{{personId}}\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{apigateway}}/walletInfoRetrieval/eventStore/walletTransfer/paymentsByPersonId",
+									"host": [
+										"{{apigateway}}"
+									],
+									"path": [
+										"walletInfoRetrieval",
+										"eventStore",
+										"walletTransfer",
+										"paymentsByPersonId"
+									]
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "2. Transaction history by person id with date range",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test(\"2. Transaction history by person id with date range: status is one of [200]\", () => pm.expect([200]).to.include(pm.response.code));"
+										]
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{access_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "X-Original-Forwarded-For",
+										"value": "{{$randomIP}}",
+										"type": "text"
+									},
+									{
+										"key": "X-Geolocation-Latitude",
+										"value": "{{latitude}}",
+										"type": "text"
+									},
+									{
+										"key": "X-Geolocation-Longitude",
+										"value": "{{longitude}}",
+										"type": "text"
+									},
+									{
+										"key": "Content-Type",
+										"value": "application/json",
+										"type": "text"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"programManagerId\": \"{{programManagerId}}\",\n  \"personId\": \"{{personId}}\",\n  \"startDate\": \"{{startDate}}\",\n  \"endDate\": \"{{endDate}}\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{apigateway}}/walletInfoRetrieval/eventStore/walletTransfer/paymentsByPersonId",
+									"host": [
+										"{{apigateway}}"
+									],
+									"path": [
+										"walletInfoRetrieval",
+										"eventStore",
+										"walletTransfer",
+										"paymentsByPersonId"
+									]
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "3. List transfer types",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test(\"3. List transfer types: status is one of [200]\", () => pm.expect([200]).to.include(pm.response.code));"
+										]
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{access_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "X-Original-Forwarded-For",
+										"value": "{{$randomIP}}",
+										"type": "text"
+									},
+									{
+										"key": "X-Geolocation-Latitude",
+										"value": "{{latitude}}",
+										"type": "text"
+									},
+									{
+										"key": "X-Geolocation-Longitude",
+										"value": "{{longitude}}",
+										"type": "text"
+									},
+									{
+										"key": "Content-Type",
+										"value": "application/json",
+										"type": "text"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"programManagerId\": \"{{programManagerId}}\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{apigateway}}/walletInfoRetrieval/walletTransferService/transferTypes",
+									"host": [
+										"{{apigateway}}"
+									],
+									"path": [
+										"walletInfoRetrieval",
+										"walletTransferService",
+										"transferTypes"
+									]
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "4. Recent transaction history",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test(\"4. Recent transaction history: status is one of [200]\", () => pm.expect([200]).to.include(pm.response.code));"
+										]
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{access_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "X-Original-Forwarded-For",
+										"value": "{{$randomIP}}",
+										"type": "text"
+									},
+									{
+										"key": "X-Geolocation-Latitude",
+										"value": "{{latitude}}",
+										"type": "text"
+									},
+									{
+										"key": "X-Geolocation-Longitude",
+										"value": "{{longitude}}",
+										"type": "text"
+									},
+									{
+										"key": "Content-Type",
+										"value": "application/json",
+										"type": "text"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"programManagerId\": \"{{programManagerId}}\",\n  \"personId\": \"{{personId}}\",\n  \"limit\": {{recentLimit}}\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{apigateway}}/walletInfoRetrieval/eventStore/walletTransfer/recentPaymentsByPersonId",
+									"host": [
+										"{{apigateway}}"
+									],
+									"path": [
+										"walletInfoRetrieval",
+										"eventStore",
+										"walletTransfer",
+										"recentPaymentsByPersonId"
+									]
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "5. Wallet balance",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test(\"5. Wallet balance: status is one of [200]\", () => pm.expect([200]).to.include(pm.response.code));"
+										]
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{access_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "X-Original-Forwarded-For",
+										"value": "{{$randomIP}}",
+										"type": "text"
+									},
+									{
+										"key": "X-Geolocation-Latitude",
+										"value": "{{latitude}}",
+										"type": "text"
+									},
+									{
+										"key": "X-Geolocation-Longitude",
+										"value": "{{longitude}}",
+										"type": "text"
+									},
+									{
+										"key": "Content-Type",
+										"value": "application/json",
+										"type": "text"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"walletId\": \"{{walletId}}\",\n  \"tagId\": \"{{tagId}}\",\n  \"programManagerId\": \"{{programManagerId}}\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{apigateway}}/walletInfoRetrieval/walletTransferService/wallet/walletBalance",
+									"host": [
+										"{{apigateway}}"
+									],
+									"path": [
+										"walletInfoRetrieval",
+										"walletTransferService",
+										"wallet",
+										"walletBalance"
+									]
+								}
+							},
+							"response": []
+						}
+					]
+				}
+			]
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"requests": {},
+				"exec": [
+					"// Derived values - everything is driven from collection variables (programManagerId / groupId / tagId etc.)",
+					"const v = n => pm.collectionVariables.get(n);",
+					"pm.collectionVariables.set(\"iamGroupName\", v(\"programManagerId\") + \".\" + v(\"groupId\"));",
+					"pm.collectionVariables.set(\"walletId\", v(\"walletIdPrefix\") + v(\"personId\") + v(\"walletIdSuffix\"));",
+					"pm.collectionVariables.set(\"walletIdB\", v(\"walletIdPrefix\") + v(\"personIdB\") + v(\"walletIdSuffix\"));"
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"packages": {},
+				"requests": {},
+				"exec": [
+					""
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "apigateway",
+			"value": "https://localhost:8080"
+		},
+		{
+			"key": "adminPassword",
+			"value": "integra@admin"
+		},
+		{
+			"key": "access_token",
+			"value": ""
+		},
+		{
+			"key": "transactionId",
+			"value": ""
+		},
+		{
+			"key": "programManagerId",
+			"value": "LAS"
+		},
+		{
+			"key": "groupId",
+			"value": "02"
+		},
+		{
+			"key": "tagId",
+			"value": "loan"
+		},
+		{
+			"key": "iamGroupName",
+			"value": ""
+		},
+		{
+			"key": "personCustomFieldId",
+			"value": "age"
+		},
+		{
+			"key": "personCustomFieldName",
+			"value": "age"
+		},
+		{
+			"key": "personCustomFieldDescription",
+			"value": "Age of the person captured at registration."
+		},
+		{
+			"key": "personCustomFieldValue",
+			"value": "30"
+		},
+		{
+			"key": "personCustomFieldNewValue",
+			"value": "31"
+		},
+		{
+			"key": "personId",
+			"value": "9000000101"
+		},
+		{
+			"key": "brokerId",
+			"value": "BRK001"
+		},
+		{
+			"key": "personFirstName",
+			"value": "Loan"
+		},
+		{
+			"key": "personLastName",
+			"value": "Customer"
+		},
+		{
+			"key": "personEmail",
+			"value": "loan.customer@integramicro.com"
+		},
+		{
+			"key": "personNewEmail",
+			"value": "loan.customer.new@integramicro.com"
+		},
+		{
+			"key": "mobileCountryCode",
+			"value": "91"
+		},
+		{
+			"key": "mobileNumber",
+			"value": "9000000101"
+		},
+		{
+			"key": "addressStreet",
+			"value": "12 MG Road"
+		},
+		{
+			"key": "addressCity",
+			"value": "Hyderabad"
+		},
+		{
+			"key": "addressState",
+			"value": "Telangana"
+		},
+		{
+			"key": "addressPostalCode",
+			"value": "500081"
+		},
+		{
+			"key": "addressCountryCode",
+			"value": "IN"
+		},
+		{
+			"key": "newAddressStreet",
+			"value": "45 Residency Road"
+		},
+		{
+			"key": "newAddressCity",
+			"value": "Bangalore"
+		},
+		{
+			"key": "newAddressState",
+			"value": "Karnataka"
+		},
+		{
+			"key": "newAddressPostalCode",
+			"value": "560025"
+		},
+		{
+			"key": "settlementAccountNo",
+			"value": "967710110006162"
+		},
+		{
+			"key": "settlementAccountIfsc",
+			"value": "ICIC0002468"
+		},
+		{
+			"key": "iamUserId",
+			"value": "las.loan.user"
+		},
+		{
+			"key": "iamUserEmail",
+			"value": "las.loan.user@integramicro.com"
+		},
+		{
+			"key": "iamFirstName",
+			"value": "Las"
+		},
+		{
+			"key": "iamLastName",
+			"value": "User"
+		},
+		{
+			"key": "iamMobileNumber",
+			"value": "9000000102"
+		},
+		{
+			"key": "iamPassword",
+			"value": "Initial@12345"
+		},
+		{
+			"key": "walletIdPrefix",
+			"value": "0000"
+		},
+		{
+			"key": "walletIdSuffix",
+			"value": "@las"
+		},
+		{
+			"key": "walletInterOpIdPrefix",
+			"value": "0000"
+		},
+		{
+			"key": "walletInterOpIdSuffix",
+			"value": "@las"
+		},
+		{
+			"key": "walletId",
+			"value": ""
+		},
+		{
+			"key": "walletIdB",
+			"value": ""
+		},
+		{
+			"key": "personIdB",
+			"value": "9000000201"
+		},
+		{
+			"key": "mobileNumberB",
+			"value": "9000000201"
+		},
+		{
+			"key": "personEmailB",
+			"value": "loan.customer.b@integramicro.com"
+		},
+		{
+			"key": "systemAccountId",
+			"value": "las_loan_system_account"
+		},
+		{
+			"key": "systemAccountLowerLimit",
+			"value": "-100000"
+		},
+		{
+			"key": "systemAccountUpperLimit",
+			"value": "0"
+		},
+		{
+			"key": "transferTypeSysToWallet",
+			"value": "101"
+		},
+		{
+			"key": "transferTypeSysToWalletName",
+			"value": "loan disbursement"
+		},
+		{
+			"key": "transferTypeWalletToWallet",
+			"value": "102"
+		},
+		{
+			"key": "transferTypeWalletToWalletName",
+			"value": "wallet transfer"
+		},
+		{
+			"key": "transferCustomFieldId",
+			"value": "reference_id"
+		},
+		{
+			"key": "transferCustomFieldName",
+			"value": "reference_id"
+		},
+		{
+			"key": "transferCustomFieldDescription",
+			"value": "Reference id of every transaction."
+		},
+		{
+			"key": "transferCustomFieldValue",
+			"value": "LAS-REF-0001"
+		},
+		{
+			"key": "systemToWalletAmount",
+			"value": "5000"
+		},
+		{
+			"key": "walletToWalletAmount",
+			"value": "100"
+		},
+		{
+			"key": "latitude",
+			"value": "12.97"
+		},
+		{
+			"key": "longitude",
+			"value": "77.59"
+		},
+		{
+			"key": "startDate",
+			"value": "2026-01-01 00:00:00"
+		},
+		{
+			"key": "endDate",
+			"value": "2026-12-31 23:59:59"
+		},
+		{
+			"key": "recentLimit",
+			"value": "10"
+		}
+	]
+}
