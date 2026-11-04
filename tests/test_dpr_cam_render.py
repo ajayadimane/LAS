@@ -164,7 +164,12 @@ def test_print_layout_does_not_slice_a_card_across_a_page_break():
     title_to_status = {
         "Repayment capacity": "Issues found",
         "Project cost": "Needs attention",
-        "Funding plan": "Not yet checked",
+        # Now computed: project_cost/means_of_finance are wired from the
+        # engine (milestone 4 gap-closing), and the Tikamgarh fixture's
+        # cost and funding figures balance exactly, with no finding in the
+        # "funding" category -- so this now reads "No issues found"
+        # rather than "Not yet checked".
+        "Funding plan": "No issues found",
         "Identity and KYC": "Not yet checked",
     }
     for title, status in title_to_status.items():

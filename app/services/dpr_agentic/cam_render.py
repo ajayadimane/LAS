@@ -426,14 +426,16 @@ def build_page3_context(snapshot: CAMSnapshot) -> dict:
 
 def build_page4_context(snapshot: CAMSnapshot) -> dict:
     """All display values for page4_repayment.html.jinja. The original
-    design's bar chart plots five specific acreage points (300/600/910/
-    1200-corrected/1200-as-written); three of those (the realistic
-    harvest-window range and the DSCR=1.0 break-even acreage) come from
-    sector-feasibility/debt-service-threshold calculations this pipeline
-    does not yet wire into the engine (PROGRESS.md milestone 4 gap), so
-    they are not shown -- only the two real scenarios actually computed
-    (`scenario_analysis`) are rendered, as a simple comparison, not a
-    fabricated five-point chart."""
+    design's bar chart plots five specific acreage points; two of those
+    (a "realistic harvest-window range" and a specific DSCR=1.0 break-even
+    acreage) were a judgment call baked into the design reference, not a
+    reproducible pipeline output. This pipeline's own debt-service-
+    threshold calculation (wired in milestone 4b) is shown instead, as
+    whatever value it actually computes -- which may differ from the
+    design reference's own figure, since that figure's derivation is not
+    reproducible from this engine's formulas. The two real scenarios
+    actually computed (`scenario_analysis`) are rendered as a simple
+    comparison, not a fabricated five-point chart."""
     ratios = snapshot.financial_ratios
     year1 = snapshot.repayment_schedule[0] if snapshot.repayment_schedule else None
 
@@ -482,12 +484,23 @@ def build_page4_context(snapshot: CAMSnapshot) -> dict:
     else:
         lede = "Repayment coverage could not be computed from this DPR's figures."
 
+    breakeven_threshold = None
+    if (
+        ratios.breakeven_debt_service_threshold
+        and ratios.breakeven_debt_service_threshold.status == "COMPUTED"
+        and ratios.breakeven_debt_service_threshold.computed_value is not None
+    ):
+        breakeven_threshold = (
+            f"{ratios.breakeven_debt_service_threshold.computed_value} acres/year"
+        )
+
     return {
         "report_reference": snapshot.report_id,
         "borrower_name": snapshot.borrower_profile.borrower_name,
         "lede": lede,
         "dscr_cards": dscr_cards,
         "scenarios": scenarios,
+        "breakeven_threshold": breakeven_threshold,
         "year1": (
             {
                 "principal": format_money(year1.principal_due),

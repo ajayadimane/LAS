@@ -11,9 +11,14 @@ those fields existed (report_store.py keeps old rows as-is -- see
 PROGRESS.md Section 16 gap on report versioning).
 
 Still NOT done here (milestone 2's remaining scope, Section 9):
-  - project_cost / means_of_finance reconciliation
-  - financial_projections, repayment_schedule, financial_ratios, scenario_analysis
-  - the verification layer (milestone 3, Section 13)
+  - financial_projections (a full multi-year P&L/balance-sheet/cash-flow
+    model -- disclosed gap, needs extraction fields not yet gathered)
+
+project_cost / means_of_finance / repayment_schedule / financial_ratios /
+scenario_analysis are populated from cam_engine_bridge.CamEngineOutputs
+when Settings.cam_engine_enabled was True for this run (see
+_engine_derived_fields below); they stay empty/default otherwise, exactly
+as before that wiring existed.
 
 Borrower/project identity is not in AnalysisResult at all (the agentic
 pipeline only ever sees document text), so it must be supplied by the caller
@@ -30,16 +35,20 @@ from .cam_snapshot import (
     CAMSnapshot,
     DocumentReference,
     DscrDefinition,
+    FinanceSourceClass,
     FinancialRatios,
     FindingClass,
     FindingPriority,
     FindingSeverity,
     MeansOfFinance,
+    MeansOfFinanceLine,
     Money,
     OperationalAssumptions,
     PolicyAssessment,
     ProjectCost,
+    ProjectCostLine,
     ProjectProfile,
+    Provenance,
     ReadinessAssessment,
     ReadinessStatus,
     RepaymentPeriod,
@@ -55,24 +64,85 @@ from .finding_rules import (
 from .schemas import AnalysisResult, Finding
 
 
+def _means_of_finance_from_engine(engine) -> MeansOfFinance:
+    components = [
+        MeansOfFinanceLine(
+            label=c.label,
+            amount=Money(amount=Decimal(c.amount), unit="lakh"),
+            source_class=(
+                FinanceSourceClass.UPFRONT_LOAN
+                if c.source_class == "loan"
+                else FinanceSourceClass.UPFRONT_OWN_FUNDED
+            ),
+            counted_in_upfront_funding=True,
+        )
+        for c in engine.means_of_finance_components
+    ]
+    total = (
+        Money(amount=Decimal(engine.means_of_finance_stated_total), unit="lakh")
+        if engine.means_of_finance_stated_total is not None
+        else None
+    )
+    return MeansOfFinance(
+        components=components,
+        dpr_reported_total=total,
+        upfront_funding_total=total,
+        funding_gap=engine.funding_balances_cost,
+        requested_loan=(
+            Money(amount=Decimal(engine.requested_loan), unit="lakh")
+            if engine.requested_loan is not None
+            else None
+        ),
+        promoter_contribution=(
+            Money(amount=Decimal(engine.promoter_contribution), unit="lakh")
+            if engine.promoter_contribution is not None
+            else None
+        ),
+        proposed_tenure_months=engine.proposed_tenure_months,
+    )
+
+
+def _project_cost_from_engine(engine) -> ProjectCost:
+    components = [
+        ProjectCostLine(
+            label=c.label,
+            dpr_reported=Money(amount=Decimal(c.amount), unit="lakh"),
+            provenance=Provenance.EXTRACTED,
+        )
+        for c in engine.project_cost_components
+    ]
+    return ProjectCost(
+        components=components,
+        dpr_reported_total=(
+            Money(amount=Decimal(engine.project_cost_stated_total), unit="lakh")
+            if engine.project_cost_stated_total is not None
+            else None
+        ),
+        recomputed_total=None,
+        reconciliation=engine.cost_reconciliation,
+    )
+
+
 def _engine_derived_fields(
     result: AnalysisResult,
-) -> tuple[FinancialRatios, list[RepaymentPeriod], list[ScenarioAnalysis]]:
+) -> tuple[
+    FinancialRatios,
+    list[RepaymentPeriod],
+    list[ScenarioAnalysis],
+    ProjectCost,
+    MeansOfFinance,
+]:
     """Folds cam_engine_bridge.CamEngineOutputs (set only when
-    Settings.cam_engine_enabled was True for this run -- milestone 2b) into
-    the snapshot's financial_ratios/repayment_schedule/scenario_analysis.
-    Returns empty/default values when the engine didn't run for this
-    result, exactly as before this wiring existed.
-
-    Still NOT populated: project_cost / means_of_finance (the engine's
-    outputs don't carry the raw loan/means-of-finance figures themselves,
-    only derived traces -- see PROGRESS.md milestone 2b for the exact gap).
-    """
+    Settings.cam_engine_enabled was True for this run -- milestone 2b/4)
+    into the snapshot's financial_ratios/repayment_schedule/
+    scenario_analysis/project_cost/means_of_finance. Returns empty/default
+    values when the engine didn't run for this result, exactly as before
+    this wiring existed."""
     default_ratios = FinancialRatios(
         dscr_definition_used=DscrDefinition.PAT_DEP_INTEREST
     )
     if not result.cam_engine_outputs:
-        return default_ratios, [], []
+        return default_ratios, [], [], ProjectCost(), MeansOfFinance()
 
     from .cam_engine_bridge import CamEngineOutputs
 
@@ -83,6 +153,7 @@ def _engine_derived_fields(
         dscr_pat_dep_only=engine.dscr_pat_dep,
         breakeven_accounting=engine.breakeven_accounting,
         breakeven_operating_cashflow=engine.breakeven_operating_cashflow,
+        breakeven_debt_service_threshold=engine.breakeven_debt_service_threshold,
     )
 
     repayment_schedule: list[RepaymentPeriod] = []
@@ -109,7 +180,9 @@ def _engine_derived_fields(
         )
         for s in engine.scenarios
     ]
-    return ratios, repayment_schedule, scenario_analysis
+    project_cost = _project_cost_from_engine(engine)
+    means_of_finance = _means_of_finance_from_engine(engine)
+    return ratios, repayment_schedule, scenario_analysis, project_cost, means_of_finance
 
 
 def _value_classification(f: Finding) -> ValueClassification:
@@ -171,9 +244,13 @@ def build_snapshot_from_analysis(
     """
     findings = [_map_finding(f, i) for i, f in enumerate(result.findings, start=1)]
     critical_count = sum(1 for f in findings if f.severity == FindingSeverity.CRITICAL)
-    financial_ratios, repayment_schedule, scenario_analysis = _engine_derived_fields(
-        result
-    )
+    (
+        financial_ratios,
+        repayment_schedule,
+        scenario_analysis,
+        project_cost,
+        means_of_finance,
+    ) = _engine_derived_fields(result)
 
     status = (
         ReadinessStatus.INSUFFICIENT_INFORMATION
@@ -198,8 +275,8 @@ def build_snapshot_from_analysis(
                 document_sha256=result.document_sha256,
             )
         ],
-        project_cost=ProjectCost(),
-        means_of_finance=MeansOfFinance(),
+        project_cost=project_cost,
+        means_of_finance=means_of_finance,
         operational_assumptions=OperationalAssumptions(),
         financial_projections=[],
         repayment_schedule=repayment_schedule,

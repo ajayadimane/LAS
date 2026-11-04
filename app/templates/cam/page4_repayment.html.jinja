@@ -43,6 +43,9 @@
       {% else %}
       <p class="cam-empty-note">No repayment scenarios are available for this project yet.</p>
       {% endif %}
+      {% if ctx4.breakeven_threshold %}
+      <p class="cam-missing-note">Break-even threshold (DSCR = 1.0, standard formula): {{ ctx4.breakeven_threshold }}.</p>
+      {% endif %}
     </section>
 
     {% if ctx4.dscr_cards %}

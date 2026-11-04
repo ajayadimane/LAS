@@ -49,7 +49,7 @@ def test_checklist_reflects_the_real_must_fix_count():
         for r in ctx6["checklist"]
         if r["requirement"] == "Must-fix issues from page 2"
     )
-    assert row["found"] == "4 unresolved"
+    assert row["found"] == "5 unresolved"
     assert row["met"] is False
 
 
@@ -73,7 +73,7 @@ def test_action_items_are_empty_when_nothing_is_outstanding():
 
 def test_action_items_cite_the_real_must_fix_count_not_a_fixed_number():
     ctx6 = build_page6_context(_golden_snapshot())
-    assert any("4 must-fix item(s)" in a["title"] for a in ctx6["action_items"])
+    assert any("5 must-fix item(s)" in a["title"] for a in ctx6["action_items"])
 
 
 def test_never_names_a_specific_bank_or_branch():

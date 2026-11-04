@@ -26,9 +26,11 @@ from app.services.dpr_agentic.cam_adapter import build_snapshot_from_analysis
 from app.services.dpr_agentic.cam_snapshot import BorrowerProfile, ProjectProfile
 from app.services.dpr_agentic.cam_verification import verify_snapshot
 from app.services.dpr_agentic.financial_schema import (
+    CostComponent,
     CrewRole,
     ExtractedValue,
     HarvesterAssumptions,
+    MeansOfFinanceComponent,
     ProjectFinancials,
     YearFinancials,
 )
@@ -44,8 +46,18 @@ TIKAMGARH_FINANCIALS = ProjectFinancials(
     loan_tenor_years=ExtractedValue(value=7, page=3, status="extracted"),
     loan_moratorium_years=ExtractedValue(value=0, page=3, status="extracted"),
     standard_interest_rate_pct=9.00,
-    cost_of_project_components=[],
+    cost_of_project_components=[
+        CostComponent(
+            label="AS-930 combine harvester, incl. taxes, registration and "
+            "first-year insurance",
+            amount=30.00,
+        )
+    ],
     cost_of_project_stated_total=30.00,
+    means_of_finance_components=[
+        MeansOfFinanceComponent(label="Promoter contribution", amount=7.50),
+        MeansOfFinanceComponent(label="SBI term loan", amount=22.50),
+    ],
     means_of_finance_stated_total=30.00,
     fund_flow_sources_total=ExtractedValue(value=102.65, page=12, status="extracted"),
     fund_flow_applications_total=ExtractedValue(
@@ -130,8 +142,7 @@ MISSING_QUOTATION_FINDING = Finding(
     ),
     evidence_page=3,
     suggested_action=(
-        "Attach an authorised dealer's quotation matching the stated "
-        "project cost."
+        "Attach an authorised dealer's quotation matching the stated project cost."
     ),
     provenance="extracted",
 )
@@ -168,8 +179,7 @@ async def _run() -> None:
             {
                 "page": 1,
                 "text": (
-                    "Simulated Tikamgarh AS-930 harvester DPR (see script "
-                    "docstring)."
+                    "Simulated Tikamgarh AS-930 harvester DPR (see script docstring)."
                 ),
             }
         ],

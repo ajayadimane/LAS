@@ -10,9 +10,11 @@ from decimal import Decimal
 
 from app.services.dpr_agentic.cam_engine_bridge import run_harvester_engine
 from app.services.dpr_agentic.financial_schema import (
+    CostComponent,
     CrewRole,
     ExtractedValue,
     HarvesterAssumptions,
+    MeansOfFinanceComponent,
     ProjectFinancials,
     YearFinancials,
 )
@@ -24,6 +26,15 @@ def _tikamgarh_financials() -> ProjectFinancials:
         loan_tenor_years=ExtractedValue(value=7, page=3, status="extracted"),
         loan_moratorium_years=ExtractedValue(value=0, page=3, status="extracted"),
         standard_interest_rate_pct=9.00,
+        cost_of_project_components=[
+            CostComponent(label="AS-930 combine harvester", amount=30.00)
+        ],
+        cost_of_project_stated_total=30.00,
+        means_of_finance_components=[
+            MeansOfFinanceComponent(label="Promoter contribution", amount=7.50),
+            MeansOfFinanceComponent(label="SBI term loan", amount=22.50),
+        ],
+        means_of_finance_stated_total=30.00,
         fund_flow_sources_total=ExtractedValue(
             value=102.65, page=12, status="extracted"
         ),
@@ -121,6 +132,63 @@ def test_bridge_flags_the_fund_flow_gap():
     # as one (would misleadingly imply applications is the "correct" sources).
     assert gap_findings[0].dpr_stated_value is None
     assert gap_findings[0].recomputed_display_value is None
+
+
+def test_bridge_maps_project_cost_and_means_of_finance():
+    """These were already extracted by financial_schema.ProjectFinancials
+    (and already used by financial_calc.py's own reconciliation checks)
+    before this wiring existed -- confirms the mapping gap is closed, not
+    a new extraction."""
+    outputs, _ = run_harvester_engine(_tikamgarh_financials())
+    assert [c.model_dump() for c in outputs.project_cost_components] == [
+        {"label": "AS-930 combine harvester", "amount": "30.0"}
+    ]
+    assert outputs.project_cost_stated_total == "30.0"
+    assert outputs.cost_reconciliation.computed_value == Decimal("0.0")
+
+    by_label = {c.label: c for c in outputs.means_of_finance_components}
+    assert by_label["SBI term loan"].source_class == "loan"
+    assert by_label["Promoter contribution"].source_class == "promoter"
+    assert outputs.requested_loan == "22.5"
+    assert outputs.promoter_contribution == "7.5"
+    assert outputs.funding_balances_cost.computed_value == Decimal("0.0")
+    assert outputs.proposed_tenure_months == 84
+
+
+def test_bridge_does_not_classify_an_unrecognized_finance_label_as_loan_or_promoter():
+    from app.services.dpr_agentic.financial_schema import MeansOfFinanceComponent
+
+    fin = ProjectFinancials(
+        means_of_finance_components=[
+            MeansOfFinanceComponent(label="State capital subsidy", amount=2.00),
+        ],
+        means_of_finance_stated_total=2.00,
+    )
+    outputs, _ = run_harvester_engine(fin)
+    assert outputs.means_of_finance_components[0].source_class == "other"
+    assert outputs.requested_loan is None
+    assert outputs.promoter_contribution is None
+
+
+def test_bridge_computes_feasible_acres_and_flags_the_mismatch():
+    outputs, findings = run_harvester_engine(_tikamgarh_financials())
+    # 10 acres/day x 30 operating days x 2 seasons = 600, vs. the DPR's
+    # planned 1,200 -- a real, deterministic mismatch, not the design
+    # reference's own 300-600 "realistic range" judgment call.
+    assert outputs.feasible_acres_per_year.computed_value == Decimal("600")
+    acreage_findings = [f for f in findings if "acreage" in f.title.lower()]
+    assert len(acreage_findings) == 1
+    assert acreage_findings[0].dpr_stated_value == "1200 acres/year"
+    assert acreage_findings[0].recomputed_display_value == "600 acres/year"
+    assert acreage_findings[0].priority == "must_fix"
+
+
+def test_bridge_computes_debt_service_threshold_breakeven():
+    outputs, _ = run_harvester_engine(_tikamgarh_financials())
+    trace = outputs.breakeven_debt_service_threshold
+    assert trace is not None
+    assert trace.status == "COMPUTED"
+    assert trace.computed_value > 0
 
 
 def test_bridge_derives_the_tax_rate():

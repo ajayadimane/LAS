@@ -76,7 +76,11 @@ def test_fixture_findings_are_deduplicated():
     capacity_finding = next(
         f for f in snapshot.findings if "acreage" in f.title.lower()
     )
-    assert capacity_finding.merged_duplicate_count == 5
+    # 5 narrative duplicates (the fixture's own fake multi-agent chain) plus
+    # the calculated acres-per-year-feasibility finding
+    # (cam_engine_bridge.py), merged into one via the shared "assumption"
+    # category + normalized title.
+    assert capacity_finding.merged_duplicate_count == 6
 
 
 def test_fixture_contains_no_unresolved_placeholders():

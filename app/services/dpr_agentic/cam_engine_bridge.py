@@ -23,11 +23,13 @@ from decimal import Decimal
 from pydantic import BaseModel, Field
 
 from .cam_financial_engine import (
+    CALCULATION_VERSION,
     BreakEvenInputs,
     CadsDefinition,
     LoanTerms,
     accounting_breakeven,
     crew_wage_reconciliation,
+    debt_service_threshold_breakeven,
     derive_tax_rate,
     dscr,
     equal_principal_amortization_schedule,
@@ -37,12 +39,33 @@ from .cam_financial_engine import (
     run_harvester_scenarios,
 )
 from .cam_snapshot import CalculationTrace
+from .financial_calc import (
+    CalculationResult,
+    cost_of_project_matches_components,
+    means_of_finance_balances_cost,
+    means_of_finance_matches_components,
+)
 from .financial_schema import ExtractedValue, ProjectFinancials, YearFinancials
 from .finding_rules import compute_dedup_key, priority_for_calculation
 from .schemas import Finding
+from .sector_feasibility import assess_sector_feasibility
 
 MONEY_TOLERANCE = Decimal("0.01")  # lakh
 MATERIAL_GAP_TOLERANCE = Decimal("1")  # lakh
+
+# Keyword classification of a means-of-finance line's free-text label, as
+# extracted verbatim from the DPR -- never a guess at an amount, only at
+# which already-extracted line is the loan vs. the promoter's own
+# contribution. A label matching none of these stays "other" rather than
+# being forced into either bucket.
+_LOAN_LABEL_KEYWORDS = ("loan", "bank", "sbi", "term loan")
+_PROMOTER_LABEL_KEYWORDS = (
+    "promoter",
+    "own contribution",
+    "own fund",
+    "margin",
+    "equity",
+)
 
 
 class ScenarioOutput(BaseModel):
@@ -53,16 +76,43 @@ class ScenarioOutput(BaseModel):
     dscr: CalculationTrace
 
 
+class CostLineOutput(BaseModel):
+    label: str
+    amount: str  # Decimal as str, lakh
+
+
+class FinanceLineOutput(BaseModel):
+    label: str
+    amount: str  # Decimal as str, lakh
+    source_class: str  # "loan" | "promoter" | "other"
+
+
 class CamEngineOutputs(BaseModel):
     dscr_pat_dep_interest: CalculationTrace | None = None
     dscr_pat_dep: CalculationTrace | None = None
     breakeven_accounting: CalculationTrace | None = None
     breakeven_operating_cashflow: CalculationTrace | None = None
+    breakeven_debt_service_threshold: CalculationTrace | None = None
+    feasible_acres_per_year: CalculationTrace | None = None
     fund_flow_gap: CalculationTrace | None = None
     tax_rate: CalculationTrace | None = None
     year1_principal_due: str | None = None
     year1_interest_due: str | None = None
     scenarios: list[ScenarioOutput] = Field(default_factory=list)
+
+    # --- Cost of project / means of finance (closes the milestone-4 gap:
+    # these were already extracted by financial_calc.py's own checks, just
+    # never folded into CamEngineOutputs for cam_adapter.py to use) ---
+    project_cost_components: list[CostLineOutput] = Field(default_factory=list)
+    project_cost_stated_total: str | None = None
+    cost_reconciliation: CalculationTrace | None = None
+    means_of_finance_components: list[FinanceLineOutput] = Field(default_factory=list)
+    means_of_finance_stated_total: str | None = None
+    means_of_finance_reconciliation: CalculationTrace | None = None
+    funding_balances_cost: CalculationTrace | None = None
+    requested_loan: str | None = None
+    promoter_contribution: str | None = None
+    proposed_tenure_months: int | None = None
 
 
 def _dec(value: float | None) -> Decimal | None:
@@ -89,6 +139,7 @@ def _calculated_finding(
     stated_value: Decimal | None,
     unit: str = " lakh",
     show_value_pair: bool = True,
+    category: str = "financial_calculation",
 ) -> Finding:
     priority, rule = priority_for_calculation(
         check=check,
@@ -96,7 +147,7 @@ def _calculated_finding(
         stated_value=float(stated_value) if stated_value is not None else None,
     )
     finding = Finding(
-        category="financial_calculation",
+        category=category,
         severity="high" if priority == "must_fix" else "medium",
         title=title,
         explanation=explanation,
@@ -128,6 +179,91 @@ def _loan_terms(fin: ProjectFinancials) -> LoanTerms | None:
         tenor_years=int(tenor_value),
         moratorium_years=int(moratorium_value) if moratorium_value is not None else 0,
     )
+
+
+def _calc_result_to_trace(result: CalculationResult, formula: str) -> CalculationTrace:
+    return CalculationTrace(
+        formula=formula,
+        inputs={
+            "computed_value": str(result.computed_value),
+            "stated_value": str(result.stated_value),
+        },
+        computed_value=_dec(result.discrepancy),
+        status="COMPUTED",
+        calculation_version=CALCULATION_VERSION,
+    )
+
+
+def _classify_finance_label(label: str) -> str:
+    lowered = label.lower()
+    if any(k in lowered for k in _LOAN_LABEL_KEYWORDS):
+        return "loan"
+    if any(k in lowered for k in _PROMOTER_LABEL_KEYWORDS):
+        return "promoter"
+    return "other"
+
+
+def _cost_and_finance_fields(fin: ProjectFinancials, outputs: CamEngineOutputs) -> None:
+    """Mutates `outputs` with project_cost/means_of_finance figures. These
+    were already extracted by financial_schema.ProjectFinancials (and
+    already used by financial_calc.py's own reconciliation checks) -- this
+    is a mapping step, not a new extraction, so it runs unconditionally
+    whenever the engine runs, independent of sector."""
+    if fin.cost_of_project_components:
+        outputs.project_cost_components = [
+            CostLineOutput(label=c.label, amount=str(c.amount))
+            for c in fin.cost_of_project_components
+        ]
+    if fin.cost_of_project_stated_total is not None:
+        outputs.project_cost_stated_total = str(fin.cost_of_project_stated_total)
+    if result := cost_of_project_matches_components(fin):
+        outputs.cost_reconciliation = _calc_result_to_trace(
+            result, "Sum of cost-of-project components vs. stated total"
+        )
+
+    if fin.means_of_finance_components:
+        outputs.means_of_finance_components = [
+            FinanceLineOutput(
+                label=c.label,
+                amount=str(c.amount),
+                source_class=_classify_finance_label(c.label),
+            )
+            for c in fin.means_of_finance_components
+        ]
+        loan_line = next(
+            (
+                c
+                for c in outputs.means_of_finance_components
+                if c.source_class == "loan"
+            ),
+            None,
+        )
+        promoter_line = next(
+            (
+                c
+                for c in outputs.means_of_finance_components
+                if c.source_class == "promoter"
+            ),
+            None,
+        )
+        if loan_line:
+            outputs.requested_loan = loan_line.amount
+        if promoter_line:
+            outputs.promoter_contribution = promoter_line.amount
+    if fin.means_of_finance_stated_total is not None:
+        outputs.means_of_finance_stated_total = str(fin.means_of_finance_stated_total)
+    if result := means_of_finance_matches_components(fin):
+        outputs.means_of_finance_reconciliation = _calc_result_to_trace(
+            result, "Sum of means-of-finance components vs. stated total"
+        )
+    if result := means_of_finance_balances_cost(fin):
+        outputs.funding_balances_cost = _calc_result_to_trace(
+            result, "Means of finance total - cost of project total"
+        )
+
+    tenor_years = _extracted(fin.loan_tenor_years)
+    if tenor_years is not None:
+        outputs.proposed_tenure_months = int(tenor_years * 12)
 
 
 def _fuel_finding(fin: ProjectFinancials) -> Finding | None:
@@ -239,6 +375,8 @@ def run_harvester_engine(
     outputs = CamEngineOutputs()
     findings: list[Finding] = []
 
+    _cost_and_finance_fields(fin, outputs)
+
     terms = _loan_terms(fin)
     schedule = equal_principal_amortization_schedule(terms) if terms else []
     year1_amort = schedule[0] if schedule else None
@@ -312,6 +450,62 @@ def run_harvester_engine(
         )
         outputs.breakeven_accounting = accounting_breakeven(inputs)
         outputs.breakeven_operating_cashflow = operating_cashflow_breakeven(inputs)
+
+        if outputs.tax_rate and outputs.tax_rate.computed_value is not None:
+            outputs.breakeven_debt_service_threshold = debt_service_threshold_breakeven(
+                price_per_unit=price,
+                variable_cost_per_unit=variable_corrected,
+                fixed_cost_excluding_depreciation_and_interest=Decimal(0),
+                depreciation=depreciation_rupees,
+                interest_on_term_loan=interest_on_loan * Decimal(100_000),
+                tax_rate=outputs.tax_rate.computed_value,
+                principal_due=year1_amort.principal_due * Decimal(100_000),
+                interest_due=year1_amort.interest_due * Decimal(100_000),
+                definition=CadsDefinition.PAT_DEP_INTEREST,
+            )
+
+    if h and (acres_stated := _extracted(h.acres_per_year)) is not None:
+        feasibility_assumptions = {
+            key: value
+            for key, extracted in (
+                ("acres_per_day", h.acres_per_day),
+                ("operating_days_per_season", h.operating_days_per_season),
+                ("seasons_per_year", h.seasons_per_year),
+            )
+            if (value := _extracted(extracted)) is not None
+        }
+        outputs.feasible_acres_per_year = assess_sector_feasibility(
+            "harvester", feasibility_assumptions
+        )
+        feasible = outputs.feasible_acres_per_year.computed_value
+        if (
+            outputs.feasible_acres_per_year.status == "COMPUTED"
+            and feasible is not None
+            and abs(acres_stated - feasible) > MATERIAL_GAP_TOLERANCE
+        ):
+            feasible_whole = feasible.quantize(Decimal("1"))
+            acres_stated_whole = acres_stated.quantize(Decimal("1"))
+            findings.append(
+                _calculated_finding(
+                    check="acres_per_year_feasibility",
+                    title="Claimed annual acreage exceeds plausible machine throughput",
+                    explanation=(
+                        f"{outputs.feasible_acres_per_year.formula} = "
+                        f"{feasible_whole} acres/year; the document plans "
+                        f"for {acres_stated_whole}."
+                    ),
+                    page=h.acres_per_year.page,
+                    computed_value=feasible_whole,
+                    stated_value=acres_stated_whole,
+                    unit=" acres/year",
+                    # Same category as the narrative sector-feasibility
+                    # finding a real agent produces for this same issue, so
+                    # finding_consolidation.consolidate() merges them into
+                    # one (calculated wins on provenance rank) instead of
+                    # showing two near-identical findings.
+                    category="assumption",
+                )
+            )
 
     if (
         h

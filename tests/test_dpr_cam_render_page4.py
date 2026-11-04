@@ -49,6 +49,18 @@ def test_dscr_cards_show_both_real_conventions():
     assert labels["Standard bank formula (Year 1)"] == "1.97×"
 
 
+def test_breakeven_threshold_shows_the_engines_own_computed_value():
+    """Milestone 4b: wired from cam_engine_bridge.py's
+    debt_service_threshold_breakeven(), now that it's called. The value is
+    whatever the engine actually computes for the golden case -- not
+    forced to match the design reference's own un-reproducible 910-acre
+    figure."""
+    ctx4 = build_page4_context(_golden_snapshot())
+    assert ctx4["breakeven_threshold"] == "563 acres/year"
+    html = render_cam_report_html(_golden_snapshot())
+    assert "563 acres/year" in html
+
+
 def test_scenarios_include_both_real_scenarios_and_flag_the_hypothetical_one():
     ctx4 = build_page4_context(_golden_snapshot())
     by_label = {s["label"]: s for s in ctx4["scenarios"]}
@@ -74,6 +86,7 @@ def test_empty_snapshot_shows_explicit_empty_states_not_fabricated_data():
     assert ctx4["dscr_cards"] == []
     assert ctx4["scenarios"] == []
     assert ctx4["year1"] is None
+    assert ctx4["breakeven_threshold"] is None
     html = render_cam_report_html(_empty_snapshot())
     assert "No repayment scenarios are available" in html
     assert "A Year-1 repayment schedule is not yet available" in html

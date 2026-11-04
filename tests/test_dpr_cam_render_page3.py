@@ -1,12 +1,15 @@
 """Milestone 4 (part 3): Page 3 (Project, cost and corrections) template.
 
-project_cost/means_of_finance remain an unclosed gap from milestone 2b
-(see PROGRESS.md) -- the golden fixture's breakdown is empty, so these
-tests cover both the populated and the still-empty paths: an empty
-breakdown must render an explicit note, never a fabricated line, bar or
-number. The corrections table is driven by Finding.dpr_stated_value/
-recomputed_display_value (fixed in the previous commit) -- never by a
-finding's title.
+project_cost/means_of_finance were an unclosed gap from milestone 2b
+(see PROGRESS.md); closed in milestone 4b by wiring
+cam_engine_bridge._cost_and_finance_fields() -- the golden fixture now
+carries a real cost/funding breakdown, so these tests cover both the
+populated path (golden fixture) and the still-empty path (an empty
+snapshot, for a run where the DPR genuinely states no cost/finance
+breakdown): an empty breakdown must render an explicit note, never a
+fabricated line, bar or number. The corrections table is driven by
+Finding.dpr_stated_value/recomputed_display_value -- never by a finding's
+title.
 """
 
 import json
@@ -60,6 +63,21 @@ def test_empty_funding_split_shows_an_explicit_note_not_a_fabricated_bar():
     assert ctx3["funding_split"] is None
     html = render_cam_report_html(_empty_snapshot())
     assert "Funding split is not yet available" in html
+
+
+def test_golden_fixture_cost_and_funding_are_now_populated():
+    """Regression for the milestone-4b gap closure: the golden fixture's
+    project_cost/means_of_finance used to be empty; confirms they now
+    carry the engine's real cost/funding breakdown end to end."""
+    ctx3 = build_page3_context(_golden_snapshot())
+    assert ctx3["cost_rows"] != []
+    assert ctx3["funding_split"] is not None
+    assert ctx3["funding_split"]["loan_pct"] == 75
+    assert ctx3["funding_split"]["promoter_pct"] == 25
+    assert ctx3["cost_check"] == {"label": "Matches funding", "kind": "ok"}
+    html = render_cam_report_html(_golden_snapshot())
+    assert "No itemized cost breakdown is available" not in html
+    assert "Funding split is not yet available" not in html
 
 
 def test_populated_cost_and_funding_render_real_figures():
@@ -118,6 +136,10 @@ def test_corrections_table_only_includes_findings_with_a_real_value_pair():
     titles = {row["title"] for row in ctx3["corrections"]}
     assert "Fuel cost does not match acres x litres/acre x price" in titles
     assert "Crew wages understated versus the staffing plan" in titles
+    # Closed in milestone 4b: sector_feasibility.py is now wired into
+    # cam_engine_bridge.py, so the acreage correction has a real value
+    # pair too.
+    assert "Claimed annual acreage exceeds plausible machine throughput" in titles
     # The fund-flow finding has no dpr_stated_value/recomputed_display_value
     # (sources vs. applications is not a "should be" correction) -- must
     # not appear in this table.

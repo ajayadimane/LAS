@@ -1058,3 +1058,186 @@ placeholders and every page's "Page N of 6" label present.
   drops the fontTools fallback.
 - Milestones 5-7 per Section 3A: persistence/APIs/authorization, frontend,
   annexures. Not started.
+
+## Milestone 4b: closed the two flagged wiring gaps, fixed report_store.py (2026-11-04)
+
+Before starting milestone 5, closed the two gaps flagged at the end of
+milestone 4, plus a `report_store.py` correctness fix the user asked to
+land first as its own commit.
+
+### report_store.py: never overwrite a stored report (separate commit)
+
+`store_report()` used `ON CONFLICT (run_id) DO UPDATE`, silently replacing
+any previously stored report for that run_id -- a violation of "never
+overwrite a previous report version." Confirmed this module is used in
+production (`scripts/dpr_worker.py` calls it after every claimed run).
+Investigated reachability: in the current job lifecycle
+(`jobs.claim()`/`jobs.finish()`), a COMPLETED run can never be reclaimed,
+so the conflict path is not reachable through today's worker loop -- but
+it would become reachable the moment any retry/reset tooling is added, or
+if two workers ever raced on the same claim. Fixed to
+`ON CONFLICT (run_id) DO NOTHING`, raising a new `ReportAlreadyStoredError`
+if a row already existed, instead of silently overwriting or silently
+dropping either side. Verified against a real throwaway Postgres
+(`docker run postgres:16-alpine`), not just mocked: `store_report` round-
+trips correctly, a second store for the same run_id raises, and the
+original report survives untouched. New test file
+`tests/test_dpr_report_store.py` (2 tests, real-Postgres-gated like the
+rest of the DPR persistence tests). Also confirmed, by reverting the fix
+locally and rerunning, that a pre-existing unrelated failure
+(`test_dpr_log_safety.py::test_process_one_sets_current_run_id_for_the_
+whole_call_chain`, an `AttributeError` inside `process_one` unrelated to
+report storage) exists independently of this change -- not introduced by
+it, not fixed by it, out of scope here.
+
+### Gap 1: project_cost / means_of_finance was a mapping gap, not a missing-extraction gap
+
+Confirmed before changing anything: `financial_schema.ProjectFinancials`
+already carries `cost_of_project_components`, `cost_of_project_stated_
+total`, `means_of_finance_components`, `means_of_finance_stated_total`,
+and `financial_calc.py` already computes reconciliation checks from them
+(`cost_of_project_matches_components`, `means_of_finance_matches_
+components`, `means_of_finance_balances_cost`) -- all pre-dating this
+session. The gap was purely that `extract_calculated_facts()` built this
+`ProjectFinancials` object, ran those checks, and then discarded it
+without ever reaching `CAMSnapshot.project_cost`/`means_of_finance`. No
+prompt or extraction-schema change was needed.
+
+Closed by extending `cam_engine_bridge.CamEngineOutputs` with
+`project_cost_components`, `project_cost_stated_total`,
+`cost_reconciliation`, `means_of_finance_components`, `means_of_finance_
+stated_total`, `means_of_finance_reconciliation`, `funding_balances_cost`,
+`requested_loan`, `promoter_contribution`, `proposed_tenure_months` --
+populated unconditionally by a new `_cost_and_finance_fields()` (not
+harvester-specific; runs for any sector) -- and a new `_classify_finance_
+label()` keyword heuristic that reads each means-of-finance line's own
+extracted label text (e.g. "SBI term loan" -> loan, "Promoter
+contribution" -> promoter) to pick out `requested_loan`/`promoter_
+contribution` -- never guessing an amount, only which already-extracted
+line is which. `cam_adapter.py` gained `_project_cost_from_engine()`/
+`_means_of_finance_from_engine()` to build the real `ProjectCost`/
+`MeansOfFinance` snapshot models from these outputs. Populated the
+Tikamgarh fixture's cost/finance components (₹30.00 L harvester cost =
+₹22.50 L SBI term loan + ₹7.50 L promoter contribution -- the same
+figures already used throughout the golden case, now also structured as
+line items) and regenerated it via `scripts/build_tikamgarh_fixture.py`.
+
+### Gap 2: sector_feasibility.py and the debt-service threshold, wired in
+
+`sector_feasibility.assess_sector_feasibility("harvester", ...)` and
+`cam_financial_engine.debt_service_threshold_breakeven()` were both
+implemented and unit-tested but never called from `cam_engine_bridge.
+run_harvester_engine()`. Wired both in:
+
+- `feasible_acres_per_year`: computed from `acres_per_day x operating_
+  days_per_season x seasons_per_year` (10 x 30 x 2 = 600 for the golden
+  case). When this differs materially from the DPR's stated `acres_per_
+  year` (1,200), emits a calculated Finding with a real `dpr_stated_value`/
+  `recomputed_display_value` pair ("1200 acres/year" / "600 acres/year").
+  Deliberately given `category="assumption"` -- the same category the
+  fixture's narrative sector-feasibility finding uses -- so `finding_
+  consolidation.consolidate()` merges the two into one finding instead of
+  showing two near-identical entries (calculated wins on provenance rank,
+  so the merged finding carries the precise computed figure, not the
+  narrative's vaguer "300-600 acres" range).
+- `breakeven_debt_service_threshold`: computed with the same price/
+  variable-cost/depreciation/interest inputs already used for the other
+  two break-even types, plus the already-computed tax rate and Year-1
+  principal/interest due. For the golden case this computes to **563
+  acres/year** -- not the design reference's own 910-acre figure. This is
+  reported as-is: the design reference's 910 is not reproducible from this
+  engine's formulas (likely a different convention or a rounding path in
+  the original mockup), and Section 19.3 forbids forcing a computed result
+  to match a number that doesn't derive from the stated inputs. Page 4 now
+  shows "Break-even threshold (DSCR = 1.0, standard formula): 563
+  acres/year" instead of omitting it.
+- Page 3's corrections table now shows the acreage row with real figures
+  (previously had no real value pair to show); Page 1's "Funding plan"
+  check now reads "No issues found" (previously "Not yet checked", since
+  `means_of_finance.funding_gap` was never populated); Page 1's loan/
+  promoter/subsidy stat cards are fully populated instead of "Requires
+  verification".
+
+### End-to-end run: live pipeline, flag on
+
+Ran `scripts/build_tikamgarh_fixture.py` (the real `orchestrator.analyze()`
+against a FakeLLM returning the golden figures, `cam_engine_enabled=True`
+-- same "labeled simulation" caveat as before: no real Tikamgarh DPR file
+exists). Rendered all six pages to PDF and PNG at
+`docs/review/tikamgarh/` (`tikamgarh_cam_report.pdf` plus `page_01.png`
+through `page_09.png` -- six logical pages span 9 physical pages: Page 1 =
+physical 1-2, Page 2 = physical 3-4, Page 3 = physical 5, Page 4 =
+physical 6, Page 5 = physical 7-8, Page 6 = physical 9).
+
+**Missing-data marker count per page, before vs. after** (counting the
+template's own explicit missing-state phrases -- "Requires verification",
+"Not yet checked", "None identified", "Not assessed by this analysis",
+"...not yet available", etc. -- in the rendered HTML; "before" is the
+fixture as committed at `8d7e564`, before this round):
+
+| Page | Before | After |
+|---|---|---|
+| 1 (Summary) | 6 | 3 |
+| 2 (Fix before you apply) | 0 | 1 |
+| 3 (Project, cost and corrections) | 4 | 1 |
+| 4 (Repayment) | 0 | 0 |
+| 5 (Security and obligations) | 4 | 2 |
+| 6 (Benefits and next steps) | 3 | 2 |
+
+Page 2's count went from 0 to 1, which looks like a regression but isn't:
+the acreage finding was previously a lower-confidence narrative "should
+fix" item; now that it's backed by a real calculation it's correctly
+reclassified as "must fix," leaving the "should fix" group empty, which
+renders an explicit (and correct) "No should-fix issues were found" note
+-- one more honest empty-state message, not missing data.
+
+**Nine §18 golden values, from the live pipeline (not the standalone
+engine)** -- all pass:
+
+| Value | Expected | Got | Result |
+|---|---|---|---|
+| DSCR, standard formula | 1.97x | 1.97x | PASS |
+| DSCR, DPR's own convention | 1.58x | 1.58x | PASS |
+| Year-1 total debt service | ₹5.24 L | ₹5.24 L | PASS |
+| Fuel cost recomputed | ₹9.12 L | ₹9.12 L | PASS |
+| Crew wage recomputed | ₹3.30 L | ₹3.3 L | PASS |
+| Break-even (accounting) | 726 acres | 726 | PASS |
+| Means-of-finance split | 75/25 | 22.50 L / 7.50 L (75%/25%) | PASS |
+| Fund-flow gap | ₹40.29 L | ₹40.29 L (in finding explanation) | PASS |
+| Consolidated findings count | <=13 | 6 | PASS |
+
+**13 Section-13 verification checks**: `verify_snapshot()` on the
+regenerated fixture reports `is_publishable=True`, `issues=[]` -- all 13
+checks pass, same clean result as before this round (the new fields don't
+introduce any new verification failure mode).
+
+### Tests run
+
+```
+python3 -m pytest tests/test_dpr_report_store.py -v  (real Postgres)  -> 2 passed
+python3 -m pytest tests/test_dpr_cam_engine_bridge.py -q               -> 16 passed
+python3 -m pytest tests/ -q                                            -> all pass
+                                                                           (except the
+                                                                           pre-existing,
+                                                                           unrelated
+                                                                           log-safety
+                                                                           failure noted
+                                                                           above, confirmed
+                                                                           independent of
+                                                                           every change in
+                                                                           this round)
+ruff check / ruff format --check                                       -> clean
+```
+
+### Remaining work
+
+- Page 3's corrections table and Page 4's break-even bars still don't
+  show a "realistic harvest-window range" (the design's 300-600 acres) --
+  that range is a judgment call baked into the design reference, not a
+  deterministic plugin output; `feasible_acres_per_year` (600, the
+  theoretical maximum) is shown instead, which is the honest reproducible
+  figure.
+- `Settings.cam_brand_color`/`cam_accent_color` still unwired to an API
+  call site -- milestone 5 work.
+- Detailed CAM annexures (Section 12, milestone 7) -- not started.
+- Milestones 5-7 otherwise unchanged from the prior status.
