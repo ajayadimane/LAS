@@ -76,6 +76,22 @@ class ScenarioOutput(BaseModel):
     dscr: CalculationTrace
 
 
+class BreakEvenScenarioOutput(BaseModel):
+    """Break-even figures computed under one running-cost-per-acre
+    assumption -- "dpr_as_written" uses the DPR's own stated running cost
+    (e.g. 750/acre); "corrected_costs" uses the corrected figure from the
+    same document's own detailed breakdown (e.g. 900/acre). Never mixes
+    one scenario's cost assumption into another's trace (Section 9/19.7)."""
+
+    scenario_id: str
+    label: str
+    is_hypothetical: bool
+    variable_cost_per_acre: str
+    breakeven_accounting: CalculationTrace
+    breakeven_operating_cashflow: CalculationTrace
+    breakeven_debt_service_threshold: CalculationTrace | None = None
+
+
 class CostLineOutput(BaseModel):
     label: str
     amount: str  # Decimal as str, lakh
@@ -93,6 +109,14 @@ class CamEngineOutputs(BaseModel):
     breakeven_accounting: CalculationTrace | None = None
     breakeven_operating_cashflow: CalculationTrace | None = None
     breakeven_debt_service_threshold: CalculationTrace | None = None
+    # Per-scenario break-even (milestone 4c): keyed by scenario_id, same
+    # ids as `scenarios` below -- "dpr_as_written" (the DPR's own stated
+    # running cost) and "corrected_costs" (the corrected running cost).
+    # The singular fields above mirror "corrected_costs" for backward
+    # compatibility with Page 1/3's existing use of them.
+    breakeven_by_scenario: dict[str, BreakEvenScenarioOutput] = Field(
+        default_factory=dict
+    )
     feasible_acres_per_year: CalculationTrace | None = None
     fund_flow_gap: CalculationTrace | None = None
     tax_rate: CalculationTrace | None = None
@@ -264,6 +288,50 @@ def _cost_and_finance_fields(fin: ProjectFinancials, outputs: CamEngineOutputs) 
     tenor_years = _extracted(fin.loan_tenor_years)
     if tenor_years is not None:
         outputs.proposed_tenure_months = int(tenor_years * 12)
+
+
+def _breakeven_scenario(
+    *,
+    scenario_id: str,
+    label: str,
+    is_hypothetical: bool,
+    price: Decimal,
+    variable_cost: Decimal,
+    depreciation_rupees: Decimal,
+    interest_on_loan_rupees: Decimal,
+    tax_rate: Decimal | None,
+    principal_due_rupees: Decimal,
+    interest_due_rupees: Decimal,
+) -> BreakEvenScenarioOutput:
+    fixed_cost_rupees = depreciation_rupees + interest_on_loan_rupees
+    inputs = BreakEvenInputs(
+        price_per_unit=price,
+        variable_cost_per_unit=variable_cost,
+        fixed_cost_total=fixed_cost_rupees,
+        depreciation_component=depreciation_rupees,
+    )
+    debt_service_threshold = None
+    if tax_rate is not None:
+        debt_service_threshold = debt_service_threshold_breakeven(
+            price_per_unit=price,
+            variable_cost_per_unit=variable_cost,
+            fixed_cost_excluding_depreciation_and_interest=Decimal(0),
+            depreciation=depreciation_rupees,
+            interest_on_term_loan=interest_on_loan_rupees,
+            tax_rate=tax_rate,
+            principal_due=principal_due_rupees,
+            interest_due=interest_due_rupees,
+            definition=CadsDefinition.PAT_DEP_INTEREST,
+        )
+    return BreakEvenScenarioOutput(
+        scenario_id=scenario_id,
+        label=label,
+        is_hypothetical=is_hypothetical,
+        variable_cost_per_acre=str(variable_cost),
+        breakeven_accounting=accounting_breakeven(inputs),
+        breakeven_operating_cashflow=operating_cashflow_breakeven(inputs),
+        breakeven_debt_service_threshold=debt_service_threshold,
+    )
 
 
 def _fuel_finding(fin: ProjectFinancials) -> Finding | None:
@@ -440,28 +508,47 @@ def run_harvester_engine(
         and (variable_corrected := _extracted(h.running_cost_per_acre_corrected))
         is not None
     ):
-        fixed_cost_rupees = (depreciation + interest_on_loan) * Decimal(100_000)
         depreciation_rupees = depreciation * Decimal(100_000)
-        inputs = BreakEvenInputs(
-            price_per_unit=price,
-            variable_cost_per_unit=variable_corrected,
-            fixed_cost_total=fixed_cost_rupees,
-            depreciation_component=depreciation_rupees,
-        )
-        outputs.breakeven_accounting = accounting_breakeven(inputs)
-        outputs.breakeven_operating_cashflow = operating_cashflow_breakeven(inputs)
+        interest_on_loan_rupees = interest_on_loan * Decimal(100_000)
+        principal_due_rupees = year1_amort.principal_due * Decimal(100_000)
+        interest_due_rupees = year1_amort.interest_due * Decimal(100_000)
+        tax_rate_value = outputs.tax_rate.computed_value if outputs.tax_rate else None
 
-        if outputs.tax_rate and outputs.tax_rate.computed_value is not None:
-            outputs.breakeven_debt_service_threshold = debt_service_threshold_breakeven(
-                price_per_unit=price,
-                variable_cost_per_unit=variable_corrected,
-                fixed_cost_excluding_depreciation_and_interest=Decimal(0),
-                depreciation=depreciation_rupees,
-                interest_on_term_loan=interest_on_loan * Decimal(100_000),
-                tax_rate=outputs.tax_rate.computed_value,
-                principal_due=year1_amort.principal_due * Decimal(100_000),
-                interest_due=year1_amort.interest_due * Decimal(100_000),
-                definition=CadsDefinition.PAT_DEP_INTEREST,
+        corrected_scenario = _breakeven_scenario(
+            scenario_id="corrected_costs",
+            label="If flagged fuel and crew corrections are confirmed",
+            is_hypothetical=True,
+            price=price,
+            variable_cost=variable_corrected,
+            depreciation_rupees=depreciation_rupees,
+            interest_on_loan_rupees=interest_on_loan_rupees,
+            tax_rate=tax_rate_value,
+            principal_due_rupees=principal_due_rupees,
+            interest_due_rupees=interest_due_rupees,
+        )
+        outputs.breakeven_by_scenario["corrected_costs"] = corrected_scenario
+        # Backward-compatible singular fields (Page 1/3's existing use)
+        # mirror the corrected-costs scenario, same as before this change.
+        outputs.breakeven_accounting = corrected_scenario.breakeven_accounting
+        outputs.breakeven_operating_cashflow = (
+            corrected_scenario.breakeven_operating_cashflow
+        )
+        outputs.breakeven_debt_service_threshold = (
+            corrected_scenario.breakeven_debt_service_threshold
+        )
+
+        if (variable_stated := _extracted(h.running_cost_per_acre_stated)) is not None:
+            outputs.breakeven_by_scenario["dpr_as_written"] = _breakeven_scenario(
+                scenario_id="dpr_as_written",
+                label="Using your DPR's costs",
+                is_hypothetical=False,
+                price=price,
+                variable_cost=variable_stated,
+                depreciation_rupees=depreciation_rupees,
+                interest_on_loan_rupees=interest_on_loan_rupees,
+                tax_rate=tax_rate_value,
+                principal_due_rupees=principal_due_rupees,
+                interest_due_rupees=interest_due_rupees,
             )
 
     if h and (acres_stated := _extracted(h.acres_per_year)) is not None:

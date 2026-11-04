@@ -214,6 +214,13 @@ class ScenarioAnalysis(BaseModel):
     is_hypothetical: bool
     description: str
     dscr_by_year: dict[int, CalculationTrace] = Field(default_factory=dict)
+    # Break-even under this scenario's own cost assumption (Section 9/19.7
+    # -- never mixes one scenario's costs into another's trace). None when
+    # the engine couldn't compute break-even for this scenario (e.g. a
+    # non-harvester sector, or a missing running-cost figure).
+    breakeven_accounting: CalculationTrace | None = None
+    breakeven_operating_cashflow: CalculationTrace | None = None
+    breakeven_debt_service_threshold: CalculationTrace | None = None
 
 
 # --------------------------------------------------------------------------

@@ -1,11 +1,13 @@
 {#- Page 4: Repayment. Ported from cam-design-reference/Page 3 —
    Repayment-html.zip. The original design's five-point acreage bar chart
-   needed a realistic-harvest-window range and a DSCR=1.0 break-even
-   acreage that this pipeline does not compute yet (see
-   build_page4_context's docstring) -- rendered instead as a plain
-   comparison of the two scenarios the engine actually produces, never a
-   fabricated chart. The "AIF subvention" row in the original design has
-   no corresponding data in CAMSnapshot and is dropped, not invented. #}
+   needed a realistic-harvest-window range that this pipeline does not
+   compute (see build_page4_context's docstring) -- rendered instead as a
+   table of the two real cost scenarios the engine actually produces, each
+   with its own DSCR and three break-even figures under that scenario's
+   own cost assumption (milestone 4c), never a fabricated chart. Each
+   trace's full formula/inputs will be reproduced in Annexure B once that
+   exists (milestone 7). The "AIF subvention" row in the original design
+   has no corresponding data in CAMSnapshot and is dropped, not invented. #}
 <section class="cam-page">
   <header class="cam-header">
     <div class="cam-header__brand">
@@ -27,24 +29,35 @@
       <p class="cam-lede">{{ ctx4.lede }}</p>
 
       {% if ctx4.scenarios %}
-      <div style="margin-top: 6px;">
-        {% for s in ctx4.scenarios %}
-        <div class="cam-scenario-row">
-          <div>
-            <div class="cam-scenario-row__label">{{ s.label }}</div>
-            {% if s.is_hypothetical %}
-            <div class="cam-scenario-row__tag">Illustrative scenario, not a DPR fact</div>
-            {% endif %}
-          </div>
-          <div class="cam-scenario-row__value">{{ s.dscr or "Not yet computable" }}</div>
-        </div>
-        {% endfor %}
-      </div>
+      <table class="cam-table">
+        <thead>
+          <tr>
+            <th>Scenario</th>
+            <th style="text-align:right;">DSCR (Year 1)</th>
+            <th style="text-align:right;">Break-even (accounting)</th>
+            <th style="text-align:right;">Break-even (cash)</th>
+            <th style="text-align:right;">Break-even (DSCR = 1.0)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for s in ctx4.scenarios %}
+          <tr>
+            <td>
+              <strong>{{ s.label }}</strong>
+              {% if s.is_hypothetical %}
+              <div class="cam-scenario-row__tag">Illustrative scenario, not a DPR fact</div>
+              {% endif %}
+            </td>
+            <td style="text-align:right;">{{ s.dscr or "Not yet computable" }}</td>
+            <td style="text-align:right;">{{ s.breakeven_accounting or "Not yet computable" }}</td>
+            <td style="text-align:right;">{{ s.breakeven_operating_cashflow or "Not yet computable" }}</td>
+            <td style="text-align:right;">{{ s.breakeven_debt_service_threshold or "Not yet computable" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
       {% else %}
       <p class="cam-empty-note">No repayment scenarios are available for this project yet.</p>
-      {% endif %}
-      {% if ctx4.breakeven_threshold %}
-      <p class="cam-missing-note">Break-even threshold (DSCR = 1.0, standard formula): {{ ctx4.breakeven_threshold }}.</p>
       {% endif %}
     </section>
 

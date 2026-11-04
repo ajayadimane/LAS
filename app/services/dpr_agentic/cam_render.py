@@ -462,14 +462,35 @@ def build_page4_context(snapshot: CAMSnapshot) -> dict:
             }
         )
 
+    # Page 4's own labels for the two cost scenarios -- distinct from
+    # ScenarioAnalysis.label (used elsewhere, e.g. the narrative "As
+    # stated in the DPR at 1200.0 acres" description), chosen so a
+    # borrower reads "whose costs" rather than "which acreage".
+    _scenario_display_label = {
+        "dpr_as_written": "Using your DPR's costs",
+        "corrected_costs": "If flagged fuel and crew corrections are confirmed",
+    }
+
+    def _trace_value(trace, unit: str) -> str | None:
+        if trace and trace.status == "COMPUTED" and trace.computed_value is not None:
+            return f"{trace.computed_value}{unit}"
+        return None
+
     scenarios = [
         {
-            "label": s.label,
+            "label": _scenario_display_label.get(s.scenario_id, s.label),
             "is_hypothetical": s.is_hypothetical,
             "dscr": (
                 f"{s.dscr_by_year[1].computed_value}×"
                 if 1 in s.dscr_by_year and s.dscr_by_year[1].computed_value is not None
                 else None
+            ),
+            "breakeven_accounting": _trace_value(s.breakeven_accounting, " acres/year"),
+            "breakeven_operating_cashflow": _trace_value(
+                s.breakeven_operating_cashflow, " acres/year"
+            ),
+            "breakeven_debt_service_threshold": _trace_value(
+                s.breakeven_debt_service_threshold, " acres/year"
             ),
         }
         for s in snapshot.scenario_analysis
@@ -484,23 +505,12 @@ def build_page4_context(snapshot: CAMSnapshot) -> dict:
     else:
         lede = "Repayment coverage could not be computed from this DPR's figures."
 
-    breakeven_threshold = None
-    if (
-        ratios.breakeven_debt_service_threshold
-        and ratios.breakeven_debt_service_threshold.status == "COMPUTED"
-        and ratios.breakeven_debt_service_threshold.computed_value is not None
-    ):
-        breakeven_threshold = (
-            f"{ratios.breakeven_debt_service_threshold.computed_value} acres/year"
-        )
-
     return {
         "report_reference": snapshot.report_id,
         "borrower_name": snapshot.borrower_profile.borrower_name,
         "lede": lede,
         "dscr_cards": dscr_cards,
         "scenarios": scenarios,
-        "breakeven_threshold": breakeven_threshold,
         "year1": (
             {
                 "principal": format_money(year1.principal_due),

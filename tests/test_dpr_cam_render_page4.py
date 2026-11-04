@@ -1,11 +1,12 @@
-"""Milestone 4 (part 4): Page 4 (Repayment) template.
+"""Milestone 4 (parts 4 and 4c): Page 4 (Repayment) template.
 
 The original design's five-point acreage bar chart needs a realistic
-harvest-window range and a DSCR=1.0 break-even acreage this pipeline does
-not compute yet (see build_page4_context's docstring and PROGRESS.md) --
-these tests confirm the page renders only the two real scenarios the
-engine actually produces, never a fabricated chart or an invented "AIF
-subvention" repayment row.
+harvest-window range this pipeline does not compute (see
+build_page4_context's docstring and PROGRESS.md) -- these tests confirm
+the page renders a table of the two real scenarios the engine actually
+produces, each with its own DSCR and three break-even figures under that
+scenario's own cost assumption, never a fabricated chart or an invented
+"AIF subvention" repayment row.
 """
 
 import json
@@ -49,28 +50,32 @@ def test_dscr_cards_show_both_real_conventions():
     assert labels["Standard bank formula (Year 1)"] == "1.97×"
 
 
-def test_breakeven_threshold_shows_the_engines_own_computed_value():
-    """Milestone 4b: wired from cam_engine_bridge.py's
-    debt_service_threshold_breakeven(), now that it's called. The value is
-    whatever the engine actually computes for the golden case -- not
-    forced to match the design reference's own un-reproducible 910-acre
-    figure."""
-    ctx4 = build_page4_context(_golden_snapshot())
-    assert ctx4["breakeven_threshold"] == "563 acres/year"
-    html = render_cam_report_html(_golden_snapshot())
-    assert "563 acres/year" in html
-
-
-def test_scenarios_include_both_real_scenarios_and_flag_the_hypothetical_one():
+def test_scenarios_show_breakeven_per_scenario_under_its_own_cost_assumption():
+    """Milestone 4c: each scenario's break-even uses that scenario's own
+    running-cost-per-acre -- "Using your DPR's costs" (750/acre, the DPR's
+    own stated figure) vs "If flagged fuel and crew corrections are
+    confirmed" (900/acre, the corrected figure) -- never mixed. The
+    accounting break-even values (622 / 726) match the design reference's
+    own "622 -> 726" correction exactly; the debt-service threshold values
+    (483 / 563) do not match the design reference's own un-reproducible
+    910-acre figure and are reported as computed, not forced to match."""
     ctx4 = build_page4_context(_golden_snapshot())
     by_label = {s["label"]: s for s in ctx4["scenarios"]}
-    as_written = next(s for s in ctx4["scenarios"] if "stated in the DPR" in s["label"])
-    corrected = next(s for s in ctx4["scenarios"] if "Corrected" in s["label"])
+    assert len(by_label) == 2
+    as_written = by_label["Using your DPR's costs"]
+    corrected = by_label["If flagged fuel and crew corrections are confirmed"]
+
     assert as_written["is_hypothetical"] is False
     assert as_written["dscr"] == "1.97×"
+    assert as_written["breakeven_accounting"] == "622 acres/year"
+    assert as_written["breakeven_operating_cashflow"] == "193 acres/year"
+    assert as_written["breakeven_debt_service_threshold"] == "483 acres/year"
+
     assert corrected["is_hypothetical"] is True
     assert corrected["dscr"] == "1.49×"
-    assert len(by_label) == 2
+    assert corrected["breakeven_accounting"] == "726 acres/year"
+    assert corrected["breakeven_operating_cashflow"] == "226 acres/year"
+    assert corrected["breakeven_debt_service_threshold"] == "563 acres/year"
 
 
 def test_year1_repayment_has_no_fabricated_subvention_row():
@@ -86,7 +91,6 @@ def test_empty_snapshot_shows_explicit_empty_states_not_fabricated_data():
     assert ctx4["dscr_cards"] == []
     assert ctx4["scenarios"] == []
     assert ctx4["year1"] is None
-    assert ctx4["breakeven_threshold"] is None
     html = render_cam_report_html(_empty_snapshot())
     assert "No repayment scenarios are available" in html
     assert "A Year-1 repayment schedule is not yet available" in html

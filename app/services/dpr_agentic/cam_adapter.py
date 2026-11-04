@@ -177,6 +177,17 @@ def _engine_derived_fields(
             is_hypothetical=s.is_hypothetical,
             description=f"Source class: {s.source_class}.",
             dscr_by_year={1: s.dscr},
+            **(
+                {
+                    "breakeven_accounting": be.breakeven_accounting,
+                    "breakeven_operating_cashflow": be.breakeven_operating_cashflow,
+                    "breakeven_debt_service_threshold": (
+                        be.breakeven_debt_service_threshold
+                    ),
+                }
+                if (be := engine.breakeven_by_scenario.get(s.scenario_id))
+                else {}
+            ),
         )
         for s in engine.scenarios
     ]

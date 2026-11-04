@@ -255,6 +255,47 @@
           "reason_not_computable": null,
           "calculation_version": "1.0.0"
         }
+      },
+      "breakeven_accounting": {
+        "formula": "Fixed cost / (Price per unit - Variable cost per unit)",
+        "inputs": {
+          "price_per_unit": "1800.0",
+          "variable_cost_per_unit": "750.0",
+          "fixed_cost": "653000.00"
+        },
+        "computed_value": "622",
+        "status": "COMPUTED",
+        "reason_not_computable": null,
+        "calculation_version": "1.0.0"
+      },
+      "breakeven_operating_cashflow": {
+        "formula": "(Fixed cost - Depreciation) / (Price per unit - Variable cost per unit)",
+        "inputs": {
+          "price_per_unit": "1800.0",
+          "variable_cost_per_unit": "750.0",
+          "fixed_cost": "203000.00"
+        },
+        "computed_value": "193",
+        "status": "COMPUTED",
+        "reason_not_computable": null,
+        "calculation_version": "1.0.0"
+      },
+      "breakeven_debt_service_threshold": {
+        "formula": "units solving CADS(units) = Principal due + Interest due",
+        "inputs": {
+          "price_per_unit": "1800.0",
+          "variable_cost_per_unit": "750.0",
+          "fixed_cost_excluding_depreciation_and_interest": "0",
+          "depreciation": "450000.0",
+          "interest_on_term_loan": "203000.00",
+          "tax_rate": "0.1171",
+          "debt_service": "524000.00",
+          "definition": "pat_dep_interest"
+        },
+        "computed_value": "483",
+        "status": "COMPUTED",
+        "reason_not_computable": null,
+        "calculation_version": "1.0.0"
       }
     },
     {
@@ -278,6 +319,47 @@
           "reason_not_computable": null,
           "calculation_version": "1.0.0"
         }
+      },
+      "breakeven_accounting": {
+        "formula": "Fixed cost / (Price per unit - Variable cost per unit)",
+        "inputs": {
+          "price_per_unit": "1800.0",
+          "variable_cost_per_unit": "900.0",
+          "fixed_cost": "653000.00"
+        },
+        "computed_value": "726",
+        "status": "COMPUTED",
+        "reason_not_computable": null,
+        "calculation_version": "1.0.0"
+      },
+      "breakeven_operating_cashflow": {
+        "formula": "(Fixed cost - Depreciation) / (Price per unit - Variable cost per unit)",
+        "inputs": {
+          "price_per_unit": "1800.0",
+          "variable_cost_per_unit": "900.0",
+          "fixed_cost": "203000.00"
+        },
+        "computed_value": "226",
+        "status": "COMPUTED",
+        "reason_not_computable": null,
+        "calculation_version": "1.0.0"
+      },
+      "breakeven_debt_service_threshold": {
+        "formula": "units solving CADS(units) = Principal due + Interest due",
+        "inputs": {
+          "price_per_unit": "1800.0",
+          "variable_cost_per_unit": "900.0",
+          "fixed_cost_excluding_depreciation_and_interest": "0",
+          "depreciation": "450000.0",
+          "interest_on_term_loan": "203000.00",
+          "tax_rate": "0.1171",
+          "debt_service": "524000.00",
+          "definition": "pat_dep_interest"
+        },
+        "computed_value": "563",
+        "status": "COMPUTED",
+        "reason_not_computable": null,
+        "calculation_version": "1.0.0"
       }
     }
   ],
@@ -444,5 +526,5 @@
     "Findings above are deduplicated by category, affected metric and source page; a finding's merged_duplicate_count shows how many agent outputs raised it. Priority for findings without a code-verified calculation behind them is a severity-based fallback, not a measured financial-impact percentage (see PROGRESS.md milestone 2)."
   ],
   "evidence_registry": [],
-  "generated_at": "2026-11-04T13:20:02.765416Z"
+  "generated_at": "2026-11-04T13:44:49.325512Z"
 }

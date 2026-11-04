@@ -1231,13 +1231,193 @@ ruff check / ruff format --check                                       -> clean
 
 ### Remaining work
 
-- Page 3's corrections table and Page 4's break-even bars still don't
-  show a "realistic harvest-window range" (the design's 300-600 acres) --
-  that range is a judgment call baked into the design reference, not a
-  deterministic plugin output; `feasible_acres_per_year` (600, the
-  theoretical maximum) is shown instead, which is the honest reproducible
-  figure.
+- Page 3's corrections table still doesn't show a "realistic
+  harvest-window range" (the design's 300-600 acres) -- that range is a
+  judgment call baked into the design reference, not a deterministic
+  plugin output; `feasible_acres_per_year` (600, the theoretical maximum)
+  is shown instead, which is the honest reproducible figure.
 - `Settings.cam_brand_color`/`cam_accent_color` still unwired to an API
   call site -- milestone 5 work.
 - Detailed CAM annexures (Section 12, milestone 7) -- not started.
 - Milestones 5-7 otherwise unchanged from the prior status.
+
+## Milestone 4c: per-scenario break-even, the 13-issue audit, and ReportAlreadyStoredError's blast radius (2026-11-04)
+
+Three follow-ups requested before starting milestone 5.
+
+### Per-scenario break-even (Page 4)
+
+Previously all three break-even types (accounting, operating cash-flow,
+debt-service threshold) were computed once, always using
+`running_cost_per_acre_corrected` (900/acre) -- `running_cost_per_acre_
+stated` (750/acre, the DPR's own figure) was extracted into
+`HarvesterAssumptions` back in milestone 2b but never read anywhere.
+Added `cam_engine_bridge._breakeven_scenario()` and a new
+`BreakEvenScenarioOutput` model; `run_harvester_engine()` now computes
+all three break-even types **twice**, once per cost assumption, keyed by
+the same `scenario_id`s as the DSCR scenarios (`dpr_as_written` /
+`corrected_costs`) so a reader can line up a scenario's DSCR with its own
+break-even. `cam_snapshot.ScenarioAnalysis` gained the three break-even
+trace fields; `cam_adapter.py` merges `CamEngineOutputs.breakeven_by_
+scenario` into each `ScenarioAnalysis` by matching `scenario_id`. The
+singular `FinancialRatios.breakeven_*` fields are kept, mirroring the
+`corrected_costs` scenario, for Page 1/3's existing use of them --
+nothing there needed to change.
+
+Page 4 now shows a table ("Using your DPR's costs" / "If flagged fuel
+and crew corrections are confirmed", the latter labeled "Illustrative
+scenario, not a DPR fact") with DSCR and all three break-even figures per
+scenario, instead of the single-scenario line from milestone 4b. Full
+`CalculationTrace`s (formula + every input) already exist on
+`ScenarioAnalysis` for each of these values; Annexure B (Section 12,
+milestone 7, not started) will read directly from there once built --
+nothing further needs to change on this page when it is.
+
+**Posting both threshold values and their input sets here, as asked:**
+
+| Scenario | Variable cost/acre | Break-even (accounting) | Break-even (cash) | Break-even (DSCR=1.0) |
+|---|---|---|---|---|
+| Using your DPR's costs (`dpr_as_written`) | ₹750 | **622 acres/year** | 193 acres/year | **483 acres/year** |
+| If flagged corrections are confirmed (`corrected_costs`) | ₹900 | **726 acres/year** | 226 acres/year | **563 acres/year** |
+
+Both accounting break-even values are a strong cross-check: 622 -> 726
+exactly matches the design reference's own "Break-even acres: 622 ->
+726" correction (Page 2/3 of the design). Neither debt-service-threshold
+value (483 / 563) matches the design reference's own 910-acre figure --
+reported as computed, not forced to match, since 910 is not reproducible
+from this engine's formulas with any input combination tried (see
+milestone 4b's note on the same point).
+
+Shared inputs for every cell above (Year 1): price/unit ₹1,800/acre,
+depreciation ₹4.50 L, interest on term loan ₹2.03 L, principal due ₹3.21
+L, interest due ₹2.03 L, tax rate 11.71% (derived from tax paid ₹0.50 L /
+PBT ₹4.27 L).
+
+Tests: `tests/test_dpr_cam_render_page4.py::test_scenarios_show_
+breakeven_per_scenario_under_its_own_cost_assumption` asserts all six
+values above against the live pipeline's fixture output.
+
+### The 13-issue audit
+
+Reconstructed the 13 distinct issues embedded in the design reference
+(`cam-design-reference/`): Page 2's findings list has 12 (6 must-fix, 4
+should-fix, 2 good-to-fix); Page 3's corrections table adds one more not
+listed on Page 2 at all (running cost per acre, 750 -> 900) for 13 total.
+Mapped each to where it lands in the current pipeline's output on the
+Tikamgarh golden fixture:
+
+| # | Issue (design reference) | Final destination | Dedup key |
+|---|---|---|---|
+| 1 | Acres per year are not achievable | **F0005** (merged, x6) | `assumption\|claimed annual acreage exceeds plausible machine throughput\|4` |
+| 2 | Fuel cost is miscalculated | **F0002** | `financial_calculation\|fuel cost does not match acres x litres/acre x price\|8` |
+| 3 | Crew wages are under-budgeted | **F0003** | `financial_calculation\|crew wages understated versus the staffing plan\|8` |
+| 4 | Full capacity assumed from Year 1 | **Not modeled** -- no agent or calculated check in this pipeline produces a ramp-up/utilization-curve finding | n/a |
+| 5 | Dealer quotation and pages 24-26 missing | **F0006** | `missing_document\|dealer quotation missing for the harvester\|3` |
+| 6 | One machine, no breakdown cover | **Not modeled** -- an equipment-redundancy risk observation; no agent in this fixture's simulated run produces it | n/a |
+| 7 | Break-even uses the wrong cost | **Computed, not a Finding** -- `ScenarioAnalysis.breakeven_accounting` carries the real 622/726 values (see above), but no code path turns a break-even *value* into a *Finding* the way fuel/crew do | n/a |
+| 8 | Booking relies on an app | **Not modeled** -- a marketing/channel-risk observation, no corresponding check | n/a |
+| 9 | Machine idle about 10 months | **Not modeled** -- a utilization/seasonality observation, no corresponding check | n/a |
+| 10 | Non-standard repayment formula (DSCR table) | **F0001** | `dscr\|dscr year 1: 1.97\|none` |
+| 11 | Fund flow does not balance | **F0004** | `financial_calculation\|fund flow sources do not match applications\|12` |
+| 12 | Off-season upkeep not costed | **Not modeled** -- a cost-completeness observation, no corresponding check | n/a |
+| 13 | Running cost per acre (750 -> 900) | **Computed, not a Finding** -- same situation as #7: it drives the per-scenario break-even numbers above but has no dedicated reconciliation Finding the way fuel/crew do | n/a |
+
+**Confirmed: no two distinct issues were merged.** The only merge in the
+fixture's output is F0005, combining 6 raw findings that are all
+restatements of the *same* issue (#1) -- 5 narrative duplicates
+(`CAPACITY_FINDING`, deliberately returned by the fixture's fake sector/
+risk/verifier/correction/report agents to exercise consolidation on a
+realistic case) plus the one calculated finding `cam_engine_bridge.py`
+now emits for the same acres-per-year mismatch. Checked each pair's
+explanation text against its sibling: both describe the identical fact
+(10 acres/day x 30 days x 2 seasons vs. the DPR's 1,200-acre plan), same
+category (`assumption`), same page (4) -- a correct merge, not a
+coincidental dedup-key collision between different issues. Every other
+surviving finding (F0001-F0004, F0006) has a dedup key that was only ever
+produced once in this run, so no merge opportunity existed for it either
+way.
+
+**Net honest accounting**: 6 of the 13 original issues are represented in
+the current pipeline's output (merged correctly where they're genuinely
+the same issue); 7 are absent because nothing in this pipeline --
+calculated check or the fixture's simulated narrative agents -- currently
+produces them. This is not a consolidation bug: the "≤13 findings"
+Section 18 acceptance criterion is an upper bound on count after
+consolidation (6 ≤ 13, satisfied), not a claim that every real-world
+issue a human reviewer would find is represented. Issues #7 and #13 are
+the most actionable gap to close next, since the underlying values are
+already computed (break-even, running cost per acre) -- they just need a
+`_calculated_finding()` call turning a mismatch into a Finding, the same
+pattern fuel/crew/fund-flow/acres already follow. Issues #4, #6, #8, #9,
+#12 need a real sector/risk agent (or a richer fake one) producing
+narrative findings this simulation doesn't attempt to replicate.
+
+### ReportAlreadyStoredError: confirmed terminal, not retried; test added
+
+Traced the exact mechanics rather than assuming: `scripts/dpr_worker.py`'s
+`process_one()` catches any exception from `run_claimed_analysis()`
+generically, logs it, and moves on -- it never retries or resubmits.
+`run_claimed_analysis()`'s own except-block calls `jobs.finish(...,
+success=False, error_code=type(exc).__name__)` before re-raising, which
+sets the run's status to `FAILED`. `jobs.claim()`'s `WHERE` clause only
+ever claims a row with `status='QUEUED'` or `(status='RUNNING' AND
+lease_until < now())` -- `FAILED` matches neither, so a failed run can
+never be reclaimed by any future `poll_once()` cycle. This holds
+regardless of which exception caused the failure; `ReportAlreadyStoredError`
+is handled exactly the same as any other.
+
+Traced the realistic scenario that would actually raise it: worker A's
+lease expires while it is still (slowly, not dead) processing; worker B
+reclaims the same run_id and reprocesses. Worker A finishes first and
+calls `store_report()` successfully, then calls `finish()` with its now-
+stale lease token -- a no-op, since `finish()`'s own `WHERE` clause
+requires the *current* `lease_token`, which worker B's reclaim already
+overwrote. The run stays `RUNNING` under worker B's claim. Worker B
+eventually finishes its redundant run and calls `store_report()` too --
+raises `ReportAlreadyStoredError` -- and *its* `finish(success=False)`
+call succeeds (its token still matches), flipping the run to `FAILED`.
+Net effect: the run ends `FAILED` even though a valid report was
+successfully stored underneath it by worker A. This is a pre-existing,
+narrow rough edge in the lease-reclaim race (not introduced or fixed by
+this change, not asked to be fixed now) worth flagging: an operator
+reading job status alone would see `FAILED` for a run that actually has a
+good stored report. `get_report()` still returns the correct (first)
+report regardless.
+
+Added `tests/test_dpr_report_store.py::test_report_already_stored_leaves_
+the_run_terminal_and_unreclaimable`, which reproduces this exact sequence
+against a real Postgres (not mocked) using `claim(..., lease_seconds=0)`
+to force an immediate reclaim, and asserts: worker A's `finish()` call is
+a no-op (`False`), worker B's `store_report()` raises, worker B's
+`finish(success=False)` succeeds (`True`), the run can never be
+`claim()`-ed again, and the original (worker A's) report is exactly what
+`get_report()` returns.
+
+### Tests run
+
+```
+python3 -m pytest tests/test_dpr_report_store.py -v  (real Postgres)  -> 3 passed
+python3 -m pytest tests/test_dpr_cam_engine_bridge.py -q               -> 16 passed
+python3 -m pytest tests/test_dpr_cam_render_page4.py -q                -> 8 passed
+python3 -m pytest tests/ -q                                            -> all pass
+                                                                           (except the
+                                                                           same
+                                                                           pre-existing,
+                                                                           unrelated
+                                                                           log-safety
+                                                                           failure)
+ruff check / ruff format --check                                       -> clean
+```
+
+### Remaining work
+
+- Issues #7 (break-even uses the wrong cost) and #13 (running cost per
+  acre) have real computed values but no dedicated Finding yet -- the
+  natural next increment for the 13-issue gap, following the existing
+  `_calculated_finding()` pattern.
+- The `FAILED`-despite-a-valid-report lease-race edge case noted above is
+  unresolved (and very narrow -- requires a lease expiring under a worker
+  that is slow but not actually dead). Worth a follow-up if operators ever
+  see it in practice; not blocking milestone 5.
+- Replacing `ReportAlreadyStoredError`'s raise with append-only versioning
+  is milestone 5's first task (next).
