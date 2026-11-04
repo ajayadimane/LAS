@@ -424,6 +424,82 @@ def build_page3_context(snapshot: CAMSnapshot) -> dict:
     }
 
 
+def build_page4_context(snapshot: CAMSnapshot) -> dict:
+    """All display values for page4_repayment.html.jinja. The original
+    design's bar chart plots five specific acreage points (300/600/910/
+    1200-corrected/1200-as-written); three of those (the realistic
+    harvest-window range and the DSCR=1.0 break-even acreage) come from
+    sector-feasibility/debt-service-threshold calculations this pipeline
+    does not yet wire into the engine (PROGRESS.md milestone 4 gap), so
+    they are not shown -- only the two real scenarios actually computed
+    (`scenario_analysis`) are rendered, as a simple comparison, not a
+    fabricated five-point chart."""
+    ratios = snapshot.financial_ratios
+    year1 = snapshot.repayment_schedule[0] if snapshot.repayment_schedule else None
+
+    dscr_cards = []
+    if ratios.dscr_pat_dep_only and ratios.dscr_pat_dep_only.computed_value is not None:
+        dscr_cards.append(
+            {
+                "label": "Your DPR states (Year 1)",
+                "value": f"{ratios.dscr_pat_dep_only.computed_value}×",
+                "note": (
+                    "Profit + depreciation ÷ repayment. Leaves interest "
+                    "out of earnings."
+                ),
+            }
+        )
+    if ratios.average_dscr and ratios.average_dscr.computed_value is not None:
+        dscr_cards.append(
+            {
+                "label": "Standard bank formula (Year 1)",
+                "value": f"{ratios.average_dscr.computed_value}×",
+                "note": (
+                    "Adds interest back into earnings before comparing to repayment."
+                ),
+            }
+        )
+
+    scenarios = [
+        {
+            "label": s.label,
+            "is_hypothetical": s.is_hypothetical,
+            "dscr": (
+                f"{s.dscr_by_year[1].computed_value}×"
+                if 1 in s.dscr_by_year and s.dscr_by_year[1].computed_value is not None
+                else None
+            ),
+        }
+        for s in snapshot.scenario_analysis
+    ]
+
+    if ratios.average_dscr and ratios.average_dscr.computed_value is not None:
+        lede = (
+            f"On the figures in this DPR, Year-1 earnings cover repayment "
+            f"{ratios.average_dscr.computed_value}× (standard formula). "
+            f"See below for why your DPR's own figure differs."
+        )
+    else:
+        lede = "Repayment coverage could not be computed from this DPR's figures."
+
+    return {
+        "report_reference": snapshot.report_id,
+        "borrower_name": snapshot.borrower_profile.borrower_name,
+        "lede": lede,
+        "dscr_cards": dscr_cards,
+        "scenarios": scenarios,
+        "year1": (
+            {
+                "principal": format_money(year1.principal_due),
+                "interest": format_money(year1.interest_due),
+                "total": format_money(year1.total_debt_service),
+            }
+            if year1
+            else None
+        ),
+    }
+
+
 def render_cam_report_html(
     snapshot: CAMSnapshot,
     *,
@@ -439,6 +515,7 @@ def render_cam_report_html(
         ctx=build_page1_context(snapshot),
         ctx2=build_page2_context(snapshot),
         ctx3=build_page3_context(snapshot),
+        ctx4=build_page4_context(snapshot),
     )
 
 

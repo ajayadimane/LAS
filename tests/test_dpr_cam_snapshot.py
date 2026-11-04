@@ -200,6 +200,9 @@ def test_cam_engine_outputs_populate_financial_ratios_and_repayment_schedule():
         dscr_pat_dep_interest=CalculationTrace(
             formula="x", computed_value=Decimal("1.97"), status="COMPUTED"
         ),
+        dscr_pat_dep=CalculationTrace(
+            formula="y", computed_value=Decimal("1.58"), status="COMPUTED"
+        ),
         breakeven_accounting=CalculationTrace(
             formula="x", computed_value=Decimal("726"), status="COMPUTED"
         ),
@@ -225,6 +228,7 @@ def test_cam_engine_outputs_populate_financial_ratios_and_repayment_schedule():
         result, report_id="RPT-8", report_version=1, analysis_run_id="RUN-8"
     )
     assert snapshot.financial_ratios.average_dscr.computed_value == Decimal("1.97")
+    assert snapshot.financial_ratios.dscr_pat_dep_only.computed_value == Decimal("1.58")
     assert snapshot.financial_ratios.breakeven_accounting.computed_value == Decimal(
         "726"
     )

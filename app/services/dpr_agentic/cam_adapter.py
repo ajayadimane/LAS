@@ -80,6 +80,7 @@ def _engine_derived_fields(
     ratios = FinancialRatios(
         dscr_definition_used=DscrDefinition.PAT_DEP_INTEREST,
         average_dscr=engine.dscr_pat_dep_interest,
+        dscr_pat_dep_only=engine.dscr_pat_dep,
         breakeven_accounting=engine.breakeven_accounting,
         breakeven_operating_cashflow=engine.breakeven_operating_cashflow,
     )

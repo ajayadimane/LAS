@@ -105,6 +105,21 @@
       "reason_not_computable": null,
       "calculation_version": "1.0.0"
     },
+    "dscr_pat_dep_only": {
+      "formula": "(PAT + Depreciation) / (Principal + Interest due)",
+      "inputs": {
+        "net_profit": "3.77",
+        "depreciation": "4.5",
+        "interest_on_term_loan": "2.03",
+        "principal_due": "3.21",
+        "interest_due": "2.03",
+        "definition": "pat_dep"
+      },
+      "computed_value": "1.58",
+      "status": "COMPUTED",
+      "reason_not_computable": null,
+      "calculation_version": "1.0.0"
+    },
     "breakeven_accounting": {
       "formula": "Fixed cost / (Price per unit - Variable cost per unit)",
       "inputs": {
@@ -342,5 +357,5 @@
     "Findings above are deduplicated by category, affected metric and source page; a finding's merged_duplicate_count shows how many agent outputs raised it. Priority for findings without a code-verified calculation behind them is a severity-based fallback, not a measured financial-impact percentage (see PROGRESS.md milestone 2)."
   ],
   "evidence_registry": [],
-  "generated_at": "2026-11-04T12:09:15.017923Z"
+  "generated_at": "2026-11-04T12:22:47.876547Z"
 }

@@ -642,7 +642,7 @@ ruff check app/ tests/ scripts/                                   → clean
   from the simulated narrative agent output, not this check.
 - Dairy/polyhouse: still explicit stubs, by design.
 - The balance-sheet/cash-flow gap (milestone 2, disclosed above) remains.
-## Status: Milestone 4 (Templates and PDF) — started, Page 3 of 6 done
+## Status: Milestone 4 (Templates and PDF) — started, Page 4 of 6 done
 
 ### PDF engine decision
 
@@ -852,13 +852,62 @@ ruff check app/ tests/                                       → clean
 ruff format --check app/ tests/                               → clean
 ```
 
+### Page 4 (Repayment)
+
+Ported from `cam-design-reference/Page 3 — Repayment-html.zip`
+(`Repayment.dc.html`). The original design's bar chart plots five
+acreage-specific points -- a realistic harvest-window range (300-600
+acres) and a DSCR=1.0 break-even acreage (~910 acres) alongside the two
+1,200-acre scenarios. The first two come from `sector_feasibility.py`'s
+harvester check (implemented and tested, but, per the Page 3 note above,
+still not called from `cam_engine_bridge.py`) and from
+`debt_service_threshold_breakeven()` (implemented in
+`cam_financial_engine.py` but likewise never called from the bridge) --
+neither is real data yet, so instead of fabricating three bars, Page 4
+renders only the two scenarios the engine actually computes
+(`scenario_analysis`: "As stated in the DPR" vs "Corrected fuel and crew
+wage costs", both at 1,200 acres), each DSCR value next to the other, with
+the hypothetical one explicitly labeled "Illustrative scenario, not a DPR
+fact". The design's "With AIF subvention" repayment row has no
+corresponding field anywhere in CAMSnapshot and is dropped, not invented.
+
+- Surfaced a real value that existed in the engine but was dropped before
+  reaching the snapshot: `cam_engine_bridge.CamEngineOutputs.dscr_pat_dep`
+  (the DPR's own PAT+Depreciation-only convention, ~1.58x for the golden
+  case) was computed but never folded into `CAMSnapshot`. Added
+  `FinancialRatios.dscr_pat_dep_only` (additive) and wired it in
+  `cam_adapter._engine_derived_fields()` -- this is what lets Page 4 show
+  the real "Your DPR states (Year 1): 1.58x" vs "Standard bank formula
+  (Year 1): 1.97x" comparison instead of omitting it. Regenerated the
+  Tikamgarh fixture; confirmed `1.58` against the design reference.
+- `app/templates/cam/page4_repayment.html.jinja`, `build_page4_context()`
+  -- DSCR convention cards, the two-scenario comparison, and a Year-1
+  repayment table (principal/interest/total only -- no later-years row,
+  since the pipeline doesn't produce a multi-year schedule yet, a
+  pre-existing disclosed gap from milestone 2).
+- `base.css` -- `.cam-dscr-card`, `.cam-scenario-row*`.
+
+### Tests run
+
+```
+python3 -m pytest tests/test_dpr_cam_render_page4.py -q   → 8 passed
+python3 -m pytest tests/ -q                                 → 537 passed, 63 skipped
+ruff check app/ tests/                                       → clean
+ruff format --check app/ tests/                               → clean
+```
+
 ### Remaining work
 
-- Pages 4-6 (Repayment; Security and obligations; Benefits and next
-  steps) -- not started. Each needs the same treatment: read the design
-  archive, identify recommendation/approval language to re-author, map
-  CAMSnapshot fields, write the Jinja template, write
-  `build_pageN_context()`, write tests.
+- Pages 5-6 (Security and obligations; Benefits and next steps) -- not
+  started. Each needs the same treatment: read the design archive,
+  identify recommendation/approval language to re-author, map CAMSnapshot
+  fields, write the Jinja template, write `build_pageN_context()`, write
+  tests.
+- Wiring `sector_feasibility.assess_sector_feasibility()` and
+  `cam_financial_engine.debt_service_threshold_breakeven()` into
+  `cam_engine_bridge.run_harvester_engine()` would close two real gaps at
+  once: Page 3's "Acres per year"/"Year-1 capacity" correction rows, and
+  Page 4's realistic-acreage-range and break-even-acreage bars.
 - The still-open project_cost/means_of_finance gap (nothing populates
   these two models yet, so Page 3's cost table and funding bar show their
   empty states even on the golden fixture) -- wiring the raw loan/means-

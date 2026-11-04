@@ -287,3 +287,25 @@ table.cam-table th { font-size: 11px; color: var(--text-tertiary); font-weight: 
 }
 .cam-funding-legend__label { font-size: 13px; color: var(--text-tertiary); }
 .cam-funding-legend__value { font-size: 16px; font-weight: 800; }
+
+.cam-dscr-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  break-inside: avoid;
+}
+.cam-dscr-card__label { font-size: 13px; color: var(--text-tertiary); }
+.cam-dscr-card__value { font-size: 24px; font-weight: 800; }
+.cam-dscr-card__note { font-size: 13px; color: var(--text-secondary); line-height: 1.4; }
+
+.cam-scenario-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 90px;
+  column-gap: 14px;
+  align-items: center;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border-light, #ECEFED);
+}
+.cam-scenario-row__label { font-size: 13.5px; font-weight: 700; }
+.cam-scenario-row__tag { font-size: 11px; color: var(--grey); font-weight: 600; }
+.cam-scenario-row__value { font-size: 16px; font-weight: 800; text-align: right; }

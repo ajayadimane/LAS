@@ -199,6 +199,10 @@ class DscrDefinition(str, Enum):
 class FinancialRatios(BaseModel):
     dscr_definition_used: DscrDefinition
     average_dscr: CalculationTrace | None = None
+    # The document's own convention (PAT + Depreciation only, no interest
+    # added back) -- shown alongside `average_dscr` (the standard formula)
+    # so a reader can see why the two differ, never to replace it.
+    dscr_pat_dep_only: CalculationTrace | None = None
     breakeven_accounting: CalculationTrace | None = None
     breakeven_operating_cashflow: CalculationTrace | None = None
     breakeven_debt_service_threshold: CalculationTrace | None = None
