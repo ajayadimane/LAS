@@ -3,7 +3,14 @@
 Tracks the implementation described in the "DPR Loan Readiness Report with
 Detailed CAM Annexures" brief. Milestones follow Section 3A of that brief.
 
-## Status: Milestone 1 (Inspection and schema) — done
+## Status: Milestone 2 (Financial engine and finding consolidation) — partially done
+
+Finding deduplication/consolidation and the priority-rule engine (Section
+5.1, Section 7) are done. The deterministic *financial* engine beyond what
+already existed (full P&L/balance-sheet/cash-flow projections, amortization
+schedule, break-even of all three kinds, scenario analysis, sector-specific
+technical-feasibility checks — Section 9) is **not** done; see "Still not
+done" below. Milestone 1 is unchanged and still done.
 
 ## Blocker reported and resolved with the user
 
@@ -163,8 +170,100 @@ sandbox credentials, not caused by this change.)
 | `project_cost`, `means_of_finance`, `financial_projections`, `repayment_schedule`, `financial_ratios`, `scenario_analysis` | **not derivable yet** | Needs `FinancialExtractionPrompt`/`ProjectFinancials` extended with full P&L/balance-sheet/cash-flow line items, plus a new deterministic calculation module (milestone 2). |
 | `policy_assessment` | **not derivable yet** | The `policy` agent currently explicitly refuses to invent thresholds (no policy corpus attached) — correct behavior, but means `PolicyAssessment.statements` stays empty until a real, dated SBI policy source is attached. |
 
-## Remaining work
+## Milestone 2 deliverables (dedup + priority rules)
 
-Milestones 2–7 per Section 3A: financial engine + finding consolidation,
-verification layer, templates/PDF, persistence/APIs/authorization, frontend,
-annexures. Not started.
+### Root cause fix (Section 5.1 point 4)
+
+The root cause identified in milestone 1 — `parallel_graph.py`/
+`orchestrator.py` concatenating every agent's `findings` with no
+deduplication — is fixed at the source: both `analyze()`
+(`orchestrator.py`) and `analyze_parallel()` (`parallel_graph.py`) now call
+`finding_consolidation.consolidate()` once, after every agent has run and
+before `AnalysisResult` is constructed. No agent or prompt was changed.
+
+- `app/services/dpr_agentic/finding_rules.py` — new module, no LLM:
+  - `compute_dedup_key()` — category + normalized title (the "affected
+    metric" proxy; see the module docstring for why title, not a dedicated
+    metric field) + evidence page.
+  - `pick_consolidated_severity()` — the *most severe* rating among
+    duplicates, never whichever duplicate was produced first.
+  - `classify_finding_class()` — document_defect vs. business_risk, from an
+    explicit category allow-list (`_DOCUMENT_DEFECT_CATEGORIES`). This is a
+    heuristic, not an agent-emitted tag — see "Known limitation" below.
+  - `priority_for_calculation()` — the real Section 7 rule, using the
+    `CalculationResult`'s own computed/stated values to get a true
+    percentage impact: ≥5% (`PriorityThresholds.must_fix_impact_pct`,
+    default 5.0) is `must_fix`, below it `should_fix`; a year-1 DSCR < 1.0
+    is always `must_fix` regardless of percentage (the project cannot
+    service its debt, full stop); a later year's DSCR < 1.0 is `should_fix`.
+  - `priority_for_narrative()` — a severity-based fallback for findings with
+    no `CalculationResult` behind them (every non-`financial_calc.py`
+    finding): `missing_document` category or `critical` severity → must_fix,
+    `high` → should_fix, else good_to_fix. Documented as a coarser proxy
+    than the real rule, since narrative agents don't currently expose a
+    dollar/percentage impact to classify against.
+- `app/services/dpr_agentic/financial_calc.py` — `findings_from_calculations()`
+  now runs every calculated `Finding` through `_finalize()`, which attaches
+  `priority`/`priority_rule` from `priority_for_calculation()` (using that
+  exact `CalculationResult`'s own numbers — this is where the 5% threshold
+  is real, not a guess), `finding_class="document_defect"` (a calculated
+  mismatch is a defect in the DPR by construction), and `dedup_key`.
+- `app/services/dpr_agentic/finding_consolidation.py` — new module:
+  `consolidate(findings)` groups by dedup key, merges the group into one
+  `Finding` (most severe rating wins; the most-trustworthy duplicate's text
+  — code-verified > extracted > ai_interpreted > assumption > unverified —
+  becomes the kept explanation; any other duplicates' distinct evidence
+  quotes are appended rather than dropped), sets `merged_duplicate_count`,
+  and fills in `finding_class`/`priority`/`priority_rule` for narrative
+  findings that don't already have them from `financial_calc.py`.
+  Idempotent: re-running it on an already-consolidated list sums
+  `merged_duplicate_count` rather than resetting it to 1 (caught by
+  `test_consolidate_is_idempotent`, which failed before this fix — real bug,
+  not a hypothetical).
+- `app/services/dpr_agentic/schemas.py` — `Finding` gained five additive,
+  defaulted fields: `dedup_key`, `merged_duplicate_count` (default 1),
+  `finding_class`, `priority`, `priority_rule`. Backward compatible: a
+  `Finding` persisted by `report_store.py` before this change still
+  validates (all new fields default).
+- `app/services/dpr_agentic/cam_adapter.py` — simplified to read the
+  upstream-computed `dedup_key`/`merged_duplicate_count`/`finding_class`/
+  `priority`/`priority_rule` directly, falling back to `finding_rules`'
+  classifiers only for a `Finding` that predates these fields.
+
+### Known limitation (Section 4.1 disclosure)
+
+`classify_finding_class()` is a category-based heuristic, not something an
+agent explicitly emits. It was deliberately **not** turned into a Risk/
+Verification agent prompt change in this milestone, per Section 4.1 ("extend
+an agent schema only when a required field cannot be derived any other
+way") — categories already in use by the existing prompts map onto
+defect/business-risk well enough to be useful today. If false
+classifications show up against real DPRs (milestone 7's real-DPR
+evaluation), the fix is to extend the `risk`/`verifier` prompts
+(`orchestrator.PROMPTS`) to emit the tag directly and treat that as
+authoritative over the category heuristic.
+
+### Tests run
+
+```
+python3 -m pytest tests/test_dpr_finding_rules.py -q           → 13 passed
+python3 -m pytest tests/test_dpr_finding_consolidation.py -q   → 9 passed
+python3 -m pytest tests/test_dpr_cam_snapshot.py -q             → 7 passed
+python3 -m pytest tests/ -k dpr -q                              → all pass/skip, 0 failed
+python3 -m pytest tests/ -q                                     → full repo suite, 0 failed
+ruff check / ruff format                                        → clean
+```
+
+## Still not done (milestone 2 remainder + later milestones)
+
+- **Full financial engine (Section 9).** `financial_calc.py` still only
+  reconciles stated totals and per-year DSCR against the DPR's own figures.
+  No P&L/balance-sheet/cash-flow projection, no amortization schedule
+  generation, no break-even (accounting / operating cash-flow / debt-service
+  threshold), no scenario analysis, no sector-specific technical-feasibility
+  checks. This needs the Finance/Sector agents extended to emit structured
+  figures (not just narrative) into something like `financial_schema.py`'s
+  `ProjectFinancials`, plus a new calculation module consuming them. Not
+  started — this is the largest remaining piece of milestone 2.
+- Milestones 3–7 per Section 3A: verification layer, templates/PDF,
+  persistence/APIs/authorization, frontend, annexures. Not started.

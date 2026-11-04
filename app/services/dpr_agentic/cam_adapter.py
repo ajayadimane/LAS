@@ -1,27 +1,27 @@
-"""Milestone 1 adapter: AnalysisResult (schemas.py) -> CAMSnapshot (cam_snapshot.py).
+"""AnalysisResult (schemas.py) -> CAMSnapshot (cam_snapshot.py) adapter.
 
-This is intentionally a thin, honest mapping. It does NOT:
-  - deduplicate findings (milestone 2, Section 5.1 of PROGRESS.md's source brief)
-  - assign severity/priority by rule (milestone 2, Section 7)
-  - compute financial_projections, repayment_schedule, financial_ratios or
-    scenario_analysis (milestone 2, Section 9) -- the current Finance agent
-    and financial_calc.py do not produce the structured figures those models
-    need (see PROGRESS.md "Gaps found" for exactly what's missing)
-  - run the verification layer (milestone 3, Section 13)
+`result.findings` is already deduplicated and rule-classified by the time it
+reaches here (finding_consolidation.consolidate(), run inside
+orchestrator.analyze()/parallel_graph.analyze_parallel() -- see Finding's
+dedup_key/merged_duplicate_count/finding_class/priority/priority_rule
+fields). This module only reshapes an already-consolidated Finding into a
+VerifiedFinding; it does not dedupe or classify anything itself. A fallback
+to finding_rules' own classifiers is kept for a Finding persisted before
+those fields existed (report_store.py keeps old rows as-is -- see
+PROGRESS.md Section 16 gap on report versioning).
 
-What it does is turn every AnalysisResult.Finding into a VerifiedFinding with
-a provisional (non-ruled) priority, carry over whatever calculated_facts
-already exist as CalculationTrace-backed findings, and leave every field the
-pipeline cannot currently produce as an explicit UNAVAILABLE/None/empty value
--- never a guess. Borrower/project identity is not in AnalysisResult at all
-(the agentic pipeline only ever sees document text), so it must be supplied
-by the caller from Core LAS' own records (enrolment/person data), not invented
-here.
+Still NOT done here (milestone 2's remaining scope, Section 9):
+  - project_cost / means_of_finance reconciliation
+  - financial_projections, repayment_schedule, financial_ratios, scenario_analysis
+  - the verification layer (milestone 3, Section 13)
+
+Borrower/project identity is not in AnalysisResult at all (the agentic
+pipeline only ever sees document text), so it must be supplied by the caller
+from Core LAS' own records (enrolment/person data), not invented here.
 """
 
 from __future__ import annotations
 
-import hashlib
 from datetime import datetime, timezone
 
 from .cam_snapshot import (
@@ -43,45 +43,12 @@ from .cam_snapshot import (
     ValueClassification,
     VerifiedFinding,
 )
+from .finding_rules import (
+    classify_finding_class,
+    compute_dedup_key,
+    priority_for_narrative,
+)
 from .schemas import AnalysisResult, Finding
-
-_DOCUMENT_DEFECT_CATEGORIES = {
-    "financial_calculation",
-    "dscr",
-    "interest_subvention",
-    "inconsistency",
-    "arithmetic",
-    "missing_document",
-}
-
-
-def _finding_class(f: Finding) -> FindingClass:
-    """Section 5.1.6: a defect is an error/inconsistency/omission in the DPR
-    itself; anything else (seasonality, single-asset dependency, market
-    conditions...) is a property of the project -- a business risk. The
-    current agents don't tag this distinction themselves, so until the Risk/
-    Verification agents are extended to emit it (see PROGRESS.md milestone-1
-    "Agent extensions needed"), it is inferred from category as a
-    placeholder; this is a conservative heuristic, not the final rule."""
-    return (
-        FindingClass.DOCUMENT_DEFECT
-        if f.category in _DOCUMENT_DEFECT_CATEGORIES
-        else FindingClass.BUSINESS_RISK
-    )
-
-
-def _dedup_key(f: Finding) -> str:
-    """Placeholder key (category + normalized title + evidence page), per
-    Section 5.1's "category + affected metric + source page references".
-    Real consolidation (merging evidence, picking one severity by rule,
-    counting duplicates) is milestone 2; this adapter does not merge --
-    two findings sharing this key still both appear, one per Finding, so
-    today's known-duplicate bug is visible in the snapshot rather than
-    silently fixed by the adapter."""
-    normalized_title = " ".join(f.title.lower().split())
-    return hashlib.sha256(
-        f"{f.category}|{normalized_title}|{f.evidence_page}".encode()
-    ).hexdigest()[:16]
 
 
 def _value_classification(f: Finding) -> ValueClassification:
@@ -99,27 +66,21 @@ def _severity(f: Finding) -> FindingSeverity:
 
 
 def _map_finding(f: Finding, index: int) -> VerifiedFinding:
+    finding_class = f.finding_class or classify_finding_class(f)
+    if f.priority:
+        priority, priority_rule = f.priority, f.priority_rule or ""
+    else:
+        priority, priority_rule = priority_for_narrative(f)
     return VerifiedFinding(
         finding_id=f"F{index:04d}",
-        dedup_key=_dedup_key(f),
-        merged_duplicate_count=1,
+        dedup_key=f.dedup_key or compute_dedup_key(f),
+        merged_duplicate_count=f.merged_duplicate_count,
         title=f.title,
         category=f.category,
-        finding_class=_finding_class(f),
+        finding_class=FindingClass(finding_class),
         severity=_severity(f),
-        # No deterministic priority engine exists yet (Section 7) -- mapping
-        # severity 1:1 as a provisional value rather than leaving it unset,
-        # but this is NOT the ruled priority the brief requires.
-        priority=(
-            FindingPriority.MUST_FIX
-            if f.severity == "critical"
-            else FindingPriority.SHOULD_FIX
-            if f.severity == "high"
-            else FindingPriority.GOOD_TO_FIX
-            if f.severity in ("medium", "low")
-            else FindingPriority.NONE
-        ),
-        priority_rule="PROVISIONAL_SEVERITY_MAP_NOT_RULE_ENGINE",
+        priority=FindingPriority(priority),
+        priority_rule=priority_rule,
         verification=f.verification,
         explanation=f.explanation,
         dpr_reported_value=None,
@@ -195,9 +156,12 @@ def build_snapshot_from_analysis(
             "projections, repayment schedule, DSCR, scenario analysis and "
             "policy assessment are not yet populated by this pipeline "
             "(see PROGRESS.md milestone 2).",
-            "Findings above are not yet deduplicated across agents; the "
-            "same issue may appear more than once (see PROGRESS.md "
-            "milestone 2, Section 5.1).",
+            "Findings above are deduplicated by category, affected metric "
+            "and source page; a finding's merged_duplicate_count shows how "
+            "many agent outputs raised it. Priority for findings without a "
+            "code-verified calculation behind them is a severity-based "
+            "fallback, not a measured financial-impact percentage (see "
+            "PROGRESS.md milestone 2).",
         ],
         evidence_registry=[],
         generated_at=datetime.now(timezone.utc),

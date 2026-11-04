@@ -14,6 +14,7 @@ from app.services.dpr_agentic.cam_snapshot import (
     ProjectProfile,
     ReadinessStatus,
 )
+from app.services.dpr_agentic.finding_consolidation import consolidate
 from app.services.dpr_agentic.schemas import AnalysisResult, Finding
 
 
@@ -121,3 +122,28 @@ def test_findings_carry_evidence_page_as_source_pages():
     )
     assert snapshot.findings[0].source_pages == [3]
     assert snapshot.findings[0].finding_class.value == "document_defect"
+
+
+def test_no_two_findings_in_a_snapshot_share_a_dedup_key():
+    """Section 5.1 point 5: the real pipeline emitted the same issue up to
+    seven times. The consolidation pass must collapse that before it ever
+    reaches the snapshot."""
+    duplicated = [
+        Finding(
+            category="financial_calculation",
+            severity="high",
+            title="Cost Of Project Total does not reconcile",
+            explanation=f"restated by agent {i}",
+            evidence_page=2,
+            suggested_action="Verify.",
+        )
+        for i in range(5)
+    ]
+    result = _result(*consolidate(duplicated))
+    snapshot = build_snapshot_from_analysis(
+        result, report_id="RPT-7", report_version=1, analysis_run_id="RUN-7"
+    )
+    assert len(snapshot.findings) == 1
+    assert snapshot.findings[0].merged_duplicate_count == 5
+    keys = [f.dedup_key for f in snapshot.findings]
+    assert len(keys) == len(set(keys))
