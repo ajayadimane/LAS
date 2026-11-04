@@ -3,14 +3,17 @@
 Tracks the implementation described in the "DPR Loan Readiness Report with
 Detailed CAM Annexures" brief. Milestones follow Section 3A of that brief.
 
-## Status: Milestone 2 (Financial engine and finding consolidation) — partially done
+## Status: Milestone 2 (Financial engine and finding consolidation) — done, with one disclosed gap
 
-Finding deduplication/consolidation and the priority-rule engine (Section
-5.1, Section 7) are done. The deterministic *financial* engine beyond what
-already existed (full P&L/balance-sheet/cash-flow projections, amortization
-schedule, break-even of all three kinds, scenario analysis, sector-specific
-technical-feasibility checks — Section 9) is **not** done; see "Still not
-done" below. Milestone 1 is unchanged and still done.
+Finding deduplication/consolidation, the priority-rule engine (Section 5.1,
+Section 7), and the deterministic financial engine (Section 9: amortization,
+DSCR under both CADS definitions, three break-even types, fund-flow
+reconciliation, tax-rate derivation, scenario runs, sector-feasibility
+plugin registry) are done and pass the Tikamgarh golden-case test built
+from the brief's own Section 18 figures. **Not done**: a full multi-year
+P&L/balance-sheet/cash-flow projection model (see "Known gap" below) — this
+is the one piece of Section 9 deliberately deferred rather than built
+hollow. Milestone 1 is unchanged and still done.
 
 ## Blocker reported and resolved with the user
 
@@ -254,16 +257,137 @@ python3 -m pytest tests/ -q                                     → full repo su
 ruff check / ruff format                                        → clean
 ```
 
-## Still not done (milestone 2 remainder + later milestones)
+## Milestone 2 part 2: the Section 9 financial engine
 
-- **Full financial engine (Section 9).** `financial_calc.py` still only
-  reconciles stated totals and per-year DSCR against the DPR's own figures.
-  No P&L/balance-sheet/cash-flow projection, no amortization schedule
-  generation, no break-even (accounting / operating cash-flow / debt-service
-  threshold), no scenario analysis, no sector-specific technical-feasibility
-  checks. This needs the Finance/Sector agents extended to emit structured
-  figures (not just narrative) into something like `financial_schema.py`'s
-  `ProjectFinancials`, plus a new calculation module consuming them. Not
-  started — this is the largest remaining piece of milestone 2.
+### No source Tikamgarh DPR file exists — how the golden case was built
+
+The brief's Section 18 golden case points at
+`[PATH TO TIKAMGARH DPR]` — a literal placeholder, never filled in. No file
+named Tikamgarh/Nachanwara/AS-930 exists anywhere in the repo or in
+`DPRData/` (checked: only generic harvester DPRs for other SBI applicants,
+none matching this case). The only artifact that contains this worked
+example is the *finished* six-page sample report itself —
+`cam-design-reference/LAS Customer CAM Report Template.pdf` — which is
+output, not the source DPR's own tables.
+
+Rather than invent a source document, every input used below is a figure
+that report already states as fact (extracted by reading the PDF — see
+below), and every expected output is independently re-derived from those
+inputs by arithmetic, not copied from the report's own headline numbers.
+Where the brief's table only gives a ratio (e.g. "1.97 = ₹10.30 L ÷
+₹5.24 L"), the ₹10.30 L numerator was decomposed algebraically (PAT +
+Depreciation + Interest, with Depreciation = ₹4.50 L and Interest =
+₹2.03 L given elsewhere in the same report, so PAT = ₹3.77 L) and
+cross-checked against a second route (PBT ₹4.27 L − Tax ₹0.50 L = ₹3.77 L,
+also independently stated) — both routes agree exactly, which is why this
+is usable as a real regression case and not a circular restatement of the
+target number. The "corrected costs" DSCR of 1.49× was derived the same
+way (PBT₁ − (fuel delta + crew-wage delta), re-taxed at the derived rate)
+and also lands on the report's own stated 1.49× exactly — see
+`tests/test_dpr_cam_financial_engine.py`'s module docstring and inline
+comments for the full arithmetic trail.
+
+**Caveat**: because there is no real source DPR, this regression proves the
+engine reproduces a self-consistent worked example correctly. It has not
+been run against an actual extracted document end-to-end (that requires
+either the real Tikamgarh DPR or a run against the `DPRData/` sample set —
+milestone 7's real-DPR evaluation).
+
+### What was built
+
+- `app/services/dpr_agentic/cam_financial_engine.py` — new module, no LLM,
+  Decimal throughout, rounds only at the point a value is returned:
+  - `equal_principal_amortization_schedule()` — the only amortization style
+    implemented. Confirmed against the golden case's own year-1 figures
+    (₹22.50 L / 7 = ₹3.21 L principal; 9% × ₹22.50 L = ₹2.03 L interest) —
+    this was *confirmed*, not assumed, by reverse-solving the DPR's own
+    stated year-1 repayment before writing the function.
+  - `dscr()` / `CadsDefinition` — both CADS definitions
+    (`pat_dep_interest` default, `pat_dep` alternate), each independently
+    computed from net profit/depreciation/interest/principal/interest-due,
+    never from a document's own stated DSCR (that stays a separate
+    comparison value, per `financial_schema.YearFinancials.stated_dscr`).
+  - `accounting_breakeven()`, `operating_cashflow_breakeven()` (excludes
+    the `depreciation_component` — always ≤ the accounting break-even for
+    the same inputs, asserted directly),
+    `debt_service_threshold_breakeven()` (solved algebraically for the
+    unit volume at which CADS equals total debt service, not by search;
+    returns `NOT_COMPUTABLE` with a reason outside its valid domain, e.g.
+    zero/negative contribution margin or a ≥100% tax rate).
+  - `fuel_cost_reconciliation()`, `crew_wage_reconciliation()` — harvester
+    recompute-vs-stated checks (not yet generalized to other sectors).
+  - `fund_flow_gap()` — reports a sources-vs-applications mismatch as
+    exactly that; the function has no code path that could absorb the gap
+    into a balancing entry, by construction.
+  - `derive_tax_rate()` — tax ÷ PBT from the DPR's own figures, never an
+    assumed statutory rate; flagged in its own formula string as derived.
+  - `run_harvester_scenarios()` — re-runs the full PBT→tax→PAT→DSCR chain
+    per scenario; a scenario's debt service always comes from the same
+    loan terms as every other scenario (Section 9's "never combine one
+    scenario's cash flow with another's debt service" — there is only one
+    `principal_due`/`interest_due` pair passed in, shared by construction,
+    not a per-scenario choice that could be mismatched). Each result
+    carries `source_class` (`dpr_stated` / `recomputed`) and
+    `is_hypothetical`.
+- `app/services/dpr_agentic/sector_feasibility.py` — new module, a plugin
+  registry (`SECTOR_FEASIBILITY_REGISTRY`): `HarvesterFeasibilityCheck`
+  (acres/day × operating days/season × seasons/year — reproduces the
+  report's own 300–600 acre feasible range from 10 acres/day × 30 days ×
+  1–2 seasons, against the DPR's claimed 1,200) is implemented;
+  `DairyFeasibilityCheck` and `PolyhouseFeasibilityCheck` are stubs that
+  always return `NOT_COMPUTABLE` with a named reason, per the brief's
+  explicit instruction not to invent sector assumptions the pipeline has
+  no extracted data for.
+- `tests/test_dpr_cam_financial_engine.py` — the golden-case test, written
+  **before** the engine existed (confirmed red: `ImportError` on
+  collection) and built against until green. 12 tests, all passing,
+  covering every row of the Section 18 table this milestone claims:
+  amortization, both DSCR definitions, fuel/crew recompute, both
+  break-even types at both cost assumptions, fund-flow gap, tax-rate
+  derivation, both scenarios, and the ≤13-distinct-findings dedup check
+  using this case's own 8 page-2 defects simulated as being restated by 5
+  agents each (40 raw findings → 8 distinct, no shared dedup keys).
+- `tests/test_dpr_sector_feasibility.py` — 6 tests for the plugin registry.
+
+### Known gap: no full P&L / cash-flow / balance-sheet projection model
+
+The brief's Section 9/"Projections" step asks for multi-year P&L, cash
+flow and a balance sheet that "must balance every year." This was **not
+built**. Building it responsibly needs an opening asset register, a
+depreciation schedule per asset, and working-capital norms — none of which
+the current extraction pipeline captures (the Finance agent returns prose;
+`financial_schema.ProjectFinancials` only carries per-year net
+profit/depreciation/interest/repayment, not a balance sheet's asset/
+liability lines). Building a balance sheet without that data would mean
+inventing opening balances or working-capital assumptions, which Section
+19.5 ("do not fabricate financial calculations") forbids directly. What
+*is* built — amortization, DSCR, break-even, scenarios — covers every
+P&L-derived figure the Section 18 golden case actually requires. The
+remaining gap is: extend the Finance-agent extraction prompt
+(`orchestrator.FINANCIAL_EXTRACTION_PROMPT`) to pull a fuller asset/
+liability/working-capital picture when a DPR states one, then add a
+balance-sheet roll-forward function alongside this engine. Not started.
+
+### Tests run
+
+```
+python3 -m pytest tests/test_dpr_cam_financial_engine.py -q     → 12 passed
+python3 -m pytest tests/test_dpr_sector_feasibility.py -q       → 6 passed
+python3 -m pytest tests/ -k dpr -q                               → all pass/skip, 0 failed
+python3 -m pytest tests/ -q                                      → full repo suite, 0 failed
+ruff check app/ tests/                                            → clean
+```
+
+## Remaining work
+
+- The balance-sheet/cash-flow gap above.
 - Milestones 3–7 per Section 3A: verification layer, templates/PDF,
   persistence/APIs/authorization, frontend, annexures. Not started.
+- The engine built this milestone is not yet wired into
+  `orchestrator.py`'s `extract_calculated_facts()` / `cam_adapter.py` — it
+  exists and is tested standalone, but the live pipeline doesn't call it
+  yet, because that requires extending the Gemini extraction prompt to
+  pull harvester-specific assumptions (acres/day, fuel rate, crew staffing,
+  fund-flow totals) that `financial_schema.ProjectFinancials` doesn't carry
+  today. Wiring this is part of finishing milestone 2's integration, ahead
+  of milestone 3's verification layer.
