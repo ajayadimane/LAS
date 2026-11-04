@@ -343,6 +343,87 @@ def build_page2_context(snapshot: CAMSnapshot) -> dict:
     }
 
 
+def build_page3_context(snapshot: CAMSnapshot) -> dict:
+    """All display values for page3_project_cost.html.jinja. Project cost
+    and means-of-finance breakdowns are only as populated as the pipeline
+    has extracted (Section 19.3/19.4 -- a missing breakdown shows an
+    explicit empty state, never a fabricated line item)."""
+    profile = snapshot.project_profile
+    tiles = [
+        {"label": "Activity", "value": profile.project_name},
+        {"label": "Location", "value": profile.project_location},
+        {
+            "label": "Sector",
+            "value": (
+                f"{profile.business_sector} — {profile.business_subsector}"
+                if profile.business_sector and profile.business_subsector
+                else profile.business_sector or profile.business_subsector
+            ),
+        },
+        {"label": "Purpose", "value": profile.project_purpose},
+    ]
+
+    cost = snapshot.project_cost
+    cost_rows = [
+        {
+            "label": line.label,
+            "amount": format_money(line.dpr_reported) or "Requires verification",
+        }
+        for line in cost.components
+    ]
+    reconciliation = cost.reconciliation
+    if reconciliation is None:
+        cost_check = None
+    elif reconciliation.status == "COMPUTED" and (
+        reconciliation.computed_value is None or reconciliation.computed_value == 0
+    ):
+        cost_check = {"label": "Matches funding", "kind": "ok"}
+    else:
+        cost_check = {"label": "Requires verification", "kind": "warn"}
+
+    finance = snapshot.means_of_finance
+    total = finance.dpr_reported_total
+    loan = finance.requested_loan
+    promoter = finance.promoter_contribution
+    funding_split = (
+        {
+            "loan_pct": round(loan.amount / total.amount * 100),
+            "promoter_pct": round(promoter.amount / total.amount * 100),
+            "loan_amount": format_money(loan),
+            "promoter_amount": format_money(promoter),
+        }
+        if loan and promoter and total and total.amount
+        else None
+    )
+
+    corrections = [
+        {
+            "title": f.title,
+            "dpr_value": f.dpr_reported_value,
+            "should_be": f.recomputed_value,
+            "why": f.explanation,
+        }
+        for f in snapshot.findings
+        if f.dpr_reported_value and f.recomputed_value
+    ]
+
+    return {
+        "report_reference": snapshot.report_id,
+        "borrower_name": snapshot.borrower_profile.borrower_name,
+        "tiles": tiles,
+        "cost_rows": cost_rows,
+        "cost_total": format_money(cost.dpr_reported_total),
+        "cost_check": cost_check,
+        "funding_split": funding_split,
+        "subsidy_label": (
+            snapshot.readiness_assessment.subsidy_benefits[0].scheme_name
+            if snapshot.readiness_assessment.subsidy_benefits
+            else "None identified"
+        ),
+        "corrections": corrections,
+    }
+
+
 def render_cam_report_html(
     snapshot: CAMSnapshot,
     *,
@@ -357,6 +438,7 @@ def render_cam_report_html(
         accent=accent_color,
         ctx=build_page1_context(snapshot),
         ctx2=build_page2_context(snapshot),
+        ctx3=build_page3_context(snapshot),
     )
 
 

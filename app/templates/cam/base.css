@@ -261,3 +261,29 @@ table.cam-table th { font-size: 11px; color: var(--text-tertiary); font-weight: 
 .cam-finding-card__body { font-size: 13px; line-height: 1.4; color: #2E3833; }
 
 .cam-empty-note { color: var(--grey); font-style: italic; font-size: 13px; padding: 9px 0; }
+
+.cam-tile {
+  background: var(--grey-tint);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+.cam-tile__label { font-size: 12px; color: var(--text-tertiary); }
+.cam-tile__value { font-size: 14px; font-weight: 700; margin-top: 2px; line-height: 1.35; }
+
+.cam-funding-bar {
+  display: flex;
+  height: 30px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #C9D2CD;
+}
+.cam-funding-legend {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+.cam-funding-legend__swatch {
+  width: 12px; height: 12px; border-radius: 3px; margin-top: 4px; flex-shrink: 0;
+}
+.cam-funding-legend__label { font-size: 13px; color: var(--text-tertiary); }
+.cam-funding-legend__value { font-size: 16px; font-weight: 800; }

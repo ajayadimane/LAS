@@ -642,7 +642,7 @@ ruff check app/ tests/ scripts/                                   → clean
   from the simulated narrative agent output, not this check.
 - Dairy/polyhouse: still explicit stubs, by design.
 - The balance-sheet/cash-flow gap (milestone 2, disclosed above) remains.
-## Status: Milestone 4 (Templates and PDF) — started, Page 2 of 6 done
+## Status: Milestone 4 (Templates and PDF) — started, Page 3 of 6 done
 
 ### PDF engine decision
 
@@ -792,13 +792,86 @@ there are none, explicit empty-group notes, no unresolved placeholders, no
 canvas runtime markup, and autoescape blocking markup injection from an
 LLM-authored finding title.
 
+### A real gap found and fixed while building Page 3: fabricated "recomputed value"
+
+Page 3's "corrections" table needs a real DPR-stated figure and a real
+recomputed figure side by side. Checking where `VerifiedFinding.
+recomputed_value` actually came from surfaced a bug: `cam_adapter.
+_map_finding()` set `recomputed_value=f.title` for any "calculated"
+finding -- a title string standing in as if it were a number. Fixed by
+adding two additive fields to the base `Finding` schema
+(`dpr_stated_value`/`recomputed_display_value`, both `None` by default),
+set only by `cam_engine_bridge.py`'s reconciliation findings that
+genuinely have a stated/recomputed pair (fuel cost, crew wages) -- the
+fund-flow finding deliberately leaves both unset, since sources vs.
+applications is a two-sided gap, not a "should be" correction, and
+labeling it that way would misleadingly imply one side is "correct."
+`cam_adapter.py` now passes these straight through. Regenerated the
+Tikamgarh fixture (`scripts/build_tikamgarh_fixture.py`) so it carries the
+real values ("7.2 lakh" / "9.12 lakh" for fuel, "2.4 lakh" / "3.3 lakh"
+for crew wages) instead of the old placeholder strings. Covered by
+`test_finding_value_pair_passes_through_only_when_the_pipeline_set_one`
+(`tests/test_dpr_cam_snapshot.py`) and two assertions added to
+`tests/test_dpr_cam_engine_bridge.py`.
+
+### Page 3 (Project, cost and corrections)
+
+Ported from `cam-design-reference/Page 2 — Project, cost and DPR
+changes-html.zip` (`Project.dc.html`). No approval language to re-author
+here. Two fields in the design (crops served, operations start date) have
+no home in `ProjectProfile` and were dropped rather than invented; the
+"Your project" tiles instead show what the model actually carries
+(activity/location/sector/purpose).
+
+- `app/templates/cam/page3_project_cost.html.jinja` -- project tiles, an
+  itemized cost table (falls back to an explicit "No itemized cost
+  breakdown is available" note when `project_cost.components` is empty --
+  true today for the Tikamgarh fixture, a pre-existing milestone-2b gap,
+  not a Page 3 defect), a funding split bar (same empty-state treatment
+  when `means_of_finance` has no loan/promoter split), and a generic
+  corrections table driven by any finding carrying both
+  `dpr_reported_value` and `recomputed_value`.
+- `app/services/dpr_agentic/cam_render.py` -- `build_page3_context()`.
+  The corrections table is intentionally generic (any finding with a real
+  value pair appears in it) rather than hardcoded to the harvester sector,
+  so it needs no template change when a future sector's engine starts
+  producing its own stated/recomputed pairs.
+- `app/templates/cam/base.css` -- `.cam-tile`, `.cam-funding-bar`,
+  `.cam-funding-legend*`.
+- Verified by rendering the Tikamgarh fixture to PDF and inspecting the
+  page as a PNG: tiles, the explicit empty-state notes, and the two
+  corrections rows (fuel cost, crew wages) all render on one physical
+  page with real figures, no placeholders.
+
+### Tests run
+
+```
+python3 -m pytest tests/test_dpr_cam_render_page3.py -q   → 9 passed
+python3 -m pytest tests/ -q                                 → 529 passed, 63 skipped
+ruff check app/ tests/                                       → clean
+ruff format --check app/ tests/                               → clean
+```
+
 ### Remaining work
 
-- Pages 3-6 (Project, cost and corrections; Repayment; Security and
-  obligations; Benefits and next steps) -- not started. Each needs the
-  same treatment: read the design archive, identify recommendation/
-  approval language to re-author, map CAMSnapshot fields, write the Jinja
-  template, write `build_pageN_context()`, write tests.
+- Pages 4-6 (Repayment; Security and obligations; Benefits and next
+  steps) -- not started. Each needs the same treatment: read the design
+  archive, identify recommendation/approval language to re-author, map
+  CAMSnapshot fields, write the Jinja template, write
+  `build_pageN_context()`, write tests.
+- The still-open project_cost/means_of_finance gap (nothing populates
+  these two models yet, so Page 3's cost table and funding bar show their
+  empty states even on the golden fixture) -- wiring the raw loan/means-
+  of-finance figures into `CamEngineOutputs`/`cam_adapter.py` would close
+  this for the harvester case.
+- `sector_feasibility.py` (acres/day feasibility) is implemented and
+  tested but still not called from `cam_engine_bridge.run_harvester_
+  engine()` -- its result never reaches a Finding or `CamEngineOutputs`,
+  so the design's "Acres per year 1,200 -> 300-600" and "Year-1 capacity
+  100% -> 50-60%" correction rows have no real data source yet and
+  correctly do not appear in Page 3's corrections table. Wiring this in
+  is the natural next increment for that table, not a Page 3 template
+  change.
 - The `project_cost`/`means_of_finance` gap from milestone 2b means Page 1
   currently shows "Requires verification" for loan/promoter amounts even
   on the populated Tikamgarh fixture -- closing that gap (wiring the raw
