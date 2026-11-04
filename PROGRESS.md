@@ -378,16 +378,83 @@ python3 -m pytest tests/ -q                                      → full repo s
 ruff check app/ tests/                                            → clean
 ```
 
+## Status: Milestone 3 (Verification layer, Section 13) — done
+
+`app/services/dpr_agentic/cam_verification.py` — `verify_snapshot()`
+implements all 13 checks from Section 13, each its own function so an
+issue's `code` traces straight back to the brief. It sits strictly between
+`cam_adapter.build_snapshot_from_analysis()` and rendering: it never
+reruns an agent, never recomputes a figure, and never mutates the
+snapshot — only reports. A `VerificationIssue` is `blocking` (must stop
+publication, per Section 13's "critical inconsistencies must block final
+report publication") or `warning` (surfaced to a reviewer, doesn't block).
+
+| # | Check | Function |
+| - | --- | --- |
+| 1 | Required schema fields | `check_required_schema_fields` |
+| 2 | Financial units | enforced by pydantic `Literal` types at parse time; no separate runtime check needed |
+| 3 | Cross-page financial consistency | `check_cross_page_financial_consistency` (project cost vs. loan+promoter) |
+| 4 | Source-reference existence | `check_source_reference_existence` |
+| 5 | Page-level citations | `check_page_level_citations` |
+| 6 | Calculation reproducibility | `check_calculation_reproducibility` |
+| 7 | Scenario labeling | `check_scenario_labeling` |
+| 8 | Policy-source validity | `check_policy_source_validity` |
+| 9 | Readiness-status consistency | `check_readiness_status_consistency` |
+| 10 | Unsupported claims | `check_unsupported_claims` (subsidy eligibility) |
+| 11 | Placeholder elimination | `check_placeholder_elimination` |
+| 12 | Report generation completeness | `check_report_generation_completeness` |
+| 13 | Finding uniqueness | `check_finding_uniqueness` |
+
+Check 11 (placeholder elimination) scans every string field in the
+snapshot for two things: an unresolved Jinja binding (`{{...}}`, the exact
+shape Section 6.2 warns about) and a fixed list of literal bracket
+placeholders (`[Customer full name]`, `[BD name]`, `[Branch name]`, `[DD
+Mon YYYY]`, `[YYYY]`, `[000000]`) copied directly from
+`cam-design-reference/LAS Customer CAM Report Template.pdf` — that sample
+PDF genuinely ships with these unresolved, which is exactly the defect
+class this check exists to catch before it reaches a real customer.
+
+### A real bug this layer caught before it shipped
+
+Writing `test_5_invalid_page_number_is_blocking` (page `0`, an edge case a
+real agent should never emit since `SourcePage.page` requires `ge=1`, but
+not a constraint `Finding.evidence_page` itself enforces) failed against
+`cam_adapter.py`'s existing `source_pages=[f.evidence_page] if
+f.evidence_page else []` — Python's falsy-zero silently treats page `0` as
+"no page" and drops it. Fixed to `is not None`. Low real-world impact
+(page 0 shouldn't occur from the current pipeline) but a correctness bug
+all the same, caught by the verification layer's own test suite, not by
+inspection.
+
+### Tests run
+
+```
+python3 -m pytest tests/test_dpr_cam_verification.py -q   → 23 passed
+python3 -m pytest tests/ -k dpr -q                          → all pass/skip, 0 failed
+python3 -m pytest tests/ -q                                  → full repo suite, 0 failed
+ruff check app/ tests/                                        → clean
+```
+
+### Known limitation
+
+Checks 3, 4 and 5 only exercise what's actually populated in a snapshot
+today (project cost/means-of-finance totals, evidence registry, finding
+page citations) — they do not yet check the Section 9 engine's own outputs
+(amortization, DSCR, break-even, scenarios) for cross-page consistency,
+because that engine isn't wired into `cam_adapter.py` yet (milestone 2's
+disclosed remaining-work item). Once it is, `financial_ratios`/
+`repayment_schedule`/`scenario_analysis` will actually be populated and
+checks 6/7 will start exercising real data instead of the empty defaults
+every test here currently supplies.
+
 ## Remaining work
 
-- The balance-sheet/cash-flow gap above.
-- Milestones 3–7 per Section 3A: verification layer, templates/PDF,
-  persistence/APIs/authorization, frontend, annexures. Not started.
-- The engine built this milestone is not yet wired into
-  `orchestrator.py`'s `extract_calculated_facts()` / `cam_adapter.py` — it
-  exists and is tested standalone, but the live pipeline doesn't call it
-  yet, because that requires extending the Gemini extraction prompt to
-  pull harvester-specific assumptions (acres/day, fuel rate, crew staffing,
+- The balance-sheet/cash-flow gap (milestone 2, disclosed above).
+- Wiring `cam_financial_engine.py`/`sector_feasibility.py` into
+  `orchestrator.py`'s `extract_calculated_facts()` and `cam_adapter.py`,
+  which requires extending the Gemini extraction prompt to pull
+  harvester-specific assumptions (acres/day, fuel rate, crew staffing,
   fund-flow totals) that `financial_schema.ProjectFinancials` doesn't carry
-  today. Wiring this is part of finishing milestone 2's integration, ahead
-  of milestone 3's verification layer.
+  today.
+- Milestones 4–7 per Section 3A: templates/PDF, persistence/APIs/
+  authorization, frontend, annexures. Not started.

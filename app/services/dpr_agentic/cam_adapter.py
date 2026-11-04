@@ -86,7 +86,7 @@ def _map_finding(f: Finding, index: int) -> VerifiedFinding:
         dpr_reported_value=None,
         recomputed_value=f.title if f.provenance == "calculated" else None,
         value_classification=_value_classification(f),
-        source_pages=[f.evidence_page] if f.evidence_page else [],
+        source_pages=[f.evidence_page] if f.evidence_page is not None else [],
         evidence=[],
         suggested_action=f.suggested_action,
         responsible_person=None,
