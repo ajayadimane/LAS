@@ -85,6 +85,40 @@ export interface DocumentUploadResponse {
   doc_status: string;
 }
 
+/** Response from .../document-with-analysis: stores the document and queues
+ * its DPR analysis in one call (app/services/dpr_agentic/document_queue.py). */
+export interface DocumentWithAnalysisResponse {
+  wallet_storage_status: "STORED" | "FAILED";
+  wallet_error: string | null;
+  analysis_status: "QUEUED" | "NOT_QUEUED" | "RATE_LIMITED";
+  report_status: "NOT_PUBLISHED";
+  run_id: string | null;
+}
+
+/** Mirrors app/services/dpr_agentic/schemas.py's Finding. */
+export interface AnalysisFinding {
+  category: string;
+  severity: "critical" | "high" | "medium" | "low" | "info";
+  title: string;
+  explanation: string;
+  evidence_page: number | null;
+  evidence_quote: string | null;
+  verification: "source_verified" | "unverified" | "needs_clarification";
+  suggested_action: string;
+  provenance: "extracted" | "calculated" | "ai_interpreted" | "assumption" | "unverified";
+}
+
+/** Mirrors app/services/dpr_agentic/schemas.py's AnalysisResult. */
+export interface AnalysisReport {
+  service_request_id: string;
+  wallet_document_id: string;
+  document_sha256: string;
+  status: "completed" | "incomplete";
+  findings: AnalysisFinding[];
+  unresolved_questions: string[];
+  disclaimer: string;
+}
+
 /** The service catalogue and fees, from the middleware's config. */
 export const useCatalog = () =>
   useQuery({
@@ -127,21 +161,53 @@ export const isOutcomeUnknown = (e: unknown) => e instanceof ApiError && e.code 
 export const documentPath = (bdId: string, personId: string, code: string) =>
   customerPath(bdId, personId, `services/${encodeURIComponent(code)}/document`);
 
-/** Uploads one service's document; it replaces any earlier one. */
+/** Where one service's DPR analysis report is served as a PDF (for fetchFile) --
+ * the same already-gated report useServiceReport reads as JSON, pre-rendered
+ * server-side (see app/services/dpr_agentic/report_store.py), never regenerated
+ * on this request. */
+export const reportPdfPath = (bdId: string, personId: string, code: string) =>
+  `${customerPath(bdId, personId, `services/${encodeURIComponent(code)}/report`)}&format=pdf`;
+
+const reportKey = (bdId: string, personId: string, code: string) =>
+  ["bd", bdId, "customers", personId, "services", code, "report"];
+
+/**
+ * Uploads one service's document and queues its DPR analysis in the same
+ * call (it replaces any earlier document). Analysis itself runs later,
+ * out of band -- see useServiceReport for polling its result.
+ */
 export const useUploadDocument = (bdId: string, personId: string) => {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ code, file }: { code: string; file: File }) =>
-      api.put<DocumentUploadResponse>(
-        `${documentPath(bdId, personId, code)}&filename=${encodeURIComponent(file.name)}`,
+      api.put<DocumentWithAnalysisResponse>(
+        `${customerPath(bdId, personId, `services/${encodeURIComponent(code)}/document-with-analysis`)}` +
+          `&filename=${encodeURIComponent(file.name)}`,
         file,
       ),
-    onSuccess: () => {
+    onSuccess: (_res, { code }) => {
       queryClient.invalidateQueries({ queryKey: servicesKey(bdId, personId) });
       queryClient.invalidateQueries({ queryKey: ["bd", bdId, "customers"] });
+      queryClient.invalidateQueries({ queryKey: reportKey(bdId, personId, code) });
     },
   });
 };
+
+/**
+ * One service's DPR analysis report, once it is ready. A completed report
+ * comes back as normal query data; "not available yet" (403, still running),
+ * "never run" (404) and "feature off" (404 before any run exists) all come
+ * back as an ApiError on query.error -- the component reads error.status.
+ * Polls every 10s while the report might still be on its way.
+ */
+export const useServiceReport = (bdId: string, personId: string, code: string, enabled: boolean) =>
+  useQuery<AnalysisReport, ApiError>({
+    queryKey: reportKey(bdId, personId, code),
+    queryFn: () => api.get<AnalysisReport>(customerPath(bdId, personId, `services/${encodeURIComponent(code)}/report`)),
+    enabled,
+    retry: false,
+    refetchInterval: (query) => (query.state.data ? false : query.state.error?.status === 403 ? 10_000 : false),
+  });
 
 /** BD: authorize a customer's own request. Pay later needs bd_consent (standing guarantor) and moves money. */
 export const useAuthorize = (bdId: string, personId: string) => {

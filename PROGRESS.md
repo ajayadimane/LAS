@@ -1942,3 +1942,60 @@ python3 -m pytest tests/ -q (real Postgres, same unrelated pre-existing
   RuntimeErrors anywhere in the run
 ruff check / ruff format --check -> clean
 ```
+
+### Status: Milestone 5 -- closed
+
+Reportlab deleted, test isolation in place, all five open items answered.
+Starting milestone 6.
+
+## Milestone 6: frontend -- wire `?format=pdf` into `AnalysisReport.tsx` (2026-11-05)
+
+`frontend/src/components/AnalysisReport.tsx`'s `AnalysisReportCard` (the
+BD's customer-preview Payment section; the only place this component is
+used) gained a "View / download PDF" button next to the report status
+pill, shown once a report exists. Reuses `DocumentPreview`
+(`frontend/src/components/DocumentPreview.tsx`) exactly as
+`ServicesPayment.tsx` already does for uploaded documents -- same
+fetch-with-bearer-token -> blob -> iframe/Download pattern, no new
+component written. New `reportPdfPath(bdId, personId, code)` in
+`frontend/src/api/services.ts` mirrors the existing `documentPath()`,
+appending `&format=pdf` to the same gated report endpoint
+`useServiceReport` already polls as JSON.
+
+`npm run typecheck` and `npm run build` both pass clean.
+
+**Verification, and its limit.** No browser-automation tool is available
+in this environment (checked: no `chromium-cli`, no Playwright/Puppeteer
+installed) and a live `uvicorn` run would need real vendor sandbox
+credentials for the payment/ownership check `access_report()` makes on
+every call -- not something to spend for a UI click-through. What was
+actually verified:
+- The backend half end-to-end, live (not just pytest): seeded a real
+  COMPLETED run against a fresh throwaway Postgres via `jobs.submit()`/
+  `claim()`/`store_report()`/`finish()` run as a real script (not pytest),
+  and confirmed `get_report_pdf()` returned real, non-empty PDF bytes
+  (57,235 bytes) pulled from the database.
+- The exact backend HTTP path the button calls is already covered end to
+  end by `test_bd_report_pdf_format_releases_a_real_pdf` (real Postgres,
+  real route, real auth/ownership/payment gate, respx-mocked vendor) --
+  confirmed still passing in this round's full-suite run.
+- `DocumentPreview` is the identical, already-in-production component
+  `ServicesPayment.tsx` uses for documents; no new fetch/render logic was
+  written for this change, only a new path and a second call site.
+- What was **not** done: an actual click-through in a real browser window.
+  Flagging this rather than claiming it, per the honesty this file has
+  tried to keep throughout. Offered to the user: set up Playwright for a
+  real click-through if that level of verification is wanted.
+
+**Operational note, found while seeding the live verification (not a
+production bug, but worth recording):** `multiprocessing`'s `spawn`
+context (used by `_render_cam_pdf`'s subprocess-with-timeout, added this
+round) requires the *calling* process's entry point to have the standard
+`if __name__ == "__main__":` guard -- `scripts/dpr_worker.py` already has
+one. A throwaway verification script that called `store_report()` from
+plain top-level code without that guard failed exactly as designed
+(`pdf_render_status='FAILED'`, store_report() itself raised nothing,
+execution continued normally) rather than corrupting anything or hanging
+-- re-run with the guard added, it produced a real PDF. No code change
+needed; recorded here so a future ad hoc script (or a REPL/`python -c`
+invocation) doesn't rediscover this the hard way.
