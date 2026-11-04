@@ -1,0 +1,82 @@
+{#- Page 5: Security and obligations. Ported from
+   cam-design-reference/Page 4 — Security and obligations-html.zip. Rows
+   this pipeline cannot assess (collateral, guarantor) read "Not assessed
+   by this analysis" -- never the original design's "Not stated in your
+   DPR", which would claim we checked the document and confirmed its
+   absence (Section 19.3). The post-delivery checklist is generic
+   equipment-loan advisory content, shown only for the harvester sector
+   this pipeline actually models. #}
+<section class="cam-page">
+  <header class="cam-header">
+    <div class="cam-header__brand">
+      <div class="cam-header__logo">LOGO</div>
+      <div>
+        <div class="cam-header__product">Loan Advisory System</div>
+        <div class="cam-header__by">{{ ctx5.borrower_name or "Borrower name not yet confirmed" }}</div>
+      </div>
+    </div>
+    <div class="cam-header__meta">
+      <div class="cam-header__ref">{{ ctx5.report_reference }}</div>
+      <div class="cam-header__page">Page 5 of 6</div>
+    </div>
+  </header>
+
+  <main class="cam-main">
+    <section class="cam-section">
+      <h1 class="cam-h1" style="font-size: 26px;">Security and your obligations</h1>
+      <p class="cam-lede">What protects the loan, how the money is paid out, and what you must do after delivery.</p>
+      <table class="cam-table">
+        <thead><tr><th>Security</th><th>Details</th><th style="text-align:right;">Value</th><th>Status</th></tr></thead>
+        <tbody>
+          {% for row in ctx5.security_rows %}
+          <tr>
+            <td><strong>{{ row.label }}</strong></td>
+            <td>{{ row.details }}</td>
+            <td style="text-align:right;">{{ row.value }}</td>
+            <td>
+              <span class="cam-badge {{ {'ok': 'cam-badge--good-to-fix', 'warn': 'cam-badge--good-to-fix', 'accent': 'cam-badge--should-fix'}[row.status_kind] }}">{{ row.status }}</span>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+
+    <section class="cam-section">
+      <h3 class="cam-h3">How the loan is paid out</h3>
+      <div class="cam-steps-wrap">
+        <div class="cam-steps-wrap__line"></div>
+        <ol class="cam-steps">
+          {% for step in ctx5.disbursement_steps %}
+          <li class="cam-step">
+            <div class="cam-step__num{{ ' cam-step__num--outline' if not loop.first else '' }}">{{ loop.index }}</div>
+            <div class="cam-step__title">{{ step.title }}</div>
+            <div class="cam-step__detail">{{ step.detail }}</div>
+          </li>
+          {% endfor %}
+        </ol>
+      </div>
+      <div class="cam-note-tile"><strong>No cash is paid to you.</strong> Funds go directly to the equipment dealer against invoice.</div>
+    </section>
+
+    <section class="cam-section" style="gap: 4px;">
+      <h3 class="cam-h3">After you receive the equipment</h3>
+      {% if ctx5.after_delivery_checklist %}
+      {% for item in ctx5.after_delivery_checklist %}
+      <div class="cam-checklist-row">
+        <div class="cam-checklist-row__box"></div>
+        <div class="cam-checklist-row__task">{{ item.task }}</div>
+        <div class="cam-checklist-row__when">{{ item.when }}</div>
+      </div>
+      {% endfor %}
+      {% else %}
+      <p class="cam-empty-note">A post-delivery obligations checklist is not yet available for this sector.</p>
+      {% endif %}
+    </section>
+  </main>
+
+  <footer class="cam-footer">
+    <p class="cam-footer__disclaimer">Security shown is advisory; your lender sets the binding terms in the sanction letter. Pre-submission AI assistance only; not a bank sanction, eligibility certification, or authenticated source verification.</p>
+    <div class="cam-footer__label">Page 5 of 6</div>
+  </footer>
+</section>

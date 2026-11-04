@@ -642,7 +642,7 @@ ruff check app/ tests/ scripts/                                   → clean
   from the simulated narrative agent output, not this check.
 - Dairy/polyhouse: still explicit stubs, by design.
 - The balance-sheet/cash-flow gap (milestone 2, disclosed above) remains.
-## Status: Milestone 4 (Templates and PDF) — started, Page 4 of 6 done
+## Status: Milestone 4 (Templates and PDF) — started, Page 5 of 6 done
 
 ### PDF engine decision
 
@@ -896,13 +896,71 @@ ruff check app/ tests/                                       → clean
 ruff format --check app/ tests/                               → clean
 ```
 
+### Page 5 (Security and obligations)
+
+Ported from `cam-design-reference/Page 4 — Security and
+obligations-html.zip` (`Security.dc.html`). This page is mostly
+sector-specific operational/legal narrative (security items, disbursement
+steps, post-delivery obligations) that CAMSnapshot has no model for at
+all -- no collateral, guarantor or disbursement-step fields exist
+anywhere in the pipeline. Two deliberate honesty choices:
+
+- The design's "Land or other collateral" / "Guarantor" rows read "Not
+  stated in your DPR" -- a claim that the document was checked and the
+  item confirmed absent. This pipeline never checks for collateral or a
+  guarantor at all, so re-labeled both as **"Not assessed by this
+  analysis"**, which is true regardless of what the actual DPR contains
+  (Section 19.3: never claim to have verified something that wasn't).
+  Same reasoning for "SBI" being replaced by the generic "your lender" /
+  "the bank" throughout -- CAMSnapshot never records which bank, so
+  naming a specific one would be invented specificity.
+- The post-delivery obligations checklist (geo-tag photo, pay
+  instalments, service agreement, insurance, no reselling) is generic
+  equipment-loan advisory content, not something extracted from any
+  document. It is gated to the harvester sector this pipeline actually
+  models (via `project_profile.machinery_equipment`/`business_subsector`)
+  and shows an explicit "not yet available for this sector" note for
+  anything else, rather than reused wholesale for every sector.
+
+Real figures (project cost, requested loan, promoter contribution) are
+used where available for the hypothecation value and disbursement-step
+amounts, with the existing "Requires verification" / generic-no-number
+fallback when they are not (true for the golden fixture today, the same
+pre-existing project_cost/means_of_finance gap).
+
+- `app/templates/cam/page5_security.html.jinja`, `build_page5_context()`.
+- `base.css` -- `.cam-steps-wrap`/`.cam-step*`, `.cam-note-tile`,
+  `.cam-checklist-row*`.
+
+**A real layout bug found and fixed during development:** the first
+attempt at the disbursement-step connector line used a CSS `::before`
+pseudo-element directly on the `.cam-steps` grid container (mirroring a
+common web pattern). WeasyPrint rendered this not as a thin decorative
+line but as a large solid grey rectangle filling a grid cell -- the
+pseudo-element was evidently being auto-placed into the grid rather than
+treated as an out-of-flow absolutely-positioned box the way a browser
+would. Fixed by reverting to the original design's actual structure: a
+real sibling `<div>` (`.cam-steps-wrap__line`) absolutely positioned
+inside a non-grid wrapper, exactly as `Security.dc.html` itself did it.
+Caught by visually rendering the PDF to PNG and inspecting it, same
+discipline as the Page 1 and Page 3 bugs. A side benefit: the page now
+fits in one fewer physical page than before the fix.
+
+### Tests run
+
+```
+python3 -m pytest tests/test_dpr_cam_render_page5.py -q   → 10 passed
+python3 -m pytest tests/ -q                                 → 547 passed, 63 skipped
+ruff check app/ tests/                                       → clean
+ruff format --check app/ tests/                               → clean
+```
+
 ### Remaining work
 
-- Pages 5-6 (Security and obligations; Benefits and next steps) -- not
-  started. Each needs the same treatment: read the design archive,
-  identify recommendation/approval language to re-author, map CAMSnapshot
-  fields, write the Jinja template, write `build_pageN_context()`, write
-  tests.
+- Page 6 (Benefits and next steps) -- not started. Needs the same
+  treatment: read the design archive, identify recommendation/approval
+  language to re-author, map CAMSnapshot fields, write the Jinja
+  template, write `build_page6_context()`, write tests.
 - Wiring `sector_feasibility.assess_sector_feasibility()` and
   `cam_financial_engine.debt_service_threshold_breakeven()` into
   `cam_engine_bridge.run_harvester_engine()` would close two real gaps at

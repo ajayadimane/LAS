@@ -500,6 +500,132 @@ def build_page4_context(snapshot: CAMSnapshot) -> dict:
     }
 
 
+def build_page5_context(snapshot: CAMSnapshot) -> dict:
+    """All display values for page5_security.html.jinja. CAMSnapshot has
+    no collateral/guarantor/disbursement model -- rows this pipeline
+    cannot assess read "Not assessed by this analysis", never "Not stated
+    in your DPR" (that would claim we checked the document and found it
+    absent, which we did not; Section 19.3). The post-delivery obligations
+    checklist is generic equipment-loan advisory content, gated to the
+    harvester sector this pipeline actually models -- shown as explicitly
+    unavailable for any other sector rather than reused wholesale."""
+    profile = snapshot.project_profile
+    cost_total = snapshot.project_cost.dpr_reported_total
+    machinery = ", ".join(profile.machinery_equipment) or None
+
+    security_rows = [
+        {
+            "label": "Machine (hypothecation)",
+            "details": (
+                f"The {machinery} is the bank's security until the loan is repaid"
+                if machinery
+                else "Equipment financed by this loan, once confirmed"
+            ),
+            "value": format_money(cost_total) or "Requires verification",
+            "status": "Included" if machinery else "To verify",
+            "status_kind": "ok" if machinery else "warn",
+        },
+        {
+            "label": "Credit guarantee",
+            "details": "A scheme credit guarantee may reduce other security needed",
+            "value": "—",
+            "status": "To verify",
+            "status_kind": "warn",
+        },
+        {
+            "label": "Land or other collateral",
+            "details": "Not assessed by this analysis",
+            "value": "—",
+            "status": "Confirm with lender",
+            "status_kind": "warn",
+        },
+        {
+            "label": "Guarantor",
+            "details": "Not assessed by this analysis",
+            "value": "—",
+            "status": "Confirm with lender",
+            "status_kind": "warn",
+        },
+        {
+            "label": "Machine insurance",
+            "details": (
+                f"First year included in the {format_money(cost_total)} "
+                f"cost; renew every year, bank as loss payee"
+                if cost_total
+                else "Renew every year once cost is confirmed; bank as loss payee"
+            ),
+            "value": "In cost" if cost_total else "Requires verification",
+            "status": "Renew yearly",
+            "status_kind": "accent",
+        },
+    ]
+
+    promoter = snapshot.means_of_finance.promoter_contribution
+    loan = snapshot.means_of_finance.requested_loan
+    disbursement_steps = [
+        {
+            "title": "You pay your share",
+            "detail": (
+                f"{format_money(promoter)} to the dealer first"
+                if promoter
+                else "Your contribution, paid to the dealer first"
+            ),
+        },
+        {
+            "title": "The lender pays the dealer",
+            "detail": (
+                f"{format_money(loan)} against the invoice"
+                if loan
+                else "The loan amount, against the invoice"
+            ),
+        },
+        {
+            "title": "Bank records its charge",
+            "detail": "Equipment registered as security",
+        },
+    ]
+
+    is_harvester = (
+        bool(machinery and "harvester" in machinery.lower())
+        or "harvester" in (profile.business_subsector or "").lower()
+    )
+    after_delivery_checklist = (
+        [
+            {
+                "task": (
+                    "Send a geo-tagged photo of the equipment with its serial number"
+                ),
+                "when": "Within 30 days of delivery",
+            },
+            {"task": "Pay each instalment on time", "when": "As per sanction"},
+            {
+                "task": "Keep a dealer service agreement for in-season breakdowns",
+                "when": "Renew before each season",
+            },
+            {
+                "task": "Renew machine insurance with the bank as loss payee",
+                "when": "Every year",
+            },
+            {
+                "task": (
+                    "Ask the bank before selling, moving or lending out the equipment"
+                ),
+                "when": "Any time",
+            },
+        ]
+        if is_harvester
+        else []
+    )
+
+    return {
+        "report_reference": snapshot.report_id,
+        "borrower_name": snapshot.borrower_profile.borrower_name,
+        "security_rows": security_rows,
+        "disbursement_steps": disbursement_steps,
+        "after_delivery_checklist": after_delivery_checklist,
+    }
+
+
 def render_cam_report_html(
     snapshot: CAMSnapshot,
     *,
@@ -516,6 +642,7 @@ def render_cam_report_html(
         ctx2=build_page2_context(snapshot),
         ctx3=build_page3_context(snapshot),
         ctx4=build_page4_context(snapshot),
+        ctx5=build_page5_context(snapshot),
     )
 
 

@@ -309,3 +309,60 @@ table.cam-table th { font-size: 11px; color: var(--text-tertiary); font-weight: 
 .cam-scenario-row__label { font-size: 13.5px; font-weight: 700; }
 .cam-scenario-row__tag { font-size: 11px; color: var(--grey); font-weight: 600; }
 .cam-scenario-row__value { font-size: 16px; font-weight: 800; text-align: right; }
+
+.cam-steps-wrap { position: relative; }
+.cam-steps-wrap__line {
+  position: absolute;
+  left: 14px; right: 14px; top: 13px;
+  height: 2px;
+  background: #C9D2CD;
+}
+.cam-steps {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.cam-step {
+  display: flex; flex-direction: column; gap: 6px; position: relative;
+  background: #FFFFFF;
+}
+.cam-step__num {
+  width: 28px; height: 28px; border-radius: 999px;
+  background: var(--brand); color: #FFFFFF;
+  font-size: 13px; font-weight: 800;
+  display: flex; align-items: center; justify-content: center;
+}
+.cam-step__num--outline {
+  background: #FFFFFF; border: 2px solid var(--brand); color: var(--brand);
+  box-sizing: border-box;
+}
+.cam-step__title { font-size: 14px; font-weight: 700; }
+.cam-step__detail { font-size: 12.5px; color: var(--text-secondary); line-height: 1.4; }
+
+.cam-note-tile {
+  background: var(--grey-tint);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13.5px;
+}
+
+.cam-checklist-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border-light, #ECEFED);
+}
+.cam-checklist-row__box {
+  width: 20px; height: 20px; flex-shrink: 0;
+  border: 1.5px solid #C9D2CD; border-radius: 4px;
+}
+.cam-checklist-row__task { flex-grow: 1; font-size: 14px; font-weight: 600; }
+.cam-checklist-row__when {
+  font-size: 13px; color: var(--text-secondary);
+  text-align: right; flex-shrink: 0; width: 180px;
+}
