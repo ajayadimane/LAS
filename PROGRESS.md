@@ -1477,3 +1477,113 @@ ruff check / ruff format --check -> clean
 
 - Milestone 5's other items per Section 3A/15: new API routes, the rest
   of persistence/authorization. Not started.
+
+### Report versioning, part 2: idempotent per-run storage, scoped to the service, immutable in the DB (2026-11-05)
+
+Five follow-up gaps closed before touching the API routes:
+
+1. **Idempotent storage.** `store_report()` previously appended a new
+   version on every call, even a byte-identical retry of the same
+   run_id. Added `snapshot_sha256` (a sha256 of the canonical report
+   JSON) with a `UNIQUE (run_id, snapshot_sha256)` constraint (migration
+   006): storing the same run_id with the same content now returns the
+   existing version instead of appending a redundant one.
+2. **Re-analysis produces a new run_id, so versions are now scoped to
+   `source_reference`, not `run_id`.** Checked `jobs.submit()`: the
+   idempotency key is `f"{service_request_id}:{source_reference}:
+   {document_sha256}:{analysis_version}"`, so a DPR correction (a new
+   uploaded document -> a new `document_sha256`) always produces a
+   brand-new `run_id` -- confirmed, not assumed, by reading `submit()`
+   directly. Versioning by `run_id` would therefore restart at v1 on
+   every correction. Migration 006 rescopes versions to
+   `source_reference` -- the same key `report_service.latest_run_for()`
+   already uses to span runs for one person+service -- via
+   `UNIQUE (source_reference, version)`, so a correction now continues as
+   v2, v3. `get_report()`/`list_report_versions()` take
+   `source_reference` in place of `run_id`; `store_report(engine, run_id,
+   result)` keeps `run_id` (it looks up that run's `source_reference`
+   itself via a join), so `scripts/dpr_worker.py`'s call site needed no
+   change. `report_service.py`'s `get_report(engine, run["run_id"])`
+   became `get_report(engine, ref)` (`ref` was already computed there).
+   Added `test_reanalysis_under_a_new_run_id_continues_the_same_version_
+   history`, which submits two runs with different `document_sha256` under
+   one `source_reference` and asserts the history reads `[1, 2]`.
+3. **Concurrent-writer conflict, caught and retried.** With no existing
+   row for a `source_reference`, `SELECT ... FOR UPDATE` locks nothing, so
+   two first-time stores can both compute "next version = 1" before
+   either commits -- the `UNIQUE (source_reference, version)` constraint,
+   not the lock, is what actually serializes them. `store_report()` now
+   retries on `IntegrityError` (bounded at 5 attempts, raising
+   `RuntimeError` past that) and re-derives the next version from
+   scratch each time. `test_concurrent_writers_with_no_prior_version_
+   retry_past_the_conflict` runs two real threads against real Postgres
+   via a `threading.Barrier` to force the race, and asserts both succeed
+   with versions `[1, 2]` -- not a single lucky interleaving.
+4. **`get_report()` defaults to the latest version with
+   `render_status='RENDERED'`.** Added a `render_status` column
+   (`PENDING`/`RENDERED`/`FAILED`); `store_report()` sets it from the
+   stored `AnalysisResult.status` (`"completed"` -> `RENDERED`,
+   `"incomplete"` -> `PENDING`). The default (no `version` given) lookup
+   filters to `RENDERED`; an explicit `version` lookup ignores the filter
+   (for audit/debugging). `test_get_report_default_skips_a_version_that_
+   never_finished_rendering` stores a `RENDERED` v1 then an `incomplete`
+   (`PENDING`) v2 and confirms the default lookup still returns v1, not
+   `None` and not the unrendered v2.
+5. **Immutability enforced in the database, not just by this module's own
+   discipline.** Migration 006 adds a `BEFORE UPDATE OR DELETE` trigger on
+   `dpr_report_artifacts`: `DELETE` always raises; `UPDATE` raises unless
+   the only change is `render_status`, and then only if the transition is
+   strictly forward (`PENDING` -> `RENDERED` or `PENDING` -> `FAILED`;
+   anything else, including the reverse or a lateral `RENDERED` <->
+   `FAILED`, raises). `test_a_stored_report_row_cannot_be_updated_or_
+   deleted` and `test_render_status_may_only_move_forward` issue raw SQL
+   against real Postgres (bypassing `report_store.py` entirely) and
+   assert the trigger -- not application code -- is what refuses them.
+
+Old rows (pre-006) are backfilled: `source_reference` from a join against
+`dpr_analysis_runs`, a synthetic non-colliding `snapshot_sha256`
+(`'legacy-' || run_id || '-' || version`, which can never collide with a
+real 64-hex-char hash), and `render_status='RENDERED'` so existing history
+stays visible under the new default filter. The old `(run_id, version)`
+primary key is dropped for a surrogate `id`; `UNIQUE (run_id,
+snapshot_sha256)` and `UNIQUE (source_reference, version)` are the
+constraints that now matter.
+
+**Per-scenario Page 4 thresholds and their input sets (from last round,
+reposted as asked):**
+
+| Scenario | Variable cost/acre | Break-even (accounting) | Break-even (cash) | Break-even (DSCR=1.0) |
+|---|---|---|---|---|
+| Using your DPR's costs (`dpr_as_written`) | ₹750 | **622 acres/year** | 193 acres/year | **483 acres/year** |
+| If flagged corrections are confirmed (`corrected_costs`) | ₹900 | **726 acres/year** | 226 acres/year | **563 acres/year** |
+
+Shared inputs for every cell above (Year 1): price/unit ₹1,800/acre,
+depreciation ₹4.50 L, interest on term loan ₹2.03 L, principal due ₹3.21
+L, interest due ₹2.03 L, tax rate 11.71% (derived from tax paid ₹0.50 L /
+PBT ₹4.27 L).
+
+**13-issue destination list (from last round, reposted as asked):** see
+"The 13-issue audit" section above for the full table; net result
+unchanged by this round's work -- F0001-F0006 map 1:1 or many:1 to 6 of
+the 13 original issues, 5 issues are not modeled by any agent/check in
+this pipeline, and 2 (#7 break-even cost, #13 running cost/acre) are
+computed but have no dedicated Finding. No two distinct issues were
+merged; the only merge is F0005's six narrative-duplicate-plus-one-
+calculated restatements of issue #1, confirmed by comparing each pair's
+explanation text.
+
+### Tests run (part 2)
+
+```
+python3 -m pytest tests/test_dpr_report_store.py tests/test_dpr_report_access.py -q
+  (real Postgres) -> 24 passed (9 in test_dpr_report_store.py, up from 4;
+  14 in test_dpr_report_access.py, unchanged)
+python3 -m pytest tests/ -q (real Postgres, same unrelated pre-existing
+  log-safety failure deselected) -> all pass, exit 0
+ruff check / ruff format --check -> clean
+```
+
+### Remaining work (updated)
+
+- Milestone 5's other items per Section 3A/15: new API routes, the rest
+  of persistence/authorization. Not started -- starting next.
