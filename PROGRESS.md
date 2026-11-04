@@ -447,14 +447,201 @@ disclosed remaining-work item). Once it is, `financial_ratios`/
 checks 6/7 will start exercising real data instead of the empty defaults
 every test here currently supplies.
 
-## Remaining work
+## Status: Milestone 2b (close the wiring gap) — done
 
-- The balance-sheet/cash-flow gap (milestone 2, disclosed above).
-- Wiring `cam_financial_engine.py`/`sector_feasibility.py` into
-  `orchestrator.py`'s `extract_calculated_facts()` and `cam_adapter.py`,
-  which requires extending the Gemini extraction prompt to pull
-  harvester-specific assumptions (acres/day, fuel rate, crew staffing,
-  fund-flow totals) that `financial_schema.ProjectFinancials` doesn't carry
-  today.
+Requested as five explicit items before milestone 4. Reporting against
+each.
+
+### 1. Golden test status: all nine Section 18 values, pass/fail
+
+| # | Value | Status | Test |
+| - | --- | --- | --- |
+| 1 | Year-1 DSCR, `pat_dep` | **PASS** (1.58) | `test_year1_dscr_pat_dep_definition_matches_the_dprs_own_convention` |
+| 2 | Year-1 DSCR, `pat_dep_interest` | **PASS** (1.97) | `test_year1_dscr_pat_dep_interest_definition` |
+| 3 | Year-1 debt service | **PASS** (₹5.24 L = ₹3.21 L + ₹2.03 L) | `test_amortization_schedule_matches_the_dprs_own_repayment_table` |
+| 4 | Fuel at 1,200 acres | **PASS** (₹9.12 L) | `test_fuel_cost_recomputes_higher_than_the_dpr_states` |
+| 5 | Crew wages per staffing | **PASS** (₹3.30 L) | `test_crew_wages_per_staffing_exceed_the_p_and_l_figure` |
+| 6 | Break-even at corrected costs | **PASS** (726 acres) | `test_accounting_breakeven_at_corrected_costs` |
+| 7 | Means of finance 75/25 split | **PASS** (₹22.50 L + ₹7.50 L = ₹30.00 L) | `test_means_of_finance_split_is_75_25` (added this round -- it existed as constants but was never actually asserted before) |
+| 8 | Fund-flow gap | **PASS** (₹40.29 L) | `test_fund_flow_gap_is_reported_not_plugged` |
+| 9 | Consolidated findings ≤ 13 | **PASS** | `test_consolidated_distinct_findings_count_for_this_case_is_13_or_fewer` |
+
+All nine pass standalone (`cam_financial_engine.py` called directly) and,
+new this round, all reproduce again through the full schema/bridge/
+orchestrator path (see items 2-4 below) — the Tikamgarh fixture
+(`tests/fixtures/tikamgarh_cam_snapshot.json`) carries DSCR 1.97, breakeven
+726, debt service ₹3.21 L/₹2.03 L, and 6 consolidated findings (the ninth
+and seventh values -- fuel/crew/fund-flow -- surface as findings in that
+same fixture rather than as separate top-level fields).
+
+### 2. Gemini extraction schema extensions (Section 4.1 log)
+
+All in `financial_schema.py`. Each is additive and defaulted; none change
+an existing field's meaning.
+
+| Field(s) added | Why it couldn't be derived another way |
+| --- | --- |
+| `ExtractedValue` (`value`, `page`, `status`) wrapper type | The engine's Section 13 page-citation check needs a page per input; the pre-existing plain-float fields (`cost_of_project_stated_total` etc.) carry no page and were left alone to avoid touching `financial_calc.py` and its tests for no benefit the engine needs. |
+| `ProjectFinancials.term_loan_amount`, `.loan_tenor_years`, `.loan_moratorium_years` | The amortization schedule needs amount+rate+tenor+moratorium together; none were extracted as a set before (only AIF subvention rates existed). |
+| `ProjectFinancials.fund_flow_sources_total`, `.fund_flow_applications_total` | A fund-flow (sources vs. applications) statement is distinct from cost-of-project/means-of-finance (see `fund_flow_gap()`'s docstring) and was never extracted at all. |
+| `ProjectFinancials.harvester_assumptions` (`HarvesterAssumptions`: acres/day, operating days, seasons, price/acre, running cost/acre (stated and corrected), fuel litres/price, fuel cost stated, `crew_structure` (list of `CrewRole`), crew wage P&L total) | Section 8 sector-feasibility and fuel/crew reconciliation checks need these; the Finance/Sector agents' existing output is narrative only. Only populated for a harvester-sector DPR (prompt instructs the model to leave it null otherwise) -- a new sector needs its own assumptions model, consistent with `sector_feasibility.py`'s plugin registry. |
+| `ProjectFinancials.repayment_table` (`RepaymentTableRow`: year, principal_due, interest_due, each with page) | Needed to compare the DPR's own repayment table against the recomputed amortization schedule; not wired into a check yet (the bridge currently uses the recomputed schedule only -- see "Remaining work"). |
+| `YearFinancials.profit_before_tax`, `.tax_paid` | `derive_tax_rate()` needs both verbatim, separately from `net_profit`, to derive (never assume) the effective tax rate. |
+
+`orchestrator.FINANCIAL_EXTRACTION_PROMPT` was extended to instruct the
+model: every `{value, page, status}` field must carry a real page or be
+explicitly `status: "missing"` with `value: null` -- never `"extracted"`
+with a null value, and never a guessed page.
+
+### 3. Wiring behind `CAM_ENGINE_ENABLED` (default off)
+
+- `app/core/config.py`: `Settings.cam_engine_enabled: bool = False`
+  (env `CAM_ENGINE_ENABLED`, standard pydantic-settings name mapping, no
+  prefix configured).
+- `app/services/dpr_agentic/cam_engine_bridge.py` (new): `run_harvester_engine(fin)`
+  calls `cam_financial_engine.py`/implicitly exercises the harvester path,
+  degrading per-figure (missing inputs for one calculation never block
+  another) and returning `(CamEngineOutputs, list[Finding])`. Findings
+  reuse `finding_rules.priority_for_calculation`/`compute_dedup_key`
+  exactly like `financial_calc.py`'s calculated findings, so they flow
+  through the same consolidation pipeline unchanged.
+- `orchestrator.extract_calculated_facts()` gained a keyword-only
+  `cam_engine_enabled: bool = False` parameter; `False` (the default)
+  makes it byte-for-byte identical to before this milestone.
+  `analyze()`/`parallel_graph.analyze_parallel()` both thread the flag
+  through and set the new `AnalysisResult.cam_engine_outputs` field (an
+  opaque dict so the base schema stays free of the engine's own
+  dependencies; `cam_adapter.py` revalidates it into `CamEngineOutputs`
+  when present).
+- Call sites updated to pass `settings.cam_engine_enabled` explicitly:
+  `app/api/v1/dpr_analysis.py` (both `analyze()` calls),
+  `app/services/dpr_agentic/worker.py` (`run_claimed_analysis`, new
+  keyword param), `scripts/dpr_worker.py` (passes `settings.cam_engine_enabled`
+  through to it). Every other existing call path keeps the parameter's
+  `False` default, so nothing changes until the flag is explicitly set.
+- `cam_adapter.py` gained `_engine_derived_fields()`, folding
+  `CamEngineOutputs` into `financial_ratios`/`repayment_schedule`/
+  `scenario_analysis` when present; empty/default when not (milestone 1/2
+  behavior unchanged for a run with the flag off).
+- Tests: `tests/test_dpr_cam_engine_bridge.py` (12, including graceful
+  degradation and zero-value cases), flag on/off tests added to
+  `tests/test_dpr_agentic.py` and `tests/test_dpr_parallel_graph.py`, and
+  `tests/test_dpr_cam_snapshot.py` gained a test that the adapter actually
+  folds engine outputs in.
+
+### 4. End-to-end run and the resulting fixture
+
+No real Tikamgarh DPR file exists (confirmed again this round -- still
+nothing under that name anywhere in the repo or `DPRData/`), so "the full
+pipeline end-to-end on the Tikamgarh DPR" cannot mean a real document run.
+`scripts/build_tikamgarh_fixture.py` runs the **real** `orchestrator.analyze()`
+-- all 10 agent roles, real consolidation, real priority rules, real
+`cam_engine_enabled=True` path -- against a `FakeLLM` whose `.extract()`
+returns the golden `ProjectFinancials` (same figures as item 1's table) and
+whose `.generate()` returns a mix of outputs including a capacity-overreach
+finding deliberately restated by 5 of the 10 roles (sector, risk, verifier,
+correction, report), to exercise consolidation at a realistic scale, not
+just on the calculated findings. This is a labeled simulation of what the
+real pipeline produces given a document stating these figures, not a real
+end-to-end document run -- that remains blocked on the missing source file.
+
+Result: 6 consolidated findings (down from what would have been 10 raw
+narrative duplicates + 4 calculated ones = 14, had consolidation not run),
+all with `dedup_key`/`priority`/`finding_class` populated; the capacity
+finding's `merged_duplicate_count` is exactly 5, matching the simulated
+restatement count.
+
+**All 13 verification checks pass, with zero issues at all** (not just
+zero blocking ones -- `verify_snapshot()` returns an empty `issues` list).
+Specifically: schema fields present (1); no cross-page cost/funding figures
+to contradict each other since neither was populated this round (3, N/A);
+source references and page citations are all internally consistent (4-5);
+every `CalculationTrace` is either `COMPUTED` with a value or
+`NOT_COMPUTABLE` with a reason (6); both scenarios are labeled, described
+and exactly one is non-hypothetical (7); no policy statements exist to
+misclassify (8); readiness status (`EXPERT_REVIEW_REQUIRED`, since 4 of
+the 6 findings are `must_fix`) is consistent with the findings (9); no
+subsidy claims exist to misclassify (10); no unresolved placeholders of
+either kind (11); at least one document is on record and `generated_at`
+isn't in the future (12); no duplicate `dedup_key`s remain post-
+consolidation (13).
+
+The fixture is saved at `tests/fixtures/tikamgarh_cam_snapshot.json` and
+locked against drift by `tests/test_dpr_tikamgarh_fixture.py` (9 tests) --
+this is milestone 4's primary fixture.
+
+### 5. Zero-value truthy-check sweep
+
+Grepped `cam_adapter.py`, `cam_financial_engine.py`, `cam_verification.py`,
+`sector_feasibility.py`, `finding_rules.py`, `finding_consolidation.py`,
+`financial_calc.py`, `cam_engine_bridge.py`, `financial_schema.py`,
+`schemas.py`, `orchestrator.py` and `parallel_graph.py` for `if x:` /
+`x if x else` / `if not x:` patterns on anything that could be a legitimate
+numeric zero.
+
+**Found and fixed**: `app/services/dpr_agentic/report_render.py:116` --
+`page = f" (page {f.evidence_page})" if f.evidence_page else ""` -- the
+exact same bug class as the one fixed in `cam_adapter.py` during milestone
+3 (page `0` silently dropped via Python's falsy-zero). This is the PDF
+renderer, a second, independent occurrence of the same mistake, not a
+leftover from the earlier fix. Fixed to `is not None`.
+Test added: `test_evidence_page_zero_still_renders_a_page_annotation` in
+`tests/test_dpr_report_render.py`.
+
+**Reviewed, not a bug**: `finding_rules.priority_for_calculation`'s
+`if stated_value in (None, 0): return "should_fix", ...` -- this
+deliberately treats a stated total of exactly zero the same as "no stated
+total", to avoid a division-by-zero computing a percentage impact against
+it. A zero stated total is itself a degenerate case (dividing any nonzero
+discrepancy by zero is undefined), so routing it to the same "can't
+compute a percentage, fall back" path is correct, not an oversight -- left
+unchanged.
+
+**New zero-value regression tests**, covering legitimate zero inputs that
+must not be mistaken for "missing" (all added this round):
+- `cam_financial_engine.py`: 0% interest rate, 0-year moratorium, ₹0 net
+  profit in a DSCR calculation, a fund-flow gap of exactly zero, a 0%
+  derived tax rate -- all five in
+  `tests/test_dpr_cam_financial_engine.py`.
+- `cam_engine_bridge.py`: a 0% rate / 0-year moratorium loan still produces
+  a correct (non-missing) amortization year in
+  `tests/test_dpr_cam_engine_bridge.py`.
+- `report_render.py`: page 0 above.
+
+No other instance of the bug class was found in the audited files.
+
+### Tests run
+
+```
+python3 -m pytest tests/test_dpr_cam_financial_engine.py -q    → 18 passed
+python3 -m pytest tests/test_dpr_cam_engine_bridge.py -q        → 12 passed
+python3 -m pytest tests/test_dpr_cam_snapshot.py -q             → 8 passed
+python3 -m pytest tests/test_dpr_tikamgarh_fixture.py -q        → 9 passed
+python3 -m pytest tests/test_dpr_report_render.py -q            → 7 passed
+python3 -m pytest tests/test_dpr_agentic.py -q                  → 8 passed
+python3 -m pytest tests/test_dpr_parallel_graph.py -q           → 4 passed
+python3 -m pytest tests/ -k dpr -q                               → all pass/skip, 0 failed
+python3 -m pytest tests/ -q                                      → full repo suite, 0 failed
+ruff check app/ tests/ scripts/                                   → clean
+```
+
+### Remaining work
+
+- Still not populated by the bridge: `project_cost`/`means_of_finance`
+  reconciliation (the engine's `CamEngineOutputs` doesn't carry the raw
+  loan/means-of-finance figures themselves, only derived traces --
+  extending it to do so is the next incremental step, likely milestone 4
+  work since templates will need those fields rendered).
+- `repayment_table` (the DPR's own stated repayment table, extracted with
+  page references) is defined but not yet compared against the recomputed
+  `equal_principal_amortization_schedule()` -- that comparison would be a
+  natural addition to `cam_engine_bridge.py`.
+- `sector_feasibility.py`'s harvester capacity check is not yet wired into
+  `cam_engine_bridge.py`/the findings pipeline (it exists and is tested
+  standalone from milestone 2); the fixture's capacity finding above comes
+  from the simulated narrative agent output, not this check.
+- Dairy/polyhouse: still explicit stubs, by design.
+- The balance-sheet/cash-flow gap (milestone 2, disclosed above) remains.
 - Milestones 4–7 per Section 3A: templates/PDF, persistence/APIs/
-  authorization, frontend, annexures. Not started.
+  authorization, frontend, annexures. Starting milestone 4 next, using
+  `tests/fixtures/tikamgarh_cam_snapshot.json` as the primary fixture.

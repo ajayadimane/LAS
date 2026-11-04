@@ -91,7 +91,12 @@ def build_graph(llm, *, checkpointer=None):
 
 
 async def analyze_parallel(
-    payload: AnalysisInput, llm, *, checkpointer=None, thread_id: str | None = None
+    payload: AnalysisInput,
+    llm,
+    *,
+    checkpointer=None,
+    thread_id: str | None = None,
+    cam_engine_enabled: bool = False,
 ) -> AnalysisResult:
     pages = {p.page: p.text for p in payload.pages}
     if len(pages) != len(payload.pages):
@@ -107,7 +112,10 @@ async def analyze_parallel(
         calculated_facts,
         calculated_findings,
         extraction_questions,
-    ) = await extract_calculated_facts(llm, context)
+        cam_engine_outputs,
+    ) = await extract_calculated_facts(
+        llm, context, cam_engine_enabled=cam_engine_enabled
+    )
 
     graph = build_graph(llm, checkpointer=checkpointer)
     result = await graph.ainvoke(
@@ -136,4 +144,5 @@ async def analyze_parallel(
         agent_outputs=outputs,
         findings=findings,
         unresolved_questions=list(dict.fromkeys(questions)),
+        cam_engine_outputs=cam_engine_outputs,
     )

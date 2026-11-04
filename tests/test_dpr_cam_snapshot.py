@@ -147,3 +147,53 @@ def test_no_two_findings_in_a_snapshot_share_a_dedup_key():
     assert snapshot.findings[0].merged_duplicate_count == 5
     keys = [f.dedup_key for f in snapshot.findings]
     assert len(keys) == len(set(keys))
+
+
+def test_cam_engine_outputs_populate_financial_ratios_and_repayment_schedule():
+    """Milestone 2b: when the run carried cam_engine_outputs (the engine
+    was enabled), the adapter folds them into the snapshot's structured
+    financial fields, not just findings."""
+    from decimal import Decimal
+
+    from app.services.dpr_agentic.cam_engine_bridge import (
+        CamEngineOutputs,
+        ScenarioOutput,
+    )
+    from app.services.dpr_agentic.cam_snapshot import CalculationTrace
+
+    engine_outputs = CamEngineOutputs(
+        dscr_pat_dep_interest=CalculationTrace(
+            formula="x", computed_value=Decimal("1.97"), status="COMPUTED"
+        ),
+        breakeven_accounting=CalculationTrace(
+            formula="x", computed_value=Decimal("726"), status="COMPUTED"
+        ),
+        year1_principal_due="3.21",
+        year1_interest_due="2.03",
+        scenarios=[
+            ScenarioOutput(
+                scenario_id="dpr_as_written",
+                label="As stated",
+                is_hypothetical=False,
+                source_class="dpr_stated",
+                dscr=CalculationTrace(
+                    formula="x", computed_value=Decimal("1.97"), status="COMPUTED"
+                ),
+            )
+        ],
+    )
+    result = _result()
+    result = result.model_copy(
+        update={"cam_engine_outputs": engine_outputs.model_dump(mode="json")}
+    )
+    snapshot = build_snapshot_from_analysis(
+        result, report_id="RPT-8", report_version=1, analysis_run_id="RUN-8"
+    )
+    assert snapshot.financial_ratios.average_dscr.computed_value == Decimal("1.97")
+    assert snapshot.financial_ratios.breakeven_accounting.computed_value == Decimal(
+        "726"
+    )
+    assert len(snapshot.repayment_schedule) == 1
+    assert snapshot.repayment_schedule[0].total_debt_service.amount == Decimal("5.24")
+    assert len(snapshot.scenario_analysis) == 1
+    assert snapshot.scenario_analysis[0].is_hypothetical is False

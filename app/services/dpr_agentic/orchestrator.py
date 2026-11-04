@@ -17,9 +17,35 @@ FINANCIAL_EXTRACTION_PROMPT = (
     "total only to the table it appears directly under -- never guess from "
     "position or proximity alone. If the document states its own DSCR for a "
     "year, or its own standard/subvention/effective interest rate (e.g. an AIF "
-    "subvention), copy those figures verbatim too. Leave a field null if the "
-    "document does not state it. No narrative, no commentary, no opinion -- "
-    "figures only."
+    "subvention), copy those figures verbatim too. If a year's P&L states a "
+    "profit before tax and a tax figure separately from net profit, copy "
+    "both into that year's profit_before_tax and tax_paid. Leave a field "
+    "null if the document does not state it. No narrative, no commentary, "
+    "no opinion -- figures only.\n\n"
+    "For every field that is an {value, page, status} object: set 'page' to "
+    "the page number the figure appears on, and 'status' to 'extracted' if "
+    "you found a value or 'missing' if the document does not state it -- "
+    "never set status to 'extracted' with value null, and never guess a page "
+    "number for a value you did not find. This applies to: term_loan_amount, "
+    "loan_tenor_years, loan_moratorium_years, fund_flow_sources_total, "
+    "fund_flow_applications_total, repayment_table (one row per year of the "
+    "document's own repayment schedule, each with principal_due and "
+    "interest_due), and harvester_assumptions -- only populate "
+    "harvester_assumptions if the project is a combine-harvester Custom "
+    "Hiring Centre; leave it null for any other sector. Within "
+    "harvester_assumptions, extract acres_per_year, acres_per_day, "
+    "operating_days_per_season, seasons_per_year, price_per_acre (the "
+    "rental rate charged per acre serviced), running_cost_per_acre_stated "
+    "(the DPR's own headline running-cost-per-acre figure), "
+    "running_cost_per_acre_corrected (a different running-cost-per-acre "
+    "figure given elsewhere in the same document, e.g. in a detailed "
+    "cost breakdown annexure, if one exists -- leave missing if the "
+    "document gives only one such figure), fuel_litres_per_acre, "
+    "fuel_price_per_litre, fuel_cost_stated (the P&L's own stated annual "
+    "fuel cost), crew_wage_total_p_and_l_stated (the P&L's own stated "
+    "annual crew wage figure), and crew_structure (one entry per staffing "
+    "role named in the document, e.g. its Annexure II, with role, count "
+    "and annual_wage_per_person, each with its own page and status)."
 )
 
 PROMPTS = {
@@ -133,12 +159,19 @@ def verify_evidence(result: AgentOutput, pages: dict[int, str]) -> AgentOutput:
 
 
 async def extract_calculated_facts(
-    llm, context: dict
-) -> tuple[list[dict], list[Finding], list[str]]:
+    llm, context: dict, *, cam_engine_enabled: bool = False
+) -> tuple[list[dict], list[Finding], list[str], dict | None]:
     """Independently recomputes financial figures from the document's own
     stated numbers (financial_calc.py; no LLM involved in the arithmetic
     itself). Degrades gracefully: an extraction failure never aborts the
-    rest of the analysis, it just means no calculated_facts this run."""
+    rest of the analysis, it just means no calculated_facts this run.
+
+    `cam_engine_enabled` (Settings.cam_engine_enabled, default False --
+    milestone 2b) additionally runs cam_engine_bridge.run_harvester_engine()
+    over the same extracted financials, merging in any mismatch findings it
+    finds and returning its structured outputs as the fourth element. False
+    (the default) makes this call identical to before the engine existed.
+    """
     role_token = CURRENT_ROLE.set("financial_extraction")
     try:
         financials = await llm.extract(FINANCIAL_EXTRACTION_PROMPT, {"dpr": context})
@@ -150,14 +183,25 @@ async def extract_calculated_facts(
                 "Automated financial figure extraction failed; verify costs, "
                 "means of finance and DSCR manually."
             ],
+            None,
         )
     finally:
         CURRENT_ROLE.reset(role_token)
     results = run_all_checks(financials)
-    return [asdict(r) for r in results], findings_from_calculations(results), []
+    findings = findings_from_calculations(results)
+    engine_outputs_dict = None
+    if cam_engine_enabled:
+        from .cam_engine_bridge import run_harvester_engine
+
+        engine_outputs, engine_findings = run_harvester_engine(financials)
+        findings = findings + engine_findings
+        engine_outputs_dict = engine_outputs.model_dump(mode="json")
+    return [asdict(r) for r in results], findings, [], engine_outputs_dict
 
 
-async def analyze(payload: AnalysisInput, llm) -> AnalysisResult:
+async def analyze(
+    payload: AnalysisInput, llm, *, cam_engine_enabled: bool = False
+) -> AnalysisResult:
     pages = {page.page: page.text for page in payload.pages}
     if len(pages) != len(payload.pages):
         raise ValueError("Duplicate page numbers are not allowed")
@@ -177,7 +221,10 @@ async def analyze(payload: AnalysisInput, llm) -> AnalysisResult:
         calculated_facts,
         calculated_findings,
         extraction_questions,
-    ) = await extract_calculated_facts(llm, context)
+        cam_engine_outputs,
+    ) = await extract_calculated_facts(
+        llm, context, cam_engine_enabled=cam_engine_enabled
+    )
 
     outputs: dict[str, AgentOutput] = {}
     for name in PROMPTS:
@@ -209,4 +256,5 @@ async def analyze(payload: AnalysisInput, llm) -> AnalysisResult:
         agent_outputs=outputs,
         findings=findings,
         unresolved_questions=list(dict.fromkeys(questions)),
+        cam_engine_outputs=cam_engine_outputs,
     )

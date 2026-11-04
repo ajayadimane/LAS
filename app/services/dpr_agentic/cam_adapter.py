@@ -23,6 +23,7 @@ from Core LAS' own records (enrolment/person data), not invented here.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from .cam_snapshot import (
     BorrowerProfile,
@@ -34,12 +35,15 @@ from .cam_snapshot import (
     FindingPriority,
     FindingSeverity,
     MeansOfFinance,
+    Money,
     OperationalAssumptions,
     PolicyAssessment,
     ProjectCost,
     ProjectProfile,
     ReadinessAssessment,
     ReadinessStatus,
+    RepaymentPeriod,
+    ScenarioAnalysis,
     ValueClassification,
     VerifiedFinding,
 )
@@ -49,6 +53,62 @@ from .finding_rules import (
     priority_for_narrative,
 )
 from .schemas import AnalysisResult, Finding
+
+
+def _engine_derived_fields(
+    result: AnalysisResult,
+) -> tuple[FinancialRatios, list[RepaymentPeriod], list[ScenarioAnalysis]]:
+    """Folds cam_engine_bridge.CamEngineOutputs (set only when
+    Settings.cam_engine_enabled was True for this run -- milestone 2b) into
+    the snapshot's financial_ratios/repayment_schedule/scenario_analysis.
+    Returns empty/default values when the engine didn't run for this
+    result, exactly as before this wiring existed.
+
+    Still NOT populated: project_cost / means_of_finance (the engine's
+    outputs don't carry the raw loan/means-of-finance figures themselves,
+    only derived traces -- see PROGRESS.md milestone 2b for the exact gap).
+    """
+    default_ratios = FinancialRatios(
+        dscr_definition_used=DscrDefinition.PAT_DEP_INTEREST
+    )
+    if not result.cam_engine_outputs:
+        return default_ratios, [], []
+
+    from .cam_engine_bridge import CamEngineOutputs
+
+    engine = CamEngineOutputs.model_validate(result.cam_engine_outputs)
+    ratios = FinancialRatios(
+        dscr_definition_used=DscrDefinition.PAT_DEP_INTEREST,
+        average_dscr=engine.dscr_pat_dep_interest,
+        breakeven_accounting=engine.breakeven_accounting,
+        breakeven_operating_cashflow=engine.breakeven_operating_cashflow,
+    )
+
+    repayment_schedule: list[RepaymentPeriod] = []
+    if engine.year1_principal_due is not None and engine.year1_interest_due is not None:
+        principal = Decimal(engine.year1_principal_due)
+        interest = Decimal(engine.year1_interest_due)
+        repayment_schedule.append(
+            RepaymentPeriod(
+                year=1,
+                principal_due=Money(amount=principal, unit="lakh"),
+                interest_due=Money(amount=interest, unit="lakh"),
+                total_debt_service=Money(amount=principal + interest, unit="lakh"),
+                dscr=engine.dscr_pat_dep_interest,
+            )
+        )
+
+    scenario_analysis = [
+        ScenarioAnalysis(
+            scenario_id=s.scenario_id,
+            label=s.label,
+            is_hypothetical=s.is_hypothetical,
+            description=f"Source class: {s.source_class}.",
+            dscr_by_year={1: s.dscr},
+        )
+        for s in engine.scenarios
+    ]
+    return ratios, repayment_schedule, scenario_analysis
 
 
 def _value_classification(f: Finding) -> ValueClassification:
@@ -110,6 +170,9 @@ def build_snapshot_from_analysis(
     """
     findings = [_map_finding(f, i) for i, f in enumerate(result.findings, start=1)]
     critical_count = sum(1 for f in findings if f.severity == FindingSeverity.CRITICAL)
+    financial_ratios, repayment_schedule, scenario_analysis = _engine_derived_fields(
+        result
+    )
 
     status = (
         ReadinessStatus.INSUFFICIENT_INFORMATION
@@ -138,11 +201,9 @@ def build_snapshot_from_analysis(
         means_of_finance=MeansOfFinance(),
         operational_assumptions=OperationalAssumptions(),
         financial_projections=[],
-        repayment_schedule=[],
-        financial_ratios=FinancialRatios(
-            dscr_definition_used=DscrDefinition.PAT_DEP_INTEREST
-        ),
-        scenario_analysis=[],
+        repayment_schedule=repayment_schedule,
+        financial_ratios=financial_ratios,
+        scenario_analysis=scenario_analysis,
         findings=findings,
         proposed_corrections=[],
         policy_assessment=PolicyAssessment(),

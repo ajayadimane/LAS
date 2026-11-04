@@ -259,3 +259,74 @@ def test_consolidated_distinct_findings_count_for_this_case_is_13_or_fewer():
     assert len(merged) <= 13
     keys = [f.dedup_key for f in merged]
     assert len(keys) == len(set(keys))
+
+
+def test_means_of_finance_split_is_75_25():
+    """Section 18: ₹22.50 L loan (75%) + ₹7.50 L promoter (25%) = ₹30.00 L."""
+    total = LOAN_PRINCIPAL + PROMOTER_CONTRIBUTION
+    assert total == PROJECT_COST
+    assert (LOAN_PRINCIPAL / PROJECT_COST * 100).quantize(Decimal("1")) == Decimal("75")
+    assert (PROMOTER_CONTRIBUTION / PROJECT_COST * 100).quantize(
+        Decimal("1")
+    ) == Decimal("25")
+
+
+# --- Zero-value regression tests -------------------------------------------
+# A page-0 citation was silently dropped elsewhere in this pipeline by a
+# truthy check (`if x else` on a numeric field) rather than `is not None`.
+# A 0% interest rate, a 0-year moratorium and a ₹0 computed/stated value are
+# all legitimate inputs; none of them may be mistaken for "missing".
+
+
+def test_zero_percent_interest_rate_produces_zero_interest_not_a_missing_value():
+    schedule = equal_principal_amortization_schedule(
+        LoanTerms(
+            principal=Decimal("10.00"), annual_rate_pct=Decimal("0"), tenor_years=5
+        )
+    )
+    assert schedule[0].interest_due == Decimal("0.00")
+    assert schedule[0].principal_due == Decimal("2.00")
+
+
+def test_zero_moratorium_years_behaves_like_no_moratorium():
+    with_zero = equal_principal_amortization_schedule(
+        LoanTerms(
+            principal=Decimal("10.00"),
+            annual_rate_pct=Decimal("9"),
+            tenor_years=5,
+            moratorium_years=0,
+        )
+    )
+    without = equal_principal_amortization_schedule(
+        LoanTerms(
+            principal=Decimal("10.00"), annual_rate_pct=Decimal("9"), tenor_years=5
+        )
+    )
+    assert with_zero == without
+
+
+def test_dscr_computes_correctly_when_net_profit_is_zero():
+    trace = dscr(
+        net_profit=Decimal("0"),
+        depreciation=Decimal("5.00"),
+        interest_on_term_loan=Decimal("2.00"),
+        principal_due=Decimal("3.00"),
+        interest_due=Decimal("2.00"),
+        definition=CadsDefinition.PAT_DEP_INTEREST,
+    )
+    assert trace.status == "COMPUTED"
+    assert trace.computed_value == Decimal("1.40")
+
+
+def test_fund_flow_gap_of_exactly_zero_is_computed_not_not_computable():
+    trace = fund_flow_gap(
+        sources_total=Decimal("50.00"), applications_total=Decimal("50.00")
+    )
+    assert trace.status == "COMPUTED"
+    assert trace.computed_value == Decimal("0.00")
+
+
+def test_tax_rate_of_zero_is_computed_not_treated_as_missing():
+    trace = derive_tax_rate(tax_paid=Decimal("0"), profit_before_tax=Decimal("10.00"))
+    assert trace.status == "COMPUTED"
+    assert trace.computed_value == Decimal("0.0000")

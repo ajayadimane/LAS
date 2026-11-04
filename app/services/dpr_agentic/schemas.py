@@ -72,3 +72,8 @@ class AnalysisResult(BaseModel):
         "Pre-submission AI assistance only; not a bank sanction, eligibility "
         "certification, or authenticated source verification."
     )
+    # Opaque dict (not a typed model here, to keep this base schema free of
+    # the engine's dependencies) holding cam_engine_bridge.CamEngineOutputs,
+    # set only when Settings.cam_engine_enabled is True (milestone 2b).
+    # cam_adapter.py revalidates it into CamEngineOutputs when present.
+    cam_engine_outputs: dict | None = None

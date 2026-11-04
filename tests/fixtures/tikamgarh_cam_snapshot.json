@@ -1,0 +1,346 @@
+{
+  "schema_version": "1.0.0",
+  "report_id": "RPT-TIKAMGARH-GOLDEN",
+  "report_version": 1,
+  "analysis_run_id": "RUN-TIKAMGARH-GOLDEN",
+  "service_request_id": "SR-TIKAMGARH-GOLDEN",
+  "borrower_profile": {
+    "borrower_name": null,
+    "aadhaar_last4": null,
+    "mobile_number": null,
+    "customer_person_id": null,
+    "bd_broker_id": null,
+    "bd_name": null
+  },
+  "project_profile": {
+    "project_name": "Custom Hiring Centre -- AS-930 combine harvester",
+    "business_sector": "Agri-MSME",
+    "business_subsector": "Harvester Custom Hiring Centre",
+    "project_location": "Nachanwara, Tikamgarh",
+    "project_purpose": "Combine harvester custom hiring service for soybean and wheat",
+    "machinery_equipment": [
+      "AS-930 combine harvester"
+    ]
+  },
+  "document_inventory": [
+    {
+      "wallet_document_id": "W-TIKAMGARH-GOLDEN",
+      "document_sha256": "77222def82936673b9ce911ff196dfd52f737cdbb2d953df8b33f93d937bb0a6",
+      "document_class": null,
+      "page_count": null
+    }
+  ],
+  "project_cost": {
+    "components": [],
+    "dpr_reported_total": null,
+    "recomputed_total": null,
+    "reconciliation": null
+  },
+  "means_of_finance": {
+    "components": [],
+    "dpr_reported_total": null,
+    "upfront_funding_total": null,
+    "funding_gap": null,
+    "requested_loan": null,
+    "promoter_contribution": null,
+    "proposed_tenure_months": null
+  },
+  "operational_assumptions": {
+    "sector": null,
+    "assumptions": {},
+    "classification": "unverified_assumption"
+  },
+  "financial_projections": [],
+  "repayment_schedule": [
+    {
+      "year": 1,
+      "principal_due": {
+        "amount": "3.21",
+        "currency": "INR",
+        "unit": "lakh"
+      },
+      "interest_due": {
+        "amount": "2.03",
+        "currency": "INR",
+        "unit": "lakh"
+      },
+      "total_debt_service": {
+        "amount": "5.24",
+        "currency": "INR",
+        "unit": "lakh"
+      },
+      "cash_available_for_debt_service": null,
+      "dscr": {
+        "formula": "(PAT + Depreciation + Interest on term loan) / (Principal + Interest due)",
+        "inputs": {
+          "net_profit": "3.77",
+          "depreciation": "4.5",
+          "interest_on_term_loan": "2.03",
+          "principal_due": "3.21",
+          "interest_due": "2.03",
+          "definition": "pat_dep_interest"
+        },
+        "computed_value": "1.97",
+        "status": "COMPUTED",
+        "reason_not_computable": null,
+        "calculation_version": "1.0.0"
+      },
+      "dscr_stated_in_dpr": null
+    }
+  ],
+  "financial_ratios": {
+    "dscr_definition_used": "pat_dep_interest",
+    "average_dscr": {
+      "formula": "(PAT + Depreciation + Interest on term loan) / (Principal + Interest due)",
+      "inputs": {
+        "net_profit": "3.77",
+        "depreciation": "4.5",
+        "interest_on_term_loan": "2.03",
+        "principal_due": "3.21",
+        "interest_due": "2.03",
+        "definition": "pat_dep_interest"
+      },
+      "computed_value": "1.97",
+      "status": "COMPUTED",
+      "reason_not_computable": null,
+      "calculation_version": "1.0.0"
+    },
+    "breakeven_accounting": {
+      "formula": "Fixed cost / (Price per unit - Variable cost per unit)",
+      "inputs": {
+        "price_per_unit": "1800.0",
+        "variable_cost_per_unit": "900.0",
+        "fixed_cost": "653000.00"
+      },
+      "computed_value": "726",
+      "status": "COMPUTED",
+      "reason_not_computable": null,
+      "calculation_version": "1.0.0"
+    },
+    "breakeven_operating_cashflow": {
+      "formula": "(Fixed cost - Depreciation) / (Price per unit - Variable cost per unit)",
+      "inputs": {
+        "price_per_unit": "1800.0",
+        "variable_cost_per_unit": "900.0",
+        "fixed_cost": "203000.00"
+      },
+      "computed_value": "226",
+      "status": "COMPUTED",
+      "reason_not_computable": null,
+      "calculation_version": "1.0.0"
+    },
+    "breakeven_debt_service_threshold": null
+  },
+  "scenario_analysis": [
+    {
+      "scenario_id": "dpr_as_written",
+      "label": "As stated in the DPR at 1200.0 acres",
+      "is_hypothetical": false,
+      "description": "Source class: dpr_stated.",
+      "dscr_by_year": {
+        "1": {
+          "formula": "(PAT + Depreciation + Interest on term loan) / (Principal + Interest due)",
+          "inputs": {
+            "net_profit": "3.77",
+            "depreciation": "4.5",
+            "interest_on_term_loan": "2.03",
+            "principal_due": "3.21",
+            "interest_due": "2.03",
+            "definition": "pat_dep_interest"
+          },
+          "computed_value": "1.97",
+          "status": "COMPUTED",
+          "reason_not_computable": null,
+          "calculation_version": "1.0.0"
+        }
+      }
+    },
+    {
+      "scenario_id": "corrected_costs",
+      "label": "Corrected fuel and crew wage costs at 1200.0 acres",
+      "is_hypothetical": true,
+      "description": "Source class: recomputed.",
+      "dscr_by_year": {
+        "1": {
+          "formula": "(PAT + Depreciation + Interest on term loan) / (Principal + Interest due)",
+          "inputs": {
+            "net_profit": "1.28",
+            "depreciation": "4.5",
+            "interest_on_term_loan": "2.03",
+            "principal_due": "3.21",
+            "interest_due": "2.03",
+            "definition": "pat_dep_interest"
+          },
+          "computed_value": "1.49",
+          "status": "COMPUTED",
+          "reason_not_computable": null,
+          "calculation_version": "1.0.0"
+        }
+      }
+    }
+  ],
+  "findings": [
+    {
+      "finding_id": "F0001",
+      "dedup_key": "dscr|dscr year 1: 1.97|none",
+      "merged_duplicate_count": 1,
+      "title": "DSCR YEAR 1: 1.97",
+      "category": "dscr",
+      "finding_class": "document_defect",
+      "severity": "info",
+      "priority": "good_to_fix",
+      "priority_rule": "GOOD_TO_FIX: informational DSCR figure, no threshold breached.",
+      "verification": "source_verified",
+      "explanation": "Computed from the document's own net profit, depreciation, interest and repayment figures for this year. The document itself states a DSCR of 1.58 for this year. The difference from our standard-formula figure usually means the document's own convention does not add interest back into the numerator -- not that either figure is wrong. Confirm which convention the lender expects.",
+      "dpr_reported_value": null,
+      "recomputed_value": "DSCR YEAR 1: 1.97",
+      "value_classification": "recomputed",
+      "source_pages": [],
+      "evidence": [],
+      "suggested_action": "No action needed from this figure alone.",
+      "responsible_person": null,
+      "resolution_status": "open",
+      "requires_borrower_confirmation": false
+    },
+    {
+      "finding_id": "F0002",
+      "dedup_key": "financial_calculation|fuel cost does not match acres x litres/acre x price|8",
+      "merged_duplicate_count": 1,
+      "title": "Fuel cost does not match acres x litres/acre x price",
+      "category": "financial_calculation",
+      "finding_class": "document_defect",
+      "severity": "high",
+      "priority": "must_fix",
+      "priority_rule": "MUST_FIX: fuel_cost_reconciliation discrepancy is 26.7% of the stated total, at/above the 5% threshold.",
+      "verification": "source_verified",
+      "explanation": "Acres x litres/acre x price/litre = 9.12 lakh; the document states 7.2 lakh.",
+      "dpr_reported_value": null,
+      "recomputed_value": "Fuel cost does not match acres x litres/acre x price",
+      "value_classification": "recomputed",
+      "source_pages": [
+        8
+      ],
+      "evidence": [],
+      "suggested_action": "Verify this figure with the applicant.",
+      "responsible_person": null,
+      "resolution_status": "open",
+      "requires_borrower_confirmation": false
+    },
+    {
+      "finding_id": "F0003",
+      "dedup_key": "financial_calculation|crew wages understated versus the staffing plan|8",
+      "merged_duplicate_count": 1,
+      "title": "Crew wages understated versus the staffing plan",
+      "category": "financial_calculation",
+      "finding_class": "document_defect",
+      "severity": "high",
+      "priority": "must_fix",
+      "priority_rule": "MUST_FIX: crew_wage_reconciliation discrepancy is 37.5% of the stated total, at/above the 5% threshold.",
+      "verification": "source_verified",
+      "explanation": "Annexure staffing plan totals 3.3 lakh; the P&L states 2.4 lakh.",
+      "dpr_reported_value": null,
+      "recomputed_value": "Crew wages understated versus the staffing plan",
+      "value_classification": "recomputed",
+      "source_pages": [
+        8
+      ],
+      "evidence": [],
+      "suggested_action": "Verify this figure with the applicant.",
+      "responsible_person": null,
+      "resolution_status": "open",
+      "requires_borrower_confirmation": false
+    },
+    {
+      "finding_id": "F0004",
+      "dedup_key": "financial_calculation|fund flow sources do not match applications|12",
+      "merged_duplicate_count": 1,
+      "title": "Fund flow sources do not match applications",
+      "category": "financial_calculation",
+      "finding_class": "document_defect",
+      "severity": "high",
+      "priority": "must_fix",
+      "priority_rule": "MUST_FIX: fund_flow_sources_applications_balance discrepancy is 64.6% of the stated total, at/above the 5% threshold.",
+      "verification": "source_verified",
+      "explanation": "Sources of funds - Applications of funds (a nonzero result must appear as closing cash in the cash-flow statement, not be plugged away) Sources 102.65 lakh, applications 62.36 lakh, gap 40.29 lakh.",
+      "dpr_reported_value": null,
+      "recomputed_value": "Fund flow sources do not match applications",
+      "value_classification": "recomputed",
+      "source_pages": [
+        12
+      ],
+      "evidence": [],
+      "suggested_action": "Verify this figure with the applicant.",
+      "responsible_person": null,
+      "resolution_status": "open",
+      "requires_borrower_confirmation": false
+    },
+    {
+      "finding_id": "F0005",
+      "dedup_key": "missing_document|dealer quotation missing for the harvester|3",
+      "merged_duplicate_count": 1,
+      "title": "Dealer quotation missing for the harvester",
+      "category": "missing_document",
+      "finding_class": "document_defect",
+      "severity": "high",
+      "priority": "must_fix",
+      "priority_rule": "MUST_FIX: a document required for submission is missing.",
+      "verification": "unverified",
+      "explanation": "No vendor quotation or pro-forma invoice is attached for the stated 30.00 lakh cost.",
+      "dpr_reported_value": null,
+      "recomputed_value": null,
+      "value_classification": "verified_source_fact",
+      "source_pages": [
+        3
+      ],
+      "evidence": [],
+      "suggested_action": "Attach an authorised dealer's quotation matching the stated project cost.",
+      "responsible_person": null,
+      "resolution_status": "open",
+      "requires_borrower_confirmation": false
+    },
+    {
+      "finding_id": "F0006",
+      "dedup_key": "assumption|claimed annual acreage exceeds plausible machine throughput|4",
+      "merged_duplicate_count": 5,
+      "title": "Claimed annual acreage exceeds plausible machine throughput",
+      "category": "assumption",
+      "finding_class": "business_risk",
+      "severity": "high",
+      "priority": "should_fix",
+      "priority_rule": "SHOULD_FIX: severity high (narrative, no computed impact available).",
+      "verification": "unverified",
+      "explanation": "At 10 acres/day over 30 operating days across 2 seasons, one harvester can plausibly cover 300-600 acres/year; the DPR plans 1,200.",
+      "dpr_reported_value": null,
+      "recomputed_value": null,
+      "value_classification": "unverified_assumption",
+      "source_pages": [
+        4
+      ],
+      "evidence": [],
+      "suggested_action": "Revise the acreage plan or provide evidence of additional capacity.",
+      "responsible_person": null,
+      "resolution_status": "open",
+      "requires_borrower_confirmation": false
+    }
+  ],
+  "proposed_corrections": [],
+  "policy_assessment": {
+    "statements": [],
+    "unverified_policy_areas": []
+  },
+  "readiness_assessment": {
+    "status": "CORRECTIONS_REQUIRED",
+    "score_mode": "status",
+    "total_score": null,
+    "dimension_scores": [],
+    "critical_findings_count": 0,
+    "outstanding_clarifications_count": 0,
+    "subsidy_benefits": []
+  },
+  "report_limitations": [
+    "Project cost, means-of-finance reconciliation, financial projections, repayment schedule, DSCR, scenario analysis and policy assessment are not yet populated by this pipeline (see PROGRESS.md milestone 2).",
+    "Findings above are deduplicated by category, affected metric and source page; a finding's merged_duplicate_count shows how many agent outputs raised it. Priority for findings without a code-verified calculation behind them is a severity-based fallback, not a measured financial-impact percentage (see PROGRESS.md milestone 2)."
+  ],
+  "evidence_registry": [],
+  "generated_at": "2026-11-04T11:21:09.131517Z"
+}
