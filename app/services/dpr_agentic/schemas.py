@@ -44,6 +44,14 @@ class Finding(BaseModel):
     priority: Literal["must_fix", "should_fix", "good_to_fix"] | None = None
     priority_rule: str | None = None
 
+    # Set only by financial_calc.py/cam_engine_bridge.py for a calculated
+    # finding that has a real DPR-stated figure and a real recomputed
+    # figure to show side by side (e.g. "7.20 lakh" / "9.12 lakh"); never
+    # set from narrative text. None means no such pair exists for this
+    # finding -- never filled with a placeholder.
+    dpr_stated_value: str | None = None
+    recomputed_display_value: str | None = None
+
     @field_validator("severity", mode="before")
     @classmethod
     def _normalize_severity_case(cls, v: object) -> object:

@@ -193,7 +193,7 @@
       "verification": "source_verified",
       "explanation": "Computed from the document's own net profit, depreciation, interest and repayment figures for this year. The document itself states a DSCR of 1.58 for this year. The difference from our standard-formula figure usually means the document's own convention does not add interest back into the numerator -- not that either figure is wrong. Confirm which convention the lender expects.",
       "dpr_reported_value": null,
-      "recomputed_value": "DSCR YEAR 1: 1.97",
+      "recomputed_value": null,
       "value_classification": "recomputed",
       "source_pages": [],
       "evidence": [],
@@ -214,8 +214,8 @@
       "priority_rule": "MUST_FIX: fuel_cost_reconciliation discrepancy is 26.7% of the stated total, at/above the 5% threshold.",
       "verification": "source_verified",
       "explanation": "Acres x litres/acre x price/litre = 9.12 lakh; the document states 7.2 lakh.",
-      "dpr_reported_value": null,
-      "recomputed_value": "Fuel cost does not match acres x litres/acre x price",
+      "dpr_reported_value": "7.2 lakh",
+      "recomputed_value": "9.12 lakh",
       "value_classification": "recomputed",
       "source_pages": [
         8
@@ -238,8 +238,8 @@
       "priority_rule": "MUST_FIX: crew_wage_reconciliation discrepancy is 37.5% of the stated total, at/above the 5% threshold.",
       "verification": "source_verified",
       "explanation": "Annexure staffing plan totals 3.3 lakh; the P&L states 2.4 lakh.",
-      "dpr_reported_value": null,
-      "recomputed_value": "Crew wages understated versus the staffing plan",
+      "dpr_reported_value": "2.4 lakh",
+      "recomputed_value": "3.3 lakh",
       "value_classification": "recomputed",
       "source_pages": [
         8
@@ -263,7 +263,7 @@
       "verification": "source_verified",
       "explanation": "Sources of funds - Applications of funds (a nonzero result must appear as closing cash in the cash-flow statement, not be plugged away) Sources 102.65 lakh, applications 62.36 lakh, gap 40.29 lakh.",
       "dpr_reported_value": null,
-      "recomputed_value": "Fund flow sources do not match applications",
+      "recomputed_value": null,
       "value_classification": "recomputed",
       "source_pages": [
         12
@@ -342,5 +342,5 @@
     "Findings above are deduplicated by category, affected metric and source page; a finding's merged_duplicate_count shows how many agent outputs raised it. Priority for findings without a code-verified calculation behind them is a severity-based fallback, not a measured financial-impact percentage (see PROGRESS.md milestone 2)."
   ],
   "evidence_registry": [],
-  "generated_at": "2026-11-04T11:21:09.131517Z"
+  "generated_at": "2026-11-04T12:09:15.017923Z"
 }

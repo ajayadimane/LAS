@@ -87,6 +87,8 @@ def _calculated_finding(
     page: int | None,
     computed_value: Decimal,
     stated_value: Decimal | None,
+    unit: str = " lakh",
+    show_value_pair: bool = True,
 ) -> Finding:
     priority, rule = priority_for_calculation(
         check=check,
@@ -107,6 +109,9 @@ def _calculated_finding(
     finding.priority_rule = rule
     finding.finding_class = "document_defect"
     finding.dedup_key = compute_dedup_key(finding)
+    if show_value_pair and stated_value is not None:
+        finding.dpr_stated_value = f"{stated_value}{unit}"
+        finding.recomputed_display_value = f"{computed_value}{unit}"
     return finding
 
 
@@ -220,6 +225,7 @@ def _fund_flow_finding(
         page=fin.fund_flow_sources_total.page,
         computed_value=sources,
         stated_value=applications,
+        show_value_pair=False,
     )
     return finding, trace
 

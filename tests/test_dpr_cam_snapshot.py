@@ -124,6 +124,41 @@ def test_findings_carry_evidence_page_as_source_pages():
     assert snapshot.findings[0].finding_class.value == "document_defect"
 
 
+def test_finding_value_pair_passes_through_only_when_the_pipeline_set_one():
+    """Regression: the adapter used to fall back to the finding's own
+    title as `recomputed_value`, which is not a figure at all. A real
+    computed value pair must flow through verbatim; a finding with none
+    must show none (Section 19.3 -- never a placeholder standing in for
+    a real number)."""
+    with_pair = Finding(
+        category="financial_calculation",
+        severity="high",
+        title="Fuel cost mismatch",
+        explanation="x",
+        suggested_action="Verify.",
+        provenance="calculated",
+    )
+    with_pair.dpr_stated_value = "7.2 lakh"
+    with_pair.recomputed_display_value = "9.12 lakh"
+    without_pair = Finding(
+        category="financial_calculation",
+        severity="high",
+        title="Fund flow gap",
+        explanation="x",
+        suggested_action="Verify.",
+        provenance="calculated",
+    )
+    result = _result(with_pair, without_pair)
+    snapshot = build_snapshot_from_analysis(
+        result, report_id="RPT-7", report_version=1, analysis_run_id="RUN-7"
+    )
+    by_title = {f.title: f for f in snapshot.findings}
+    assert by_title["Fuel cost mismatch"].dpr_reported_value == "7.2 lakh"
+    assert by_title["Fuel cost mismatch"].recomputed_value == "9.12 lakh"
+    assert by_title["Fund flow gap"].dpr_reported_value is None
+    assert by_title["Fund flow gap"].recomputed_value is None
+
+
 def test_no_two_findings_in_a_snapshot_share_a_dedup_key():
     """Section 5.1 point 5: the real pipeline emitted the same issue up to
     seven times. The consolidation pass must collapse that before it ever

@@ -97,6 +97,8 @@ def test_bridge_flags_the_fuel_cost_mismatch():
     fuel_findings = [f for f in findings if "fuel" in f.title.lower()]
     assert len(fuel_findings) == 1
     assert "9.12" in fuel_findings[0].explanation
+    assert fuel_findings[0].dpr_stated_value == "7.2 lakh"
+    assert fuel_findings[0].recomputed_display_value == "9.12 lakh"
 
 
 def test_bridge_flags_the_crew_wage_mismatch():
@@ -104,6 +106,8 @@ def test_bridge_flags_the_crew_wage_mismatch():
     crew_findings = [f for f in findings if "crew" in f.title.lower()]
     assert len(crew_findings) == 1
     assert "3.3" in crew_findings[0].explanation
+    assert crew_findings[0].dpr_stated_value == "2.4 lakh"
+    assert crew_findings[0].recomputed_display_value == "3.3 lakh"
 
 
 def test_bridge_flags_the_fund_flow_gap():
@@ -112,6 +116,11 @@ def test_bridge_flags_the_fund_flow_gap():
     gap_findings = [f for f in findings if "fund flow" in f.title.lower()]
     assert len(gap_findings) == 1
     assert gap_findings[0].priority == "must_fix"
+    # Sources/applications is a two-sided reconciliation, not a single
+    # "DPR stated this, it should be that" figure -- must not be rendered
+    # as one (would misleadingly imply applications is the "correct" sources).
+    assert gap_findings[0].dpr_stated_value is None
+    assert gap_findings[0].recomputed_display_value is None
 
 
 def test_bridge_derives_the_tax_rate():
