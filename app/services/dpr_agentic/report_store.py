@@ -4,6 +4,16 @@ Persists only the already-validated AnalysisResult JSON that analyze_parallel()
 produced -- never raw document bytes, uploaded file content or LLM prompts.
 report_access.py decides whether a caller may read it; this module only
 stores and retrieves.
+
+Append-only versioning (migration 005): a run_id's reports live in
+`dpr_report_artifacts` keyed by (run_id, version), never a single row per
+run_id. store_report() only ever INSERTs a new row at the next version
+number; no UPDATE statement touches this table anywhere in this module.
+A previous report version can therefore never be overwritten or lost
+(Section 16) -- even the narrow lease-reclaim race where two workers both
+complete the same run_id (see PROGRESS.md milestone 4c) now just produces
+two versions instead of a conflict: get_report() returns the latest by
+default, and every earlier version stays retrievable by number.
 """
 
 import json
@@ -13,55 +23,66 @@ from sqlalchemy import text
 from .schemas import AnalysisResult
 
 
-class ReportAlreadyStoredError(RuntimeError):
-    """Raised when store_report() is called a second time for a run_id that
-    already has a stored report.
-
-    A stored report is immutable: overwriting it would silently destroy a
-    previous report version, which the brief explicitly forbids (Section
-    16). In the normal job lifecycle this should be unreachable --
-    jobs.claim() only lets a worker claim a QUEUED run or a RUNNING one
-    whose lease expired, and a COMPLETED run can't be reclaimed -- so this
-    only fires on an anomalous double-store (e.g. two workers racing on
-    the same claim, or a direct report_store.py call outside the worker
-    path). A genuinely new version of the report (the borrower corrected
-    and re-uploaded their DPR) gets its own run_id already, via
-    jobs.submit()'s content-hash idempotency key -- it was never going to
-    collide here.
-    """
-
-
-def store_report(engine, run_id: str, result: AnalysisResult) -> str:
-    """Stores the report for `run_id`. Returns `run_id` as the artifact
-    reference, since the report is keyed one-to-one with its run. Raises
-    ReportAlreadyStoredError rather than overwriting if a report already
-    exists for this run_id -- never silently replaces one."""
+def store_report(engine, run_id: str, result: AnalysisResult) -> int:
+    """Appends a new version of the report for `run_id` and returns the
+    version number just stored (1 for the first report, 2 for the next,
+    and so on). Never updates or replaces an existing row."""
     payload = json.dumps(result.model_dump(mode="json"))
     with engine.begin() as conn:
-        row = conn.execute(
-            text("""
-                INSERT INTO dpr_report_artifacts (run_id, report)
-                VALUES (:run_id, CAST(:report AS jsonb))
-                ON CONFLICT (run_id) DO NOTHING
-                RETURNING run_id
-            """),
-            {"run_id": run_id, "report": payload},
-        ).scalar_one_or_none()
-    if row is None:
-        raise ReportAlreadyStoredError(
-            f"A report already exists for run_id={run_id!r}; reports are "
-            f"immutable once stored."
+        # Lock any existing rows for this run_id before computing the next
+        # version number, so two concurrent stores serialize rather than
+        # both computing the same number (Postgres disallows FOR UPDATE
+        # directly on an aggregate query, hence the two steps).
+        existing_versions = (
+            conn.execute(
+                text(
+                    "SELECT version FROM dpr_report_artifacts "
+                    "WHERE run_id = :run_id FOR UPDATE"
+                ),
+                {"run_id": run_id},
+            )
+            .scalars()
+            .all()
         )
-    return run_id
+        next_version = max(existing_versions, default=0) + 1
+        conn.execute(
+            text("""
+                INSERT INTO dpr_report_artifacts (run_id, version, report)
+                VALUES (:run_id, :version, CAST(:report AS jsonb))
+            """),
+            {"run_id": run_id, "version": next_version, "report": payload},
+        )
+    return next_version
 
 
-def get_report(engine, run_id: str) -> AnalysisResult | None:
+def get_report(
+    engine, run_id: str, *, version: int | None = None
+) -> AnalysisResult | None:
+    """Returns the report for `run_id` -- the latest stored version by
+    default, or a specific one if `version` is given. Every version ever
+    stored remains retrievable this way."""
+    query = (
+        "SELECT report::text AS report FROM dpr_report_artifacts WHERE run_id=:run_id"
+    )
+    params: dict[str, str | int] = {"run_id": run_id}
+    if version is not None:
+        query += " AND version=:version"
+        params["version"] = version
+    else:
+        query += " ORDER BY version DESC LIMIT 1"
     with engine.connect() as conn:
-        row = conn.execute(
+        row = conn.execute(text(query), params).scalar_one_or_none()
+    return AnalysisResult.model_validate(json.loads(row)) if row else None
+
+
+def list_report_versions(engine, run_id: str) -> list[int]:
+    """All version numbers ever stored for `run_id`, oldest first."""
+    with engine.connect() as conn:
+        rows = conn.execute(
             text(
-                "SELECT report::text AS report FROM dpr_report_artifacts "
-                "WHERE run_id=:run_id"
+                "SELECT version FROM dpr_report_artifacts "
+                "WHERE run_id=:run_id ORDER BY version"
             ),
             {"run_id": run_id},
-        ).scalar_one_or_none()
-    return AnalysisResult.model_validate(json.loads(row)) if row else None
+        ).scalars()
+        return list(rows)

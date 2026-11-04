@@ -1420,4 +1420,60 @@ ruff check / ruff format --check                                       -> clean
   that is slow but not actually dead). Worth a follow-up if operators ever
   see it in practice; not blocking milestone 5.
 - Replacing `ReportAlreadyStoredError`'s raise with append-only versioning
-  is milestone 5's first task (next).
+  is milestone 5's first task -- done, see below.
+
+## Status: Milestone 5 (Persistence/APIs/authorization) — started
+
+### Report versioning: append-only, replacing the raise (2026-11-05)
+
+`ReportAlreadyStoredError` (milestone 4c) refused a second store for the
+same run_id rather than overwriting it, but refusing is still a dead end
+-- the narrow lease-reclaim race it guards against (see milestone 4c)
+would leave the run `FAILED` even though a perfectly good report had been
+stored. Replaced it with real append-only versioning instead:
+
+- **`migrations/005_dpr_report_artifacts_versioning.sql`** -- adds a
+  `version INTEGER NOT NULL DEFAULT 1` column to `dpr_report_artifacts`
+  and changes its primary key from `(run_id)` alone to `(run_id,
+  version)`, guarded by a `DO $$ ... $$` block that only runs the
+  `ALTER`/constraint swap once (checked via `pg_constraint`), consistent
+  with every other migration here being safe to re-run on every app
+  startup. Adds a `(run_id, version DESC)` index for the "give me the
+  latest" lookup.
+- **`report_store.py`** -- `store_report()` now only ever `INSERT`s a new
+  row at `MAX(version) + 1` for that run_id (locking existing rows with
+  `SELECT ... FOR UPDATE` first, in a separate statement from the
+  aggregate -- Postgres rejects `FOR UPDATE` directly on an aggregate
+  query, caught by testing against a real Postgres, not assumed) and
+  returns the version number stored. No `UPDATE` statement exists
+  anywhere in this module. `get_report()` takes an optional `version`
+  kwarg -- omitted, it returns the latest (so `report_service.py`'s
+  existing `get_report(engine, run["run_id"])` call needed no change);
+  given, it returns that exact historical version. New
+  `list_report_versions()` returns every version number ever stored for
+  a run_id, oldest first.
+- Removed `ReportAlreadyStoredError` entirely -- nothing raises on a
+  second store now.
+- Rewrote `tests/test_dpr_report_store.py` for the new semantics (4
+  tests, all re-verified against a real throwaway Postgres, not just
+  mocked): round-trip, a second store appending version 2 while version 1
+  survives untouched, `get_report()` with no stored report returning
+  `None`, and the exact lease-reclaim race from milestone 4c re-run under
+  the new code -- which now ends the run `COMPLETED` with both versions
+  preserved, instead of the old `FAILED`-despite-a-valid-report outcome.
+  This closes the narrow rough edge milestone 4c flagged as a follow-up.
+
+### Tests run
+
+```
+python3 -m pytest tests/test_dpr_report_store.py tests/test_dpr_report_access.py -q
+  (real Postgres) -> 18 passed
+python3 -m pytest tests/ -q (real Postgres, same unrelated pre-existing
+  log-safety failure deselected) -> all pass
+ruff check / ruff format --check -> clean
+```
+
+### Remaining work
+
+- Milestone 5's other items per Section 3A/15: new API routes, the rest
+  of persistence/authorization. Not started.
