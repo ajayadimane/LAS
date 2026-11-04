@@ -1865,3 +1865,80 @@ ruff check / ruff format --check -> clean
 Versioning, persistence, API routes and authorization for the DPR report
 are done, audited, and hardened per Sections 3A/15/16. Next: milestone 6
 (frontend), then milestone 7 (Annexure B document).
+
+### Repo-wide test isolation, before milestone 6 (2026-11-05)
+
+Three layered, session-scoped, autouse fixtures added to `tests/conftest.py`
+so the disclosed Gemini-billing incident's root cause can't recur anywhere
+in the suite, not just in the one file it happened in:
+
+1. **`_never_read_the_real_dotenv_in_tests`**: overrides
+   `Settings.model_config["env_file"] = None` for the whole test session.
+   An unset secret field on an ad hoc `Settings(...)` call now becomes
+   `None`/its default, never a real value from the real `.env` -- verified
+   experimentally against this exact installed pydantic-settings version
+   (2.13.1) before relying on it, not assumed.
+2. **`_block_real_outbound_network_in_tests`**: monkeypatches
+   `socket.socket.connect` to raise `RuntimeError` for any non-loopback
+   address; loopback (the throwaway test Postgres) still connects
+   normally. respx-mocked vendor calls and `TestClient`'s in-process ASGI
+   transport never reach a real socket in the first place, so neither is
+   affected -- confirmed by running the full suite under this guard with
+   zero unexpected failures.
+3. **`_fail_on_real_gemini_client`**: reads the real on-disk `.env`'s
+   `DPR_AGENTIC_GEMINI_API_KEY` once, for comparison only, and makes
+   `GeminiAgentClient.__init__` raise immediately (before any network
+   attempt) if ever constructed with that exact value -- catches even a
+   path that bypassed `Settings` entirely (e.g. reading `os.environ`
+   directly), and names Gemini specifically in the failure message rather
+   than a generic socket error.
+
+New `tests/test_dpr_test_isolation.py` (5 tests) proves each guard actually
+fires -- including a real, direct test that constructing
+`GeminiAgentClient` with the literal real `.env` key raises, run against
+this machine's actual `.env`, not a simulated one.
+
+**Full suite re-run under all three guards: zero external calls, same one
+pre-existing unrelated failure as every prior round
+(`test_dpr_log_safety.py::test_process_one_sets_current_run_id_for_the_
+whole_call_chain`), exit 0 otherwise.** This is the "run the full suite and
+confirm zero external calls" the user asked for -- confirmed by the run
+itself completing without any blocked-connection `RuntimeError` surfacing
+anywhere in the suite, which it would have for any test that attempted one.
+
+**What content the accidental Gemini run sent**: synthetic test data only,
+never the real Tikamgarh DPR (no real Tikamgarh DPR file exists at all --
+see milestone 1's note that the golden fixture is an explicitly labeled
+simulation). The exact payload, from `tests/test_dpr_agentic.py`'s
+module-level `PAYLOAD` constant:
+```
+{
+    "service_request_id": "SR-1",
+    "wallet_document_id": "W-1",
+    "document_sha256": sha256(b"sample"),
+    "pages": [{"page": 1, "text": "Project cost is 80 lakh and loan is 60 lakh."}],
+}
+```
+That one line of placeholder text was sent once per orchestrator role (11
+calls total -- 10 roles' `generate()` plus one `extract()`), each with a
+different system prompt but the identical document content above.
+
+**Internal-endpoint rate limiter: confirmed in-memory, per-process.**
+`dpr_analysis.py`'s `_rejections_by_ip` is a plain module-level `dict`,
+scoped to one Python process. Already recorded as a limitation in last
+round's PROGRESS.md entry ("In-process only... accepted as a gap"),
+restated here as asked: behind more than one worker process or replica,
+each has its own independent counter, so the real cap across all of them
+is `dpr_agentic_internal_token_max_rejections` multiplied by however many
+processes are running, not the configured number itself. A shared store
+(e.g. Redis) would close this; none exists in this repo today.
+
+### Tests run (part 5)
+
+```
+python3 -m pytest tests/test_dpr_test_isolation.py -q -> 5 passed
+python3 -m pytest tests/ -q (real Postgres, same unrelated pre-existing
+  log-safety failure deselected) -> all pass, exit 0, zero blocked-network
+  RuntimeErrors anywhere in the run
+ruff check / ruff format --check -> clean
+```
