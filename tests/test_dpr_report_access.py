@@ -579,3 +579,69 @@ def test_bd_report_findings_versions_and_annexures_mirror_customer(
             headers=BD_AUTH,
         )
         assert response.status_code == 200
+
+
+# --- findings/annexures/versions: unpaid and wrong-owner, both routers ------
+#
+# "No consent" has no live code path on any of these routes either, for the
+# same reason as the report route itself (see the comment above
+# test_customer_report_401s_without_a_bearer_token): consent_satisfied is
+# never independently False at this layer by construction. All four routes
+# (report, findings, annexures, versions) share report_service._gate(), so
+# tests/test_dpr_release_policy.py's consent_satisfied=False case already
+# covers every one of them in a single place, not just the report route.
+
+_SUB_ROUTES = ["findings", "annexures", "versions"]
+
+
+def test_customer_sub_routes_locked_when_unpaid(dpr_client, dpr_pg, vendor):
+    vendor.post(BY_PERSON_ID).mock(
+        return_value=httpx.Response(
+            200, json=_person(GeoCheck="Report ready", GeoCheck_Payment="NA")
+        )
+    )
+    sha = hashlib.sha256(b"doc").hexdigest()
+    ref = f"wallet-person-custom-field:{PID}:GEO_CHECK"
+    _submit_completed_run(dpr_pg, source_reference=ref, sha=sha)
+    for suffix in _SUB_ROUTES:
+        response = dpr_client.get(
+            f"/api/v1/customer/services/GEO_CHECK/report/{suffix}", headers=ME
+        )
+        assert response.status_code == 403, suffix
+        assert "PAYMENT_NOT_VERIFIED" in response.json()["detail"]["reasons"]
+
+
+def test_bd_sub_routes_locked_when_unpaid(dpr_client, dpr_pg, vendor):
+    vendor.post(BY_PERSON_ID).mock(
+        return_value=httpx.Response(
+            200, json=_person(GeoCheck="Report ready", GeoCheck_Payment="NA")
+        )
+    )
+    sha = hashlib.sha256(b"doc").hexdigest()
+    ref = f"wallet-person-custom-field:{PID}:GEO_CHECK"
+    _submit_completed_run(dpr_pg, source_reference=ref, sha=sha)
+    for suffix in _SUB_ROUTES:
+        response = dpr_client.get(
+            f"/api/v1/bd/customers/{PID}/services/GEO_CHECK/report/{suffix}",
+            headers=BD_AUTH,
+        )
+        assert response.status_code == 403, suffix
+        assert "PAYMENT_NOT_VERIFIED" in response.json()["detail"]["reasons"]
+
+
+def test_bd_sub_routes_404_for_another_brokers_customer(dpr_client, dpr_pg, vendor):
+    """Customer routes have no "wrong owner" case to test: person_id is
+    always the token's own `me`, never attacker-supplied, so there is no
+    request shape that could even attempt to read someone else's report."""
+    body = _person(GeoCheck="Report ready", GeoCheck_Payment="Paid")
+    body["brokerId.id"] = "11111"
+    vendor.post(BY_PERSON_ID).mock(return_value=httpx.Response(200, json=body))
+    sha = hashlib.sha256(b"doc").hexdigest()
+    ref = f"wallet-person-custom-field:{PID}:GEO_CHECK"
+    _submit_completed_run(dpr_pg, source_reference=ref, sha=sha)
+    for suffix in _SUB_ROUTES:
+        response = dpr_client.get(
+            f"/api/v1/bd/customers/{PID}/services/GEO_CHECK/report/{suffix}",
+            headers=BD_AUTH,
+        )
+        assert response.status_code == 404, suffix

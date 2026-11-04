@@ -1,13 +1,27 @@
 import asyncio
 import hashlib
 
+import pytest
 from fastapi.testclient import TestClient
 
+from app.api.v1 import dpr_analysis
 from app.core.config import Settings
 from app.main import create_app
 from app.services.dpr_agentic.financial_schema import ProjectFinancials
 from app.services.dpr_agentic.orchestrator import PROMPTS, analyze, verify_evidence
 from app.services.dpr_agentic.schemas import AgentOutput, AnalysisInput, Finding
+
+
+@pytest.fixture(autouse=True)
+def _reset_internal_token_rejection_counter():
+    """dpr_analysis._rejections_by_ip is module-level, shared process-wide
+    state (see its own docstring on why: an in-process rate limiter) --
+    without this, one test's rejections would bleed into the next test's
+    count, since TestClient always reports the same client_ip."""
+    dpr_analysis._rejections_by_ip.clear()
+    yield
+    dpr_analysis._rejections_by_ip.clear()
+
 
 PAYLOAD = {
     "service_request_id": "SR-1",
@@ -148,7 +162,7 @@ def test_disabled_api_is_not_available():
         Settings(environment="test", context_path="", dpr_agentic_enabled=False)
     )
     with TestClient(app) as client:
-        response = client.post("/api/v1/internal/dpr-agentic/analyze", json=PAYLOAD)
+        response = client.post("/internal/dpr-agentic/analyze", json=PAYLOAD)
         assert response.status_code == 404
 
 
@@ -162,5 +176,134 @@ def test_enabled_api_requires_secret():
         )
     )
     with TestClient(app) as client:
-        response = client.post("/api/v1/internal/dpr-agentic/analyze", json=PAYLOAD)
+        response = client.post("/internal/dpr-agentic/analyze", json=PAYLOAD)
+        assert response.status_code == 403
+
+
+def test_internal_token_rotation_accepts_old_and_new_secret():
+    """During a rotation, callers still using the old secret must not all
+    be rejected at once -- dpr_agentic_internal_token_previous accepts it
+    alongside the new dpr_agentic_internal_token."""
+    app = create_app(
+        Settings(
+            environment="test",
+            context_path="",
+            dpr_agentic_enabled=True,
+            dpr_agentic_internal_token="new-token",
+            dpr_agentic_internal_token_previous="old-token",
+            dpr_agentic_gemini_api_key=None,
+        )
+    )
+    with TestClient(app) as client:
+        for token in ("new-token", "old-token"):
+            response = client.post(
+                "/internal/dpr-agentic/analyze",
+                json=PAYLOAD,
+                headers={"x-internal-token": token},
+            )
+            # No Gemini key configured in this test -- 503, not 403/429,
+            # is what proves the token check itself passed.
+            assert response.status_code == 503, token
+
+
+def test_internal_token_rejects_anything_else_even_with_a_previous_secret_set():
+    app = create_app(
+        Settings(
+            environment="test",
+            context_path="",
+            dpr_agentic_enabled=True,
+            dpr_agentic_internal_token="new-token",
+            dpr_agentic_internal_token_previous="old-token",
+            dpr_agentic_gemini_api_key=None,
+        )
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/internal/dpr-agentic/analyze",
+            json=PAYLOAD,
+            headers={"x-internal-token": "guessed-token"},
+        )
+        assert response.status_code == 403
+
+
+def test_repeated_bad_internal_tokens_get_rate_limited():
+    app = create_app(
+        Settings(
+            environment="test",
+            context_path="",
+            dpr_agentic_enabled=True,
+            dpr_agentic_internal_token="test-only-token",
+            dpr_agentic_internal_token_max_rejections=3,
+            dpr_agentic_internal_token_rejection_window_seconds=60,
+            dpr_agentic_gemini_api_key=None,
+        )
+    )
+    with TestClient(app) as client:
+        for _ in range(3):
+            response = client.post(
+                "/internal/dpr-agentic/analyze",
+                json=PAYLOAD,
+                headers={"x-internal-token": "wrong"},
+            )
+            assert response.status_code == 403
+
+        # The 4th bad attempt in the window is rate-limited, not a plain
+        # 403 -- and so would a *correct* token be, at this point.
+        limited = client.post(
+            "/internal/dpr-agentic/analyze",
+            json=PAYLOAD,
+            headers={"x-internal-token": "wrong"},
+        )
+        assert limited.status_code == 429
+
+        still_limited_with_the_real_token = client.post(
+            "/internal/dpr-agentic/analyze",
+            json=PAYLOAD,
+            headers={"x-internal-token": "test-only-token"},
+        )
+        assert still_limited_with_the_real_token.status_code == 429
+
+
+def test_successful_calls_never_count_toward_the_rejection_limit():
+    """A legitimate caller making many correct, frequent calls must never
+    be rate-limited -- only recorded *rejections* count."""
+    app = create_app(
+        Settings(
+            environment="test",
+            context_path="",
+            dpr_agentic_enabled=True,
+            dpr_agentic_internal_token="test-only-token",
+            dpr_agentic_internal_token_max_rejections=3,
+            dpr_agentic_internal_token_rejection_window_seconds=60,
+            dpr_agentic_gemini_api_key=None,
+        )
+    )
+    with TestClient(app) as client:
+        for _ in range(10):
+            response = client.post(
+                "/internal/dpr-agentic/analyze",
+                json=PAYLOAD,
+                headers={"x-internal-token": "test-only-token"},
+            )
+            # No Gemini key configured -- 503 proves the token check
+            # passed every time, never 429.
+            assert response.status_code == 503
+
+
+def test_inspect_upload_shares_the_same_token_check_and_rate_limit():
+    app = create_app(
+        Settings(
+            environment="test",
+            context_path="",
+            dpr_agentic_enabled=True,
+            dpr_agentic_internal_token="test-only-token",
+        )
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/internal/dpr-agentic/inspect-upload"
+            "?filename=a.pdf&wallet_document_id=W-1&service_request_id=SR-1",
+            content=b"not a pdf",
+            headers={"x-internal-token": "wrong"},
+        )
         assert response.status_code == 403

@@ -1,13 +1,32 @@
 """Internal, disabled-by-default, request-scoped Agentic DPR preview API.
 
-Mounted under the same public /api/v1 prefix as every customer/BD route
-(app/api/v1/router.py) -- there is no separate internal network or port, so
-the shared-secret token below (never the feature flag alone) is the only
-thing standing between this and the public internet. A disabled feature
-flag still 404s before the token is even checked, so toggling the flag off
-does not even reveal the route exists."""
+Mounted directly off app.main (see app/api/v1/router.py's note), not under
+the versioned public /api/v1 surface -- but still the same process and
+port: there is no separate internal network, so the shared-secret token
+below (never the feature flag alone) is the only thing standing between
+this and the public internet. A disabled feature flag still 404s before the
+token is even checked, so toggling the flag off does not even reveal the
+route exists.
+
+In-repo hardening, short of real network isolation (outside this repo's
+control):
+  - secrets.compare_digest() for the token comparison (constant-time).
+  - dpr_agentic_internal_token_previous accepts a second secret during a
+    rotation, so the token can be changed without a window where every
+    caller is rejected at once.
+  - a per-client-IP rejection counter: past
+    dpr_agentic_internal_token_max_rejections rejections in
+    dpr_agentic_internal_token_rejection_window_seconds, further attempts
+    from that IP get 429 without even comparing the token (blunts an
+    online guessing attempt). In-process only -- behind more than one
+    worker process or replica, each has its own counter; a shared store
+    (e.g. Redis) would be needed for a real limit across all of them. That
+    gap is accepted here, not hidden: see PROGRESS.md milestone 5.
+"""
 
 import secrets
+import threading
+import time
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
@@ -22,25 +41,73 @@ logger = get_logger(__name__)
 
 router = APIRouter(prefix="/internal/dpr-agentic", tags=["internal-dpr-agentic"])
 
+_rejection_lock = threading.Lock()
+_rejections_by_ip: dict[str, list[float]] = {}
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _is_rate_limited(
+    client_ip: str, *, max_rejections: int, window_seconds: float
+) -> bool:
+    """True if `client_ip` already has `max_rejections` or more *prior*
+    recorded rejections within `window_seconds` -- never counts the
+    current attempt, so a run of legitimate successful calls never trips
+    this no matter how frequent."""
+    now = time.monotonic()
+    with _rejection_lock:
+        attempts = [
+            t for t in _rejections_by_ip.get(client_ip, []) if now - t < window_seconds
+        ]
+        _rejections_by_ip[client_ip] = attempts
+        return len(attempts) >= max_rejections
+
+
+def _record_rejection(client_ip: str) -> None:
+    with _rejection_lock:
+        _rejections_by_ip.setdefault(client_ip, []).append(time.monotonic())
+
 
 def _check_internal_token(
     request: Request, x_internal_token: str | None, settings: Settings
 ) -> None:
-    configured = settings.dpr_agentic_internal_token
-    if (
-        not configured
-        or not x_internal_token
-        or not secrets.compare_digest(x_internal_token, configured.get_secret_value())
+    client_ip = _client_ip(request)
+    if _is_rate_limited(
+        client_ip,
+        max_rejections=settings.dpr_agentic_internal_token_max_rejections,
+        window_seconds=settings.dpr_agentic_internal_token_rejection_window_seconds,
     ):
-        # Never log the token itself (sent or configured) -- just that an
-        # attempt was rejected, for operational visibility on a route with
-        # no network-level isolation.
         logger.warning(
-            "dpr_internal_token_rejected path=%s client_ip=%s",
+            "dpr_internal_token_rate_limited path=%s client_ip=%s",
             request.url.path,
-            request.client.host if request.client else "unknown",
+            client_ip,
         )
-        raise HTTPException(status_code=403, detail="Forbidden")
+        raise HTTPException(status_code=429, detail="Too many attempts")
+
+    candidates = [
+        s.get_secret_value()
+        for s in (
+            settings.dpr_agentic_internal_token,
+            settings.dpr_agentic_internal_token_previous,
+        )
+        if s is not None
+    ]
+    if x_internal_token and any(
+        secrets.compare_digest(x_internal_token, c) for c in candidates
+    ):
+        return
+    _record_rejection(client_ip)
+    # Never log the token itself (sent or configured) -- just that an
+    # attempt was rejected, for operational visibility on a route with
+    # no network-level isolation.
+    logger.warning(
+        "dpr_internal_token_rejected path=%s client_ip=%s",
+        request.url.path,
+        client_ip,
+    )
+    raise HTTPException(status_code=403, detail="Forbidden")
 
 
 @router.post("/analyze", response_model=AnalysisResult)

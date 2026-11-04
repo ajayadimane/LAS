@@ -88,6 +88,20 @@ class Settings(BaseSettings):
     # --- Feature-gated internal DPR agentic preview (no customer-facing access) ---
     dpr_agentic_enabled: bool = False
     dpr_agentic_internal_token: SecretStr | None = None
+    # Set during a rotation: both the new (dpr_agentic_internal_token) and
+    # this old secret are accepted until every caller is confirmed switched
+    # over, then unset this one. Lets the token be rotated without a
+    # window where every caller is rejected at once.
+    dpr_agentic_internal_token_previous: SecretStr | None = None
+    # A failed internal-token attempt is logged and counted per client IP
+    # (app/api/v1/dpr_analysis.py); past this many rejections in the
+    # window below, further attempts from that IP get 429 without even
+    # comparing the token, to blunt an online guessing attempt against a
+    # route with no network-level isolation.
+    dpr_agentic_internal_token_max_rejections: int = Field(default=10, ge=1)
+    dpr_agentic_internal_token_rejection_window_seconds: float = Field(
+        default=60.0, gt=0
+    )
     dpr_agentic_gemini_api_key: SecretStr | None = None
     dpr_agentic_gemini_model: str = "gemini-2.5-flash"
     # Deterministic Section 9 financial engine (cam_financial_engine.py,
@@ -141,6 +155,12 @@ class Settings(BaseSettings):
     # Wallet document write is never blocked by this, only queuing analysis
     # of it (analysis_status becomes "RATE_LIMITED" instead of "QUEUED").
     dpr_agentic_daily_submission_limit: int = Field(default=5, ge=1)
+    # Hard wall-clock cap on one CAM report's WeasyPrint render
+    # (report_store.py), enforced by running it in a subprocess that is
+    # killed on timeout -- a hang in WeasyPrint/cairo/pango (observed, not
+    # hypothetical -- see PROGRESS.md milestone 5) must never stall the
+    # worker process itself; it just becomes pdf_render_status='FAILED'.
+    dpr_cam_pdf_render_timeout_seconds: float = Field(default=120.0, gt=0)
 
     @field_validator("dpr_agentic_liteparse_cli_path")
     @classmethod

@@ -1703,14 +1703,165 @@ ruff check / ruff format --check -> clean
 
 ### Remaining work (updated again)
 
-- Milestone 5 is now effectively complete: versioning (idempotent,
-  service-scoped, DB-immutable), API routes (report/findings/annexures/
-  versions, both JSON and PDF, both routers), and authorization (one
-  shared gate, audited against 8 checks) are all in place.
-- Not done: true network isolation for `/internal/dpr-agentic/*` (outside
-  this repo's control); `report_render.py` is now dead weight on the live
-  path (still tested, just unused) -- candidate for removal once confirmed
-  nothing else needs it.
 - Milestone 6 (frontend: wire `?format=pdf` into `AnalysisReport.tsx`) and
   milestone 7 (polish the `/report/annexures` payload into the full
   Annexure B document, Section 12) remain not started.
+
+### Closing milestone 5 (2026-11-05)
+
+**1. WeasyPrint render moved to a subprocess with a hard timeout.** The
+concurrent-writer test from last round already showed WeasyPrint/cairo/
+pango can hang rather than raise; `store_report()`'s render step now runs
+in a spawned (never forked -- forking would duplicate a live DB connection
+into the child for no reason) subprocess via a new
+`_run_in_subprocess_with_timeout()`, joined with `parent_conn.poll(timeout)`
+and `terminate()`/`kill()` on timeout or afterward either way, so the
+subprocess is never left running. Configurable via
+`Settings.dpr_cam_pdf_render_timeout_seconds` (default 120s), threaded
+through from `scripts/dpr_worker.py`. A timeout (or any other render
+failure) becomes `pdf_render_status='FAILED'`; the JSON report still
+stores and still releases. Also moved the render to *before* the DB
+transaction opens (previously inside it): a render taking up to 120s must
+not hold `FOR UPDATE` row locks for that long. The version number baked
+into the PDF's own content (`report_id`/`report_version`) is now a
+best-effort estimate taken just before rendering, since the real number
+isn't resolved until the insert after -- correct except in the
+vanishingly rare case a concurrent writer also claims that number and this
+call has to retry onto the next one, which the stored `version` column
+(what every route actually reads) is unaffected by.
+Tests: `test_a_hanging_render_times_out_and_the_subprocess_is_never_left_
+running` (the generic mechanism, using a module-level `_never_finishes`
+target -- multiprocessing's spawn pickles a target by module+qualname, so
+it can't be a closure) and `test_store_report_marks_pdf_failed_when_the_
+render_times_out` (end to end through `store_report()`).
+
+**2. Access tests added for findings/annexures/versions, both routers:**
+unpaid (`test_customer_sub_routes_locked_when_unpaid`, `test_bd_sub_
+routes_locked_when_unpaid`) and wrong owner
+(`test_bd_sub_routes_404_for_another_brokers_customer` -- customer routes
+have no wrong-owner case to test, since `person_id` is always the token's
+own `me`, never attacker-supplied). "No consent" isn't retested per-route:
+all four routes share `report_service._gate()`, so `test_dpr_release_
+policy.py`'s `consent_satisfied=False` case already covers every one of
+them from the one place that actually implements the check.
+
+**3. Storage interface: none exists, recorded as a known limitation.**
+Checked -- there is no approved object-storage interface anywhere in this
+repo (`app/services/service_fields.py` has the identical documented gap
+for uploaded customer documents: "object storage exists... move to storage
+(e.g. MinIO) before many customers have them", never implemented). So
+`report_pdf` stores PDF bytes directly in Postgres `BYTEA`, recorded as a
+known limitation in `report_store.py`'s own module docstring: if an object
+store is added later, this column should hold a storage key and checksum
+instead of the bytes, in that same migration.
+
+**4. Internal endpoints hardened in-repo:**
+- **Separate mount.** `dpr_analysis.router` is no longer included in
+  `api_router` (`/api/v1/...`); `app.main.create_app()` mounts it directly
+  on `app` instead. Its routes moved from `/api/v1/internal/dpr-agentic/*`
+  to `/internal/dpr-agentic/*` -- a different URL namespace from every
+  dashboard-facing route, though still the same process/port (true network
+  isolation remains outside this repo, as already noted last round).
+- **Constant-time comparison:** already in place (`secrets.compare_digest`)
+  before this round; unchanged.
+- **Rate-limiting of rejections:** a new per-client-IP counter
+  (`dpr_agentic_internal_token_max_rejections`, default 10, within
+  `dpr_agentic_internal_token_rejection_window_seconds`, default 60s) --
+  past the cap, further attempts get `429` without even comparing the
+  token. Deliberately counts only *failed* attempts, checked against prior
+  rejections before the token comparison runs, so a legitimate caller
+  making many fast, correct calls is never rate-limited --
+  `test_successful_calls_never_count_toward_the_rejection_limit` pins this.
+  In-process only: behind more than one worker/replica, each has its own
+  counter, so the real cap across all of them is higher than configured --
+  accepted as a gap, not hidden (a shared store like Redis would close it,
+  not present in this repo today).
+- **Two-secret rotation:** `dpr_agentic_internal_token_previous` -- both it
+  and the current `dpr_agentic_internal_token` are accepted, so a token can
+  be rotated without a window where every caller is rejected at once.
+
+**5. Reportlab renderer deleted.** `report_render.py` and its test file
+were unwired from every route as of last round's CAM-PDF wiring; asked the
+user whether to delete or keep-and-document, and the answer was delete.
+Removed `app/services/dpr_agentic/report_render.py` and `tests/test_dpr_
+report_render.py`. `reportlab` is consequently no longer imported by any
+code, but is left declared in `pyproject.toml`/the lock files: removing it
+requires a full re-lock (`scripts/lock_dependencies.py`), which is its own
+verification pass and wasn't done here unasked -- a clean follow-up item.
+
+**Incident, disclosed:** while writing the internal-token rotation test,
+`Settings(...)` was constructed without explicitly overriding
+`dpr_agentic_gemini_api_key`. `Settings.model_config` reads `.env` for any
+field not explicitly passed, and this machine's real `.env` has a real,
+working `DPR_AGENTIC_GEMINI_API_KEY` -- so that one test run made several
+real calls to `generativelanguage.googleapis.com` (visible in the test log:
+multiple 200s, tens of thousands of tokens total), not a mock. Caught
+immediately from the test output, not discovered later. Fixed by passing
+`dpr_agentic_gemini_api_key=None` explicitly in every new `Settings(...)`
+call in `tests/test_dpr_agentic.py` that could otherwise reach that check.
+This is a pre-existing, repo-wide hazard, not unique to these tests: any ad
+hoc `Settings(...)` construction that doesn't explicitly null every secret
+field can silently fall back to a real `.env` value. Not fixed repo-wide
+here (out of scope for this round, and a broader sweep deserves its own
+pass), but flagged for one: either a conftest-level fixture that forces
+`env_file=None`/zeroes every secret by default, or a documented convention
+that every ad hoc `Settings(...)` in a test must list every secret field it
+cares about, explicitly.
+
+**Answers to the five open items (consolidated; full detail already in
+this file; restated here as asked):**
+
+1. **Page 4 per-scenario thresholds** (from "Report versioning, part 2" /
+   milestone 4c, unchanged since): `dpr_as_written` (₹750/acre) -> 622
+   acres/yr accounting, 193 acres/yr cash, **483 acres/yr** debt-service
+   threshold; `corrected_costs` (₹900/acre) -> 726 / 226 / **563**
+   acres/yr. Shared Year-1 inputs: price/unit ₹1,800/acre, depreciation
+   ₹4.50L, interest on term loan ₹2.03L, principal due ₹3.21L, tax rate
+   11.71%.
+2. **13-issue destination list**: see "The 13-issue audit" section above
+   for the full table. 6 of 13 map to F0001-F0006 (F0005 a confirmed
+   6-way merge of one issue, not a collision between distinct ones); 5 are
+   not modeled by any check in this pipeline; 2 (#7 break-even cost, #13
+   running cost/acre) are computed but have no dedicated Finding.
+3. **`(run_id, snapshot_sha256)` idempotency constraint**: added in
+   migration 006 as `dpr_report_artifacts_run_snapshot_key`; `store_
+   report()` checks for an existing row matching both before computing a
+   version, returning that version unchanged rather than appending --
+   `test_storing_identical_content_for_the_same_run_is_idempotent`.
+4. **Version scope across re-analysis**: confirmed by reading `jobs.
+   submit()` directly -- its idempotency key includes `document_sha256`,
+   so a DPR correction (new document) always gets a new `run_id`. Versions
+   are scoped to `source_reference` (migration 006,
+   `dpr_report_artifacts_source_version_key`), the same key `latest_run_
+   for()` already uses to span runs, so a correction continues as v2, v3
+   rather than restarting at v1 --
+   `test_reanalysis_under_a_new_run_id_continues_the_same_version_history`.
+5. **Database-level immutability, including the rule for filling
+   `report_pdf`**: a `BEFORE UPDATE OR DELETE` trigger
+   (`dpr_report_artifacts_immutable()`, migrations 006 and 007) rejects
+   every `DELETE`, and every `UPDATE` except two specific forward-only
+   transitions: `render_status` (`PENDING` -> `RENDERED`/`FAILED`) and
+   `pdf_render_status` (same shape). `report_pdf` itself may only change in
+   the same statement that moves `pdf_render_status` off `PENDING` -- i.e.
+   exactly once, when the render result first lands -- never again
+   afterward, even to another non-NULL value. `run_id`, `source_reference`,
+   `version`, `snapshot_sha256`, `report` and `created_at` are immutable
+   from the moment of insert, full stop. Verified with raw SQL bypassing
+   `report_store.py` entirely (`test_a_stored_report_row_cannot_be_
+   updated_or_deleted`, `test_render_status_may_only_move_forward`).
+
+### Tests run (part 4)
+
+```
+python3 -m pytest tests/test_dpr_report_store.py tests/test_dpr_report_access.py tests/test_dpr_agentic.py -q
+  (real Postgres) -> 54 passed
+python3 -m pytest tests/ -q (real Postgres, same unrelated pre-existing
+  log-safety failure deselected) -> all pass, exit 0
+ruff check / ruff format --check -> clean
+```
+
+### Status: Milestone 5 -- complete
+
+Versioning, persistence, API routes and authorization for the DPR report
+are done, audited, and hardened per Sections 3A/15/16. Next: milestone 6
+(frontend), then milestone 7 (Annexure B document).

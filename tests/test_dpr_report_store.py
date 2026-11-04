@@ -21,6 +21,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
+from app.services.dpr_agentic import report_store
 from app.services.dpr_agentic.jobs import claim, finish, submit
 from app.services.dpr_agentic.report_store import (
     get_report,
@@ -28,6 +29,18 @@ from app.services.dpr_agentic.report_store import (
     store_report,
 )
 from app.services.dpr_agentic.schemas import AgentOutput, AnalysisResult
+
+
+def _never_finishes(conn) -> None:
+    """A stand-in for "a template that never finishes" -- module-level
+    because multiprocessing's spawn context pickles a target by
+    module+qualname and re-imports it in the child, so a closure or
+    nested function cannot be used here. Never sends anything on `conn`,
+    so the parent's poll() genuinely times out rather than the child
+    reporting a (fast) error."""
+    import time
+
+    time.sleep(999)
 
 
 def _report(sha: str, *, status: str = "completed") -> AnalysisResult:
@@ -266,3 +279,55 @@ def test_render_status_may_only_move_forward(dpr_pg):
                     "WHERE source_reference='svc:1' AND version=1"
                 )
             )
+
+
+# --- PDF render: subprocess + hard timeout ----------------------------------
+
+
+def test_a_hanging_render_times_out_and_the_subprocess_is_never_left_running():
+    """The general mechanism store_report() relies on: a target that never
+    sends a result (the subprocess equivalent of "a template that never
+    finishes") must time out promptly and leave no child process running,
+    not hang the caller for 999 seconds."""
+    import time
+
+    started = time.monotonic()
+    status, payload = report_store._run_in_subprocess_with_timeout(
+        _never_finishes, (), timeout_seconds=0.5
+    )
+    elapsed = time.monotonic() - started
+
+    assert status == "timeout"
+    assert payload is None
+    # Generous bound (process spawn + a couple of join()/kill() round trips),
+    # but nowhere near the 999s the target itself sleeps for -- proves the
+    # child was actually killed, not merely abandoned while this call moved
+    # on.
+    assert elapsed < 15
+    assert report_store.multiprocessing.active_children() == []
+
+
+def test_store_report_marks_pdf_failed_when_the_render_times_out(dpr_pg):
+    """End to end through store_report(): a render that never finishes
+    becomes pdf_render_status='FAILED' (report_pdf NULL) -- the JSON report
+    still stores and still becomes the released version -- never a worker
+    stuck for the analysis's whole lifetime."""
+    run_id = _submit(dpr_pg, source_reference="svc:1")
+    claim(dpr_pg, run_id)
+
+    with patch.object(report_store, "_render_cam_pdf_worker", _never_finishes):
+        version = store_report(
+            dpr_pg, run_id, _report("a" * 64), pdf_render_timeout_seconds=0.5
+        )
+    assert version == 1
+    assert get_report(dpr_pg, "svc:1").document_sha256 == "a" * 64
+
+    with dpr_pg.connect() as conn:
+        pdf_render_status, pdf = conn.execute(
+            text(
+                "SELECT pdf_render_status, report_pdf FROM dpr_report_artifacts "
+                "WHERE source_reference='svc:1' AND version=1"
+            )
+        ).one()
+    assert pdf_render_status == "FAILED"
+    assert pdf is None

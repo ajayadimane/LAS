@@ -190,7 +190,12 @@ async def process_one(
         )
 
     async def store_result(rid: str, result) -> str:
-        store_report(engine, rid, result)
+        store_report(
+            engine,
+            rid,
+            result,
+            pdf_render_timeout_seconds=settings.dpr_cam_pdf_render_timeout_seconds,
+        )
         mark_report_completed(engine, rid, rid)
         return rid
 

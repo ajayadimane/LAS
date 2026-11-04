@@ -30,58 +30,162 @@ attempted once at store time and never regenerated afterwards -- that's what
 lets GET .../report?format=pdf serve stored bytes with no re-rendering on
 GET. Its outcome lives in a *separate* `pdf_render_status`/`report_pdf`,
 deliberately not folded into `render_status`: a PDF-rendering bug must never
-hide an otherwise-good JSON report from get_report()'s default filter.
+hide an otherwise-good JSON report from get_report()'s default filter. The
+render itself runs in a spawned subprocess with a hard wall-clock timeout
+(default 120s, `Settings.dpr_cam_pdf_render_timeout_seconds`): WeasyPrint/
+cairo/pango have been observed to hang rather than raise (see milestone 5's
+concurrent-writer test), and a hang in-process would wedge the single-
+threaded worker (scripts/dpr_worker.py) forever. A timeout or any other
+render failure becomes `pdf_render_status='FAILED'` -- never a stuck process
+-- and never blocks the JSON report (the real source of truth) from being
+stored.
+
+Known limitation: `report_pdf` stores the PDF bytes directly in Postgres
+(BYTEA). Core LAS has no approved object-storage interface today (see
+app/services/service_fields.py's own documented TODO for the same gap on
+uploaded documents) -- if one is added, this column should hold a storage
+key and checksum instead of the bytes themselves, the same migration.
 """
 
 import hashlib
 import json
+import multiprocessing
 
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from app.core.logging import get_logger
 
-from .cam_adapter import build_snapshot_from_analysis
-from .cam_render import render_cam_report_pdf
 from .schemas import AnalysisResult
 
 logger = get_logger(__name__)
 
 _MAX_VERSION_ATTEMPTS = 5
+DEFAULT_PDF_RENDER_TIMEOUT_SECONDS = 120.0
 
 
 def _canonical_json(result: AnalysisResult) -> str:
     return json.dumps(result.model_dump(mode="json"), sort_keys=True)
 
 
-def _render_cam_pdf(
-    result: AnalysisResult, *, run_id: str, source_reference: str, version: int
-) -> bytes | None:
-    """Best-effort: a PDF-rendering bug must never stop the JSON report
-    (the real source of truth) from being stored. No vendor-sourced
-    borrower/project profile is available here -- store_report() is called
-    from scripts/dpr_worker.py, which never calls the vendor (see its module
-    docstring) -- so this renders with the templates' own explicit
-    missing-data state for those fields, not fabricated values."""
+def _render_cam_pdf_worker(
+    result_json: str, report_id: str, report_version: int, analysis_run_id: str, conn
+) -> None:
+    """Entry point for the spawned subprocess (see _render_cam_pdf). Imports
+    are local so the parent process never needs WeasyPrint's native deps
+    just to define this function, and so a spawned child (which re-imports
+    this module fresh, not forking the parent's state) only pays that cost
+    when it actually renders."""
     try:
+        from .cam_adapter import build_snapshot_from_analysis
+        from .cam_render import render_cam_report_pdf
+
+        result = AnalysisResult.model_validate_json(result_json)
         snapshot = build_snapshot_from_analysis(
             result,
-            report_id=f"{source_reference}-v{version}",
-            report_version=version,
-            analysis_run_id=run_id,
+            report_id=report_id,
+            report_version=report_version,
+            analysis_run_id=analysis_run_id,
         )
-        return render_cam_report_pdf(snapshot)
-    except Exception:  # noqa: BLE001 - any renderer failure must not be fatal
-        logger.exception(
-            "dpr_cam_pdf_render_failed run_id=%s source_reference=%s version=%d",
+        conn.send(("ok", render_cam_report_pdf(snapshot)))
+    except Exception as exc:  # noqa: BLE001 - reported to the parent, not raised
+        conn.send(("error", repr(exc)))
+    finally:
+        conn.close()
+
+
+def _run_in_subprocess_with_timeout(
+    target, args: tuple, *, timeout_seconds: float
+) -> tuple[str, object]:
+    """Runs `target(*args, conn)` in a spawned subprocess (never forked --
+    forking would duplicate whatever live DB connection/transaction the
+    caller holds into the child, which never touches it but has no business
+    inheriting it either). `target` must be a module-level function (spawn
+    pickles it by module+qualname and re-imports it in the child, so a
+    closure or nested function cannot be used).
+
+    Returns ("ok", value), ("error", repr(exc)), or ("timeout", None) --
+    and guarantees the subprocess is not left running in any of those
+    cases, including the timeout one (terminated, then killed if that
+    doesn't land within 5s)."""
+    ctx = multiprocessing.get_context("spawn")
+    parent_conn, child_conn = ctx.Pipe(duplex=False)
+    proc = ctx.Process(target=target, args=(*args, child_conn), daemon=True)
+    proc.start()
+    child_conn.close()
+    try:
+        if not parent_conn.poll(timeout_seconds):
+            proc.terminate()
+            proc.join(timeout=5)
+            if proc.is_alive():
+                proc.kill()
+                proc.join()
+            return "timeout", None
+
+        try:
+            status, payload = parent_conn.recv()
+        except EOFError:
+            status = "error"
+            payload = "child process closed the pipe without a result"
+        proc.join(timeout=5)
+        if proc.is_alive():
+            proc.kill()
+            proc.join()
+        return status, payload
+    finally:
+        parent_conn.close()
+
+
+def _render_cam_pdf(
+    result: AnalysisResult,
+    *,
+    run_id: str,
+    source_reference: str,
+    version: int,
+    timeout_seconds: float = DEFAULT_PDF_RENDER_TIMEOUT_SECONDS,
+) -> bytes | None:
+    """Renders in a spawned subprocess with a hard timeout; a hang or crash
+    there can never stall the caller. Best-effort either way: a PDF-
+    rendering failure must never stop the JSON report from being stored.
+    No vendor-sourced borrower/project profile is available here --
+    store_report() is called from scripts/dpr_worker.py, which never calls
+    the vendor (see its module docstring) -- so this renders with the
+    templates' own explicit missing-data state for those fields, not
+    fabricated values."""
+    status, payload = _run_in_subprocess_with_timeout(
+        _render_cam_pdf_worker,
+        (result.model_dump_json(), f"{source_reference}-v{version}", version, run_id),
+        timeout_seconds=timeout_seconds,
+    )
+    if status == "ok":
+        return payload
+    if status == "timeout":
+        logger.error(
+            "dpr_cam_pdf_render_timeout run_id=%s source_reference=%s "
+            "version=%d timeout_seconds=%s",
             run_id,
             source_reference,
             version,
+            timeout_seconds,
         )
         return None
+    logger.error(
+        "dpr_cam_pdf_render_failed run_id=%s source_reference=%s version=%d error=%s",
+        run_id,
+        source_reference,
+        version,
+        payload,
+    )
+    return None
 
 
-def store_report(engine, run_id: str, result: AnalysisResult) -> int:
+def store_report(
+    engine,
+    run_id: str,
+    result: AnalysisResult,
+    *,
+    pdf_render_timeout_seconds: float = DEFAULT_PDF_RENDER_TIMEOUT_SECONDS,
+) -> int:
     """Appends a new version of the report for `run_id`'s service and
     returns its version number (1 for the first report for that service, 2
     for the next, and so on) -- or, if this exact run_id already stored this
@@ -93,22 +197,58 @@ def store_report(engine, run_id: str, result: AnalysisResult) -> int:
     commits, so the UNIQUE (source_reference, version) constraint is the
     real arbiter, not the SELECT ... FOR UPDATE below (which only serializes
     writers once at least one row already exists to lock).
+
+    The PDF render happens before any transaction is opened for the actual
+    insert -- it can take up to `pdf_render_timeout_seconds`, and a
+    multi-minute-long open Postgres transaction holding `FOR UPDATE` row
+    locks would be its own problem independent of the render itself.
     """
     payload = _canonical_json(result)
     snapshot_sha256 = hashlib.sha256(payload.encode()).hexdigest()
     render_status = "RENDERED" if result.status == "completed" else "PENDING"
 
+    with engine.connect() as conn:
+        source_reference = conn.execute(
+            text("SELECT source_reference FROM dpr_analysis_runs WHERE run_id=:id"),
+            {"id": run_id},
+        ).scalar_one()
+        existing = conn.execute(
+            text(
+                "SELECT version FROM dpr_report_artifacts "
+                "WHERE run_id=:run_id AND snapshot_sha256=:sha"
+            ),
+            {"run_id": run_id, "sha": snapshot_sha256},
+        ).scalar_one_or_none()
+        if existing is not None:
+            return existing
+        max_existing_version = conn.execute(
+            text(
+                "SELECT max(version) FROM dpr_report_artifacts "
+                "WHERE source_reference=:ref"
+            ),
+            {"ref": source_reference},
+        ).scalar_one()
+
+    # An unlocked best guess at the version this will become, used only as
+    # a label inside the rendered PDF's own content -- nothing in the six
+    # pages depends on it being correct, only present. It is right except
+    # in the rare case a concurrent writer also takes this same version
+    # number below and this call has to retry onto the next one instead;
+    # the stored `version` column (what every route actually reads) is
+    # always correct regardless, since it comes from the real insert.
+    estimated_version = (max_existing_version or 0) + 1
+    pdf = _render_cam_pdf(
+        result,
+        run_id=run_id,
+        source_reference=source_reference,
+        version=estimated_version,
+        timeout_seconds=pdf_render_timeout_seconds,
+    )
+    pdf_render_status = "RENDERED" if pdf is not None else "FAILED"
+
     for _ in range(_MAX_VERSION_ATTEMPTS):
         try:
             with engine.begin() as conn:
-                source_reference = conn.execute(
-                    text(
-                        "SELECT source_reference FROM dpr_analysis_runs "
-                        "WHERE run_id=:id"
-                    ),
-                    {"id": run_id},
-                ).scalar_one()
-
                 existing = conn.execute(
                     text(
                         "SELECT version FROM dpr_report_artifacts "
@@ -131,15 +271,6 @@ def store_report(engine, run_id: str, result: AnalysisResult) -> int:
                     .all()
                 )
                 next_version = max(locked_versions, default=0) + 1
-
-                pdf = _render_cam_pdf(
-                    result,
-                    run_id=run_id,
-                    source_reference=source_reference,
-                    version=next_version,
-                )
-                pdf_render_status = "RENDERED" if pdf is not None else "FAILED"
-
                 conn.execute(
                     text("""
                         INSERT INTO dpr_report_artifacts
@@ -165,7 +296,8 @@ def store_report(engine, run_id: str, result: AnalysisResult) -> int:
             # Another writer took this version number (or stored this same
             # run_id's content first) between our SELECT and INSERT; retry
             # from scratch so either branch above resolves against the now-
-            # committed row.
+            # committed row. The PDF (already rendered, keyed only by
+            # content, not the version number) is reused as-is.
             continue
 
     raise RuntimeError(
