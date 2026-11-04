@@ -1,5 +1,7 @@
 """BD dashboard routes."""
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 
@@ -33,6 +35,15 @@ from app.schemas.enrolment import (
     PaymentResponse,
 )
 from app.services.bd import BdService, CustomerIncompleteError, CustomerNotFoundError
+from app.services.dpr_agentic.document_queue import upload_and_queue_analysis
+from app.services.dpr_agentic.report_http import (
+    resolve_annexures,
+    resolve_findings,
+    resolve_report,
+    resolve_report_pdf,
+    resolve_versions,
+)
+from app.services.dpr_agentic.schemas import AnalysisResult, Finding
 from app.services.enrolment import (
     DocumentNotAllowedError,
     DocumentNotStoredError,
@@ -357,6 +368,37 @@ async def upload_document(
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
 
 
+@router.put(
+    "/customers/{person_id}/services/{code}/document-with-analysis",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def upload_document_with_analysis(
+    person_id: str,
+    code: str,
+    request: Request,
+    filename: str = Query(min_length=1, max_length=255),
+    bd_id: str = Depends(get_bd_id),
+    service: EnrolmentService = Depends(get_enrolment_service),
+    settings: Settings = Depends(get_app_settings),
+    ctx: VendorCallContext = Depends(get_authenticated_context),
+):
+    """Store the document for one of this BD's customers and queue its DPR
+    analysis -- same gate and staging as the customer's own
+    `document-with-analysis`, just on the customer's behalf. Never runs
+    analysis inline; scripts/dpr_worker.py picks it up later. Poll
+    `GET /customers/{person_id}/services/{code}/report` for status."""
+    try:
+        return await upload_and_queue_analysis(
+            request, filename, person_id, code, bd_id, service, settings, ctx
+        )
+    except CustomerNotFoundError:
+        raise _NOT_FOUND from None
+    except UnknownServiceError:
+        raise _unknown_service(code) from None
+    except DocumentNotAllowedError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
+
+
 @router.get("/customers/{person_id}/services/{code}/document")
 async def download_document(
     person_id: str,
@@ -375,3 +417,151 @@ async def download_document(
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, "No document uploaded for this service."
         ) from None
+
+
+def _dpr_engine(request: Request, settings: Settings):
+    if not settings.dpr_agentic_enabled:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found")
+    engine = request.app.state.dpr_engine
+    if engine is None:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "DPR report storage is not configured"
+        )
+    return engine
+
+
+@router.get(
+    "/customers/{person_id}/services/{code}/report", response_model=AnalysisResult
+)
+async def get_report(
+    person_id: str,
+    code: str,
+    request: Request,
+    response: Response,
+    format: Literal["json", "pdf"] = Query(default="json"),
+    version: int | None = Query(default=None, ge=1),
+    bd_id: str = Depends(get_bd_id),
+    settings: Settings = Depends(get_app_settings),
+    service: EnrolmentService = Depends(get_enrolment_service),
+    ctx: VendorCallContext = Depends(get_authenticated_context),
+) -> AnalysisResult | Response:
+    """The DPR analysis report for one of this BD's customers, once it may
+    be released -- the latest version by default, or a specific `version`.
+    Always re-checks payment against the vendor at call time.
+    `?format=pdf` serves the pre-rendered six-page CAM report stored
+    alongside that version; it is never rendered on this request."""
+    engine = _dpr_engine(request, settings)
+    if format == "pdf":
+        return await resolve_report_pdf(
+            engine=engine,
+            person_id=person_id,
+            code=code,
+            broker_id=bd_id,
+            service=service,
+            ctx=ctx,
+            version=version,
+            not_found=_NOT_FOUND,
+            unknown_service=_unknown_service,
+        )
+    return await resolve_report(
+        engine=engine,
+        person_id=person_id,
+        code=code,
+        broker_id=bd_id,
+        service=service,
+        ctx=ctx,
+        response=response,
+        version=version,
+        not_found=_NOT_FOUND,
+        unknown_service=_unknown_service,
+    )
+
+
+@router.get(
+    "/customers/{person_id}/services/{code}/report/findings",
+    response_model=list[Finding],
+)
+async def get_report_findings(
+    person_id: str,
+    code: str,
+    request: Request,
+    response: Response,
+    version: int | None = Query(default=None, ge=1),
+    bd_id: str = Depends(get_bd_id),
+    settings: Settings = Depends(get_app_settings),
+    service: EnrolmentService = Depends(get_enrolment_service),
+    ctx: VendorCallContext = Depends(get_authenticated_context),
+) -> list[Finding]:
+    """Just the findings from the same gated report as `.../report`."""
+    engine = _dpr_engine(request, settings)
+    return await resolve_findings(
+        engine=engine,
+        person_id=person_id,
+        code=code,
+        broker_id=bd_id,
+        service=service,
+        ctx=ctx,
+        response=response,
+        version=version,
+        not_found=_NOT_FOUND,
+        unknown_service=_unknown_service,
+    )
+
+
+@router.get("/customers/{person_id}/services/{code}/report/annexures")
+async def get_report_annexures(
+    person_id: str,
+    code: str,
+    request: Request,
+    response: Response,
+    version: int | None = Query(default=None, ge=1),
+    bd_id: str = Depends(get_bd_id),
+    settings: Settings = Depends(get_app_settings),
+    service: EnrolmentService = Depends(get_enrolment_service),
+    ctx: VendorCallContext = Depends(get_authenticated_context),
+) -> dict:
+    """Annexure B: project cost, means of finance, financial ratios and
+    per-scenario break-even calculations, each with its full trace, for the
+    same gated report as `.../report`."""
+    engine = _dpr_engine(request, settings)
+    return await resolve_annexures(
+        engine=engine,
+        person_id=person_id,
+        code=code,
+        broker_id=bd_id,
+        service=service,
+        ctx=ctx,
+        response=response,
+        version=version,
+        not_found=_NOT_FOUND,
+        unknown_service=_unknown_service,
+    )
+
+
+@router.get(
+    "/customers/{person_id}/services/{code}/report/versions",
+    response_model=list[int],
+)
+async def get_report_versions(
+    person_id: str,
+    code: str,
+    request: Request,
+    response: Response,
+    bd_id: str = Depends(get_bd_id),
+    settings: Settings = Depends(get_app_settings),
+    service: EnrolmentService = Depends(get_enrolment_service),
+    ctx: VendorCallContext = Depends(get_authenticated_context),
+) -> list[int]:
+    """Every version number ever stored for this service, oldest first."""
+    engine = _dpr_engine(request, settings)
+    return await resolve_versions(
+        engine=engine,
+        person_id=person_id,
+        code=code,
+        broker_id=bd_id,
+        service=service,
+        ctx=ctx,
+        response=response,
+        not_found=_NOT_FOUND,
+        unknown_service=_unknown_service,
+    )

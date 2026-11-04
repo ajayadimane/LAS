@@ -1,4 +1,11 @@
-"""Internal, disabled-by-default, request-scoped Agentic DPR preview API."""
+"""Internal, disabled-by-default, request-scoped Agentic DPR preview API.
+
+Mounted under the same public /api/v1 prefix as every customer/BD route
+(app/api/v1/router.py) -- there is no separate internal network or port, so
+the shared-secret token below (never the feature flag alone) is the only
+thing standing between this and the public internet. A disabled feature
+flag still 404s before the token is even checked, so toggling the flag off
+does not even reveal the route exists."""
 
 import secrets
 
@@ -6,11 +13,34 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from app.api.deps import get_app_settings
 from app.core.config import Settings
+from app.core.logging import get_logger
 from app.services.dpr_agentic.gemini import GeminiAgentClient, GeminiAgentError
 from app.services.dpr_agentic.orchestrator import analyze
 from app.services.dpr_agentic.schemas import AnalysisInput, AnalysisResult
 
+logger = get_logger(__name__)
+
 router = APIRouter(prefix="/internal/dpr-agentic", tags=["internal-dpr-agentic"])
+
+
+def _check_internal_token(
+    request: Request, x_internal_token: str | None, settings: Settings
+) -> None:
+    configured = settings.dpr_agentic_internal_token
+    if (
+        not configured
+        or not x_internal_token
+        or not secrets.compare_digest(x_internal_token, configured.get_secret_value())
+    ):
+        # Never log the token itself (sent or configured) -- just that an
+        # attempt was rejected, for operational visibility on a route with
+        # no network-level isolation.
+        logger.warning(
+            "dpr_internal_token_rejected path=%s client_ip=%s",
+            request.url.path,
+            request.client.host if request.client else "unknown",
+        )
+        raise HTTPException(status_code=403, detail="Forbidden")
 
 
 @router.post("/analyze", response_model=AnalysisResult)
@@ -22,13 +52,7 @@ async def run_analysis(
 ):
     if not settings.dpr_agentic_enabled:
         raise HTTPException(status_code=404, detail="Not found")
-    configured = settings.dpr_agentic_internal_token
-    if (
-        not configured
-        or not x_internal_token
-        or not secrets.compare_digest(x_internal_token, configured.get_secret_value())
-    ):
-        raise HTTPException(status_code=403, detail="Forbidden")
+    _check_internal_token(request, x_internal_token, settings)
     if not settings.dpr_agentic_gemini_api_key:
         raise HTTPException(status_code=503, detail="DPR model is not configured")
     client = GeminiAgentClient(
@@ -69,13 +93,7 @@ async def inspect_uploaded_document(
 
     if not settings.dpr_agentic_enabled:
         raise HTTPException(404, "Not found")
-    configured = settings.dpr_agentic_internal_token
-    if (
-        not configured
-        or not x_internal_token
-        or not secrets.compare_digest(x_internal_token, configured.get_secret_value())
-    ):
-        raise HTTPException(403, "Forbidden")
+    _check_internal_token(request, x_internal_token, settings)
     if not wallet_document_id.strip() or not service_request_id.strip():
         raise HTTPException(
             422, "Authoritative Wallet and Core LAS references required"

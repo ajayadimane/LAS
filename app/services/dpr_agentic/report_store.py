@@ -24,6 +24,13 @@ not just an application-level check.
 
 get_report() defaults to the latest version with render_status='RENDERED',
 so a version whose render never completed is not served as "the" report.
+
+Each version also gets a one-time CAM six-page PDF render (cam_render.py),
+attempted once at store time and never regenerated afterwards -- that's what
+lets GET .../report?format=pdf serve stored bytes with no re-rendering on
+GET. Its outcome lives in a *separate* `pdf_render_status`/`report_pdf`,
+deliberately not folded into `render_status`: a PDF-rendering bug must never
+hide an otherwise-good JSON report from get_report()'s default filter.
 """
 
 import hashlib
@@ -32,13 +39,46 @@ import json
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
+from app.core.logging import get_logger
+
+from .cam_adapter import build_snapshot_from_analysis
+from .cam_render import render_cam_report_pdf
 from .schemas import AnalysisResult
+
+logger = get_logger(__name__)
 
 _MAX_VERSION_ATTEMPTS = 5
 
 
 def _canonical_json(result: AnalysisResult) -> str:
     return json.dumps(result.model_dump(mode="json"), sort_keys=True)
+
+
+def _render_cam_pdf(
+    result: AnalysisResult, *, run_id: str, source_reference: str, version: int
+) -> bytes | None:
+    """Best-effort: a PDF-rendering bug must never stop the JSON report
+    (the real source of truth) from being stored. No vendor-sourced
+    borrower/project profile is available here -- store_report() is called
+    from scripts/dpr_worker.py, which never calls the vendor (see its module
+    docstring) -- so this renders with the templates' own explicit
+    missing-data state for those fields, not fabricated values."""
+    try:
+        snapshot = build_snapshot_from_analysis(
+            result,
+            report_id=f"{source_reference}-v{version}",
+            report_version=version,
+            analysis_run_id=run_id,
+        )
+        return render_cam_report_pdf(snapshot)
+    except Exception:  # noqa: BLE001 - any renderer failure must not be fatal
+        logger.exception(
+            "dpr_cam_pdf_render_failed run_id=%s source_reference=%s version=%d",
+            run_id,
+            source_reference,
+            version,
+        )
+        return None
 
 
 def store_report(engine, run_id: str, result: AnalysisResult) -> int:
@@ -91,14 +131,23 @@ def store_report(engine, run_id: str, result: AnalysisResult) -> int:
                     .all()
                 )
                 next_version = max(locked_versions, default=0) + 1
+
+                pdf = _render_cam_pdf(
+                    result,
+                    run_id=run_id,
+                    source_reference=source_reference,
+                    version=next_version,
+                )
+                pdf_render_status = "RENDERED" if pdf is not None else "FAILED"
+
                 conn.execute(
                     text("""
                         INSERT INTO dpr_report_artifacts
                             (run_id, source_reference, version, snapshot_sha256,
-                             render_status, report)
+                             render_status, report, pdf_render_status, report_pdf)
                         VALUES
                             (:run_id, :ref, :version, :sha, :render_status,
-                             CAST(:report AS jsonb))
+                             CAST(:report AS jsonb), :pdf_render_status, :pdf)
                     """),
                     {
                         "run_id": run_id,
@@ -107,6 +156,8 @@ def store_report(engine, run_id: str, result: AnalysisResult) -> int:
                         "sha": snapshot_sha256,
                         "render_status": render_status,
                         "report": payload,
+                        "pdf_render_status": pdf_render_status,
+                        "pdf": pdf,
                     },
                 )
             return next_version
@@ -142,6 +193,29 @@ def get_report(
     with engine.connect() as conn:
         row = conn.execute(text(query), params).scalar_one_or_none()
     return AnalysisResult.model_validate(json.loads(row)) if row else None
+
+
+def get_report_pdf(
+    engine, source_reference: str, *, version: int | None = None
+) -> bytes | None:
+    """The pre-rendered CAM PDF for `source_reference` -- by default the
+    latest version with render_status='RENDERED' (same default as
+    get_report()), or a specific version if given. Returns None if that
+    version's PDF never rendered (pdf_render_status != 'RENDERED') or the
+    version does not exist -- callers must not fall back to rendering
+    inline; see this module's docstring."""
+    query = (
+        "SELECT report_pdf FROM dpr_report_artifacts "
+        "WHERE source_reference = :ref AND pdf_render_status = 'RENDERED'"
+    )
+    params: dict[str, str | int] = {"ref": source_reference}
+    if version is not None:
+        query += " AND version = :version"
+        params["version"] = version
+    else:
+        query += " AND render_status = 'RENDERED' ORDER BY version DESC LIMIT 1"
+    with engine.connect() as conn:
+        return conn.execute(text(query), params).scalar_one_or_none()
 
 
 def list_report_versions(engine, source_reference: str) -> list[int]:

@@ -1587,3 +1587,130 @@ ruff check / ruff format --check -> clean
 
 - Milestone 5's other items per Section 3A/15: new API routes, the rest
   of persistence/authorization. Not started -- starting next.
+
+### Section 15 audit, then wire, reusing the existing routes (2026-11-05)
+
+Audited first (no code changes), then fixed/wired per the audit, per the
+user's own ordering.
+
+**Audit.** Found more already built than this file's own "not started"
+note suggested: `GET /api/v1/customer/services/{code}/report` and
+`GET /api/v1/bd/customers/{id}/services/{code}/report` already existed,
+ownership-scoped, gated through `report_access.evaluate_report_access`,
+with `?format=pdf` -- but that PDF was `report_render.py`, a generic
+reportlab renderer, never the six-page CAM report from milestones 4-4c.
+Audit table (route x check -> pass/gap):
+
+| Route | Payment lock | Consent | Ownership | No rerun on GET | Versioning | Locked response | Internal exposure | Idempotency |
+|---|---|---|---|---|---|---|---|---|
+| `GET .../customer/.../report` | PASS -- fresh vendor re-check every call | PASS* | PASS -- `person_id` is always the token's own `me` | PASS -- never calls `submit()`/`analyze()` | **GAP** -- no `version` param | **GAP** -- no `Cache-Control` | n/a | PASS -- read-only |
+| `GET .../bd/.../report` | PASS | PASS* | PASS -- `get_bd_id` self-match + `bd.owned_person()` inside `enrolment._values()` | PASS | **GAP** | **GAP** | n/a | PASS |
+| `PUT .../document-with-analysis` (both) | n/a (upload gate is `view.can_upload`, itself payment-derived) | n/a | PASS (same mechanism) | n/a -- a PUT is supposed to start the pipeline | n/a | n/a | n/a | PASS -- `jobs.submit()`'s idempotency key |
+| `POST /internal/dpr-agentic/analyze` | n/a (stateless preview, no release decision) | n/a | n/a -- caller-trusted internal token only | n/a | n/a | n/a | **GAP** -- see below | n/a (no durable job) |
+| `POST /internal/dpr-agentic/inspect-upload` | n/a | n/a | **documented GAP** -- docstring already says "cannot itself prove upload ownership; integration must enforce it" | n/a | n/a | n/a | **GAP** | n/a |
+
+\* Consent: `consent_satisfied` is hardcoded `True` in `report_service.py`,
+justified by an enrolment.py invariant (pay-later always requires both
+consents before a service reaches `Paid`; pay-now needs none) -- not a
+gap, since there is no persisted consent flag to check independently of
+`Paid` at report-access time without inventing new state. Tested directly
+on the pure policy function instead (`consent_satisfied=False` in
+`tests/test_dpr_release_policy.py`, pre-existing).
+
+Internal-exposure gap: `dpr_analysis.router` is mounted under the same
+public `/api/v1` prefix as every customer/BD route (`app/api/v1/router.py`)
+-- there is no separate internal network or port, so the shared-secret
+`X-Internal-Token` header (checked with `secrets.compare_digest`) is the
+only thing standing between it and the public internet. Fixed what's
+fixable in-repo: factored the check into `_check_internal_token()` and
+added a log line on rejection (`dpr_internal_token_rejected`, client IP,
+path -- never the token itself) for operational visibility; the feature
+flag is still checked before the token, so a disabled flag doesn't even
+reveal the route exists. True network isolation is outside this repo.
+
+**Fixes, in the shared gate.** `report_service.py`'s `access_report()` --
+already the one function both routers called, so a fix here benefits both
+without being written twice -- gained a `version` kwarg, backed by a new
+private `_gate()` that both `access_report()` and two new sibling
+functions (`access_report_pdf()`, `access_report_versions()`) call, so
+there is exactly one authorization evaluation for every report-derived
+endpoint. `report_http.py` is new: one module with the HTTP-status/header
+mapping (`resolve_report`, `resolve_report_pdf`, `resolve_findings`,
+`resolve_annexures`, `resolve_versions`), called identically from
+`customer.py` and `bd.py` -- including the new `Cache-Control: private,
+no-store` header (closing the "locked response" gap: a DPR report is
+re-evaluated fresh on every request and must never be cached by a shared
+intermediary).
+
+**Wiring the CAM report in.** `store_report()` (migration 007) now renders
+the six-page CAM report (`cam_adapter.build_snapshot_from_analysis` +
+`cam_render.render_cam_report_pdf`) once, at store time, and persists the
+bytes in a new `report_pdf` column -- `GET .../report?format=pdf` now
+serves those stored bytes (`get_report_pdf()`), never rendering on the
+request. Deliberately a *separate* `pdf_render_status`
+(`PENDING`/`RENDERED`/`FAILED`), not folded into the existing
+`render_status`: a PDF-rendering bug must never hide an otherwise-good
+JSON report from `get_report()`'s default filter. No vendor-sourced
+borrower/project profile is available at store time -- `store_report()`
+is called from `scripts/dpr_worker.py`, which never calls the vendor by
+design (see its own module docstring) -- so the CAM templates' own
+missing-data state is what renders for those fields, the same
+anti-fabrication discipline as everywhere else in this pipeline. A
+rendering failure never blocks the JSON from being stored (caught broadly,
+logged as `dpr_cam_pdf_render_failed`, `pdf_render_status='FAILED'`); the
+old `report_render.py` renderer is left in place (still unit-tested on its
+own) but no longer wired to any route.
+
+**Missing routes added**, all behind the same `_gate()`/`resolve_*`
+helpers, on both routers: `GET .../report/findings` (the gated report's
+`findings` only), `GET .../report/annexures` (project cost, means of
+finance, financial ratios and per-scenario calculations with their full
+`CalculationTrace`s -- a pure Python reshape via `build_snapshot_from_
+analysis`, not a WeasyPrint render, so it doesn't reintroduce "re-rendering
+on GET"), `GET .../report/versions` (every version number ever stored,
+oldest first). `GET .../report` itself gained `?version=` for a specific
+historical version (its own integrity check differs slightly from the
+default lookup: an explicit version's `report_artifact_verified` is just
+"does this row exist," since by definition it isn't the latest run's
+artifact).
+
+**Tests**, all against real Postgres: `tests/test_dpr_report_access.py`
+grew from 14 to 27 (unauthenticated 401 for both routers; repeated GETs
+proven to never create or mutate a run, even across QUEUED -> COMPLETED;
+an older version still retrievable as JSON and PDF after a second,
+corrected run; `Cache-Control: private, no-store` present on JSON and
+PDF; findings/versions/annexures happy-path and gating for both routers).
+`tests/test_dpr_report_store.py` gained
+`test_concurrent_writers_with_no_prior_version_retry_past_the_conflict`
+(two real threads, a `threading.Barrier`, forced past the `UNIQUE
+(source_reference, version)` conflict) -- found and fixed a real test
+hazard along the way: WeasyPrint/cairo/pango are not safe to call from two
+threads at once (observed as an indefinite hang, not an exception), so
+that one test stubs `_render_cam_pdf` to isolate what it actually verifies
+(the DB-level retry); this has no production impact since
+`scripts/dpr_worker.py` never calls `store_report()` from more than one
+thread.
+
+### Tests run (part 3)
+
+```
+python3 -m pytest tests/test_dpr_report_store.py tests/test_dpr_report_access.py -q
+  (real Postgres) -> 36 passed (9 + 27)
+python3 -m pytest tests/ -q (real Postgres, same unrelated pre-existing
+  log-safety failure deselected) -> all pass, exit 0
+ruff check / ruff format --check -> clean
+```
+
+### Remaining work (updated again)
+
+- Milestone 5 is now effectively complete: versioning (idempotent,
+  service-scoped, DB-immutable), API routes (report/findings/annexures/
+  versions, both JSON and PDF, both routers), and authorization (one
+  shared gate, audited against 8 checks) are all in place.
+- Not done: true network isolation for `/internal/dpr-agentic/*` (outside
+  this repo's control); `report_render.py` is now dead weight on the live
+  path (still tested, just unused) -- candidate for removal once confirmed
+  nothing else needs it.
+- Milestone 6 (frontend: wire `?format=pdf` into `AnalysisReport.tsx`) and
+  milestone 7 (polish the `/report/annexures` payload into the full
+  Annexure B document, Section 12) remain not started.

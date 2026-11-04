@@ -15,6 +15,7 @@ tests skip (not fail) without one.
 """
 
 import threading
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import text
@@ -179,7 +180,13 @@ def test_concurrent_writers_with_no_prior_version_retry_past_the_conflict(dpr_pg
     there is no existing row to lock), so the UNIQUE (source_reference,
     version) constraint -- not the lock -- is the real arbiter. One writer
     must get version 1 and the other must retry onto version 2; both must
-    succeed, and no version number may be produced twice."""
+    succeed, and no version number may be produced twice.
+
+    The CAM PDF render is stubbed out for this test: WeasyPrint/cairo/pango
+    are not safe to invoke from two threads at once (observed hanging
+    indefinitely, not raising), which is irrelevant to what this test
+    verifies -- the version-conflict retry -- and scripts/dpr_worker.py
+    never calls store_report() from more than one thread in practice."""
     ref = "svc:1"
     run_a = _submit(dpr_pg, source_reference=ref, sha="a" * 64)
     run_b = _submit(dpr_pg, source_reference=ref, sha="b" * 64)
@@ -193,12 +200,16 @@ def test_concurrent_writers_with_no_prior_version_retry_past_the_conflict(dpr_pg
         barrier.wait(timeout=5)
         results[key] = store_report(dpr_pg, run_id, _report(sha))
 
-    t1 = threading.Thread(target=_store, args=(run_a, "a" * 64, "a"))
-    t2 = threading.Thread(target=_store, args=(run_b, "b" * 64, "b"))
-    t1.start()
-    t2.start()
-    t1.join(timeout=10)
-    t2.join(timeout=10)
+    with patch(
+        "app.services.dpr_agentic.report_store._render_cam_pdf",
+        return_value=b"%PDF-stub",
+    ):
+        t1 = threading.Thread(target=_store, args=(run_a, "a" * 64, "a"))
+        t2 = threading.Thread(target=_store, args=(run_b, "b" * 64, "b"))
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
 
     assert sorted(results.values()) == [1, 2]
     assert list_report_versions(dpr_pg, ref) == [1, 2]
