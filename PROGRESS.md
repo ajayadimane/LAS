@@ -642,6 +642,139 @@ ruff check app/ tests/ scripts/                                   → clean
   from the simulated narrative agent output, not this check.
 - Dairy/polyhouse: still explicit stubs, by design.
 - The balance-sheet/cash-flow gap (milestone 2, disclosed above) remains.
-- Milestones 4–7 per Section 3A: templates/PDF, persistence/APIs/
-  authorization, frontend, annexures. Starting milestone 4 next, using
-  `tests/fixtures/tikamgarh_cam_snapshot.json` as the primary fixture.
+## Status: Milestone 4 (Templates and PDF) — started, Page 1 of 6 done
+
+### PDF engine decision
+
+**WeasyPrint** (pure Python, no browser binary, strong CSS Paged Media
+support). Rejected Playwright: it needs a full Chromium binary installed
+and managed on the server just to print HTML, which is a heavier
+operational footprint than this project's "lean FastAPI middleware"
+posture warrants for what is, in the end, a print stylesheet problem.
+WeasyPrint is deterministic, has no headless-browser process to manage,
+and already shares this codebase's existing PDF-reading dependency
+(`pymupdf`) for verification in tests. Added to `pyproject.toml`
+(`weasyprint>=70,<71`, `jinja2>=3.1,<4` -- jinja2 was previously only an
+undeclared transitive dependency, now explicit since it's load-bearing),
+relocked via `scripts/lock_dependencies.py`.
+
+### Fonts
+
+Manrope (400/500/600/700/800) and IBM Plex Mono (500) downloaded from
+Google Fonts (both SIL Open Font License) and bundled at
+`app/templates/cam/fonts/*.ttf`, referenced by local `@font-face` rules in
+`app/templates/cam/base.css` -- no network call at render time. Verified
+by `test_renders_a_real_pdf_with_no_network_access` and by the templates
+containing no `fonts.googleapis.com`/`fonts.gstatic.com` reference at all
+(the original design's `<link rel="preconnect">` to Google Fonts was
+dropped, not merely left unused).
+
+### Design archive inspection, confirmed (Section 2.1)
+
+Unzipped all six archives (into the scratchpad, not in place, per
+untrusted-archive handling) and read each `*.dc.html`. Confirmed: fixed
+794×1123px artboard with inline styles, an `<x-dc>` root, `support.js`/
+`vendor/react*.js` runtime, `data-props`/`<script type="text/x-dc">` logic
+classes -- exactly as the brief describes. Page 1's logic class
+(`Main.dc.html`) resolves an `outcome` enum (`"Recommend"` /
+`"Recommend with conditions"` / `"Refer to bank"` / `"Not recommended"`)
+to a badge/headline/body/color -- **this is loan-approval-recommendation
+language** ("Your project looks bankable", "Not recommended") and was
+**not** ported as-is: Section 19.20 ("do not claim an official SBI
+approval decision") and Section 6.1 ("never imply ... approval
+probability") directly forbid it. `cam_render._readiness_copy()`
+re-authors this as DPR-readiness-only copy keyed off
+`ReadinessStatus` instead (see below) -- the visual structure (colored
+badge pill, headline, body paragraph, callout card) is preserved; the
+words are not reused.
+
+### What was built
+
+- `app/templates/cam/base.css` -- consolidated stylesheet: `@font-face`
+  rules, CSS custom properties for `--brand`/`--accent` (default
+  `#1F5E46`/`#9A5408`, matching `Settings.cam_brand_color`/
+  `cam_accent_color`, also added this round), `@page { size: A4; margin:
+  0; @bottom-center { content: "Page " counter(page) " of " counter(pages);
+  } }` for automatic running page numbers across however many physical
+  pages a logical page's content spans, and `.cam-page { min-height:
+  297mm; break-after: page; }` replacing the design's fixed 794×1123px
+  box per Section 14's explicit instruction.
+- `app/templates/cam/page1_summary.html.jinja` -- the Page 1 (Summary)
+  port. Every `{{...}}`/`<sc-if>` binding and literal bracket placeholder
+  (`[Customer full name]`, `[BD name]`, `[Branch name]`, `[DD Mon YYYY]`,
+  the hardcoded "7 of 100" score) is replaced by a snapshot-driven value
+  or an explicit missing-data state (`"Requires verification"`, `"Not yet
+  computable"`, `"Borrower name not yet confirmed"`) -- never invented
+  (Section 6.2/19.4).
+- `app/templates/cam/report.html.jinja` -- the document wrapper (includes
+  each page template; pages 2-6 are TODO comments for now).
+- `app/services/dpr_agentic/cam_render.py` -- `build_page1_context()`
+  (all display-value computation in plain, unit-tested Python, not Jinja
+  logic), `render_cam_report_html()`, `render_cam_report_pdf()`. Jinja2
+  autoescape is on; no `|safe` is used anywhere on snapshot data, so an
+  LLM-authored finding title containing `<script>` renders as escaped
+  text, never executes (tested).
+- Section 6.1's readiness-score behavior: `score_mode="status"` (the
+  default) shows the colored badge/headline/body only, no numeric score,
+  no circular gauge -- the design's own "7 of 100" gauge only appears when
+  `score_mode="dimensions"` and `readiness_assessment.total_score` is set,
+  showing the real computed value and the four dimension bars.
+- "What we checked" boxes (`_checks()`) never claim a check happened that
+  didn't: a category with nothing computed yet shows "Not yet checked",
+  not a false "no issues found".
+
+### A real layout bug found and fixed during development
+
+First render spilled one logical page across two physical pages with
+`.cam-stat`/`.cam-check` cards **sliced mid-box** -- a card's title landed
+on page 1 with its status text pushed to page 2, rendering as a near-empty
+bordered box. Fixed with `break-inside: avoid` on `.cam-callout`,
+`.cam-stat` and `.cam-check`. Caught by visually rendering the PDF to PNG
+and inspecting it (not just checking `pdf_bytes[:5] == b"%PDF-"`), then
+locked in by `test_print_layout_does_not_slice_a_card_across_a_page_break`.
+Spilling onto a second physical page at all is acceptable per Section 14
+("do not force a section to remain on one page if content would
+overflow"); slicing a card is not, and is what the test guards.
+
+### Tests run
+
+```
+python3 -m pytest tests/test_dpr_cam_render.py -q   → 18 passed
+python3 -m pytest tests/ -k dpr -q                    → all pass/skip, 0 failed
+python3 -m pytest tests/ -q                            → full repo suite, 0 failed
+ruff check app/ tests/                                  → clean
+```
+
+Covers (Section 18 "Template tests"/"Rendering tests", for Page 1): no
+unresolved Jinja placeholders, no canvas runtime markup, no literal
+bracket placeholders, no sample-data leakage into an unrelated snapshot's
+render, missing-data states, dimensions- vs. status-mode score display, no
+approval/recommendation language, the page-break/card-slicing regression,
+long names, Unicode, and that autoescape blocks markup injection from
+snapshot text.
+
+### Remaining work
+
+- Pages 2-6 (Fix before you apply; Project, cost and corrections;
+  Repayment; Security and obligations; Benefits and next steps) --
+  not started. Each needs the same treatment as Page 1: read the design
+  archive, identify recommendation/approval language to re-author, map
+  CAMSnapshot fields, write the Jinja template, write
+  `build_pageN_context()`, write tests.
+- The `project_cost`/`means_of_finance` gap from milestone 2b means Page 1
+  currently shows "Requires verification" for loan/promoter amounts even
+  on the populated Tikamgarh fixture -- closing that gap (wiring the raw
+  loan/means-of-finance figures into `CamEngineOutputs`) will make Page 1
+  fully populated, not just structurally correct.
+- `Settings.cam_brand_color`/`cam_accent_color` exist but nothing calls
+  `render_cam_report_pdf()` with them yet -- wiring that through an API
+  endpoint is milestone 5 work.
+- Detailed CAM annexures (Section 12, milestone 7) -- not started.
+- A `weasyprint` runtime warning ("Using fontTools instead of
+  HarfBuzz-Subset... will be unsupported in future versions") appears in
+  test output -- informational only (a missing optional system library,
+  `libharfbuzz-subset`), does not affect correctness; worth installing on
+  the deployment host before upgrading WeasyPrint past whatever version
+  drops the fontTools fallback.
+- Milestones 5-7 per Section 3A: persistence/APIs/authorization, frontend,
+  annexures. Not started.

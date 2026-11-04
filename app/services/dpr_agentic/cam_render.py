@@ -1,0 +1,325 @@
+"""Renders a validated CAMSnapshot as the six-page CAM report PDF (brief
+Sections 2.1/14). WeasyPrint (pure Python, no browser binary, strong CSS
+Paged Media support) is the chosen PDF engine -- do not add a second one.
+
+Template source of truth: `app/templates/cam/*.html.jinja`, ported from
+`cam-design-reference/*-html.zip` (see PROGRESS.md milestone 4). Jinja2
+autoescape is on (default for `.html`/`.jinja` via `select_autoescape`), so
+every CAMSnapshot string value is escaped automatically; nothing in this
+module or the templates uses `|safe` on model data, which is how an
+LLM-authored finding title/explanation could otherwise inject markup.
+
+All display-value computation (readiness copy, money formatting, which
+"what we checked" box shows which status) lives in this module as plain,
+unit-testable Python -- the templates only loop and substitute, no
+business logic in Jinja.
+
+Only milestone 4's first page (Summary) is wired up so far; see
+PROGRESS.md for the remaining five.
+"""
+
+from __future__ import annotations
+
+from decimal import Decimal
+from pathlib import Path
+
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+from .cam_snapshot import CAMSnapshot, Money, ReadinessStatus
+
+TEMPLATES_DIR = Path(__file__).parent.parent.parent / "templates"
+CAM_TEMPLATES_DIR = TEMPLATES_DIR / "cam"
+
+DEFAULT_BRAND_COLOR = "#1F5E46"
+DEFAULT_ACCENT_COLOR = "#9A5408"
+
+_RED = "#9B1C1C"
+_RED_TINT = "#9B1C1C10"
+_GREY = "#5B6560"
+_GREY_TINT = "#F1F3F2"
+
+
+def _env() -> Environment:
+    return Environment(
+        loader=FileSystemLoader(str(TEMPLATES_DIR)),
+        autoescape=select_autoescape(["html", "jinja"]),
+    )
+
+
+def format_money(money: Money | None) -> str | None:
+    if money is None:
+        return None
+    unit_label = {"absolute": "", "lakh": " lakh", "crore": " crore"}[money.unit]
+    return f"₹ {money.amount:,.2f}{unit_label}"
+
+
+def format_pct(part: Decimal, whole: Decimal) -> str | None:
+    if whole == 0:
+        return None
+    return f"{(part / whole * 100):.0f}%"
+
+
+def _readiness_copy(snapshot: CAMSnapshot) -> dict:
+    """Readiness status display copy. Deliberately describes DPR
+    readiness only -- never a loan-approval recommendation (Section
+    19.20): the original design's "Recommend"/"Not recommended" outcome
+    language is not reused."""
+    status = snapshot.readiness_assessment.status
+    must_fix_count = sum(1 for f in snapshot.findings if f.priority.value == "must_fix")
+    copy_by_status = {
+        ReadinessStatus.READY_FOR_SUBMISSION_REVIEW: {
+            "color": "var(--brand)",
+            "tint": "var(--brand-tint)",
+            "badge": "Ready for submission review",
+            "headline": "No must-fix issues were found",
+            "body": (
+                "This DPR has no unresolved must-fix issues. A consultant "
+                "or your Business Associate should still confirm it before "
+                "you submit it to the bank."
+            ),
+        },
+        ReadinessStatus.CORRECTIONS_REQUIRED: {
+            "color": "var(--accent)",
+            "tint": "var(--accent-tint)",
+            "badge": f"{must_fix_count} issue(s) to fix before you apply",
+            "headline": "Fix a few issues before you apply",
+            "body": (
+                "This DPR has issues that should be corrected first. Page 2 "
+                "lists what to fix, then this report can be re-run."
+            ),
+        },
+        ReadinessStatus.EXPERT_REVIEW_REQUIRED: {
+            "color": _RED,
+            "tint": _RED_TINT,
+            "badge": "Needs expert review",
+            "headline": "This DPR needs a closer look",
+            "body": (
+                "Critical issues were found in this DPR. These need expert "
+                "review before this proposal is ready to go to a lender."
+            ),
+        },
+        ReadinessStatus.INSUFFICIENT_INFORMATION: {
+            "color": _GREY,
+            "tint": _GREY_TINT,
+            "badge": "Insufficient information",
+            "headline": "This analysis could not be completed",
+            "body": (
+                "Not enough information was available to assess this DPR. "
+                "See the outstanding items in this report."
+            ),
+        },
+    }[status]
+
+    score_mode = snapshot.readiness_assessment.score_mode
+    score = (
+        snapshot.readiness_assessment.total_score
+        if score_mode == "dimensions"
+        else None
+    )
+    dimensions = (
+        [
+            {"label": d.dimension.replace("_", " ").title(), "score": d.score}
+            for d in snapshot.readiness_assessment.dimension_scores
+        ]
+        if score_mode == "dimensions"
+        else []
+    )
+    # Circle circumference for r=50 is ~314; dasharray is the filled arc
+    # length, never computed from an LLM-authored number.
+    score_arc = round((score or 0) / 100 * 314)
+
+    return {
+        **copy_by_status,
+        "score_mode": score_mode,
+        "score": score,
+        "score_arc": score_arc,
+        "dimensions": dimensions,
+    }
+
+
+def _checks(snapshot: CAMSnapshot) -> list[dict]:
+    """The "what we checked" status boxes. Never claims a check happened
+    that didn't: a category with zero findings and nothing computed shows
+    "Not yet checked", not a false "all clear"."""
+
+    def status_for(categories: set[str], computed: bool) -> tuple[str, str, str]:
+        relevant = [f for f in snapshot.findings if f.category in categories]
+        if any(f.priority.value == "must_fix" for f in relevant):
+            return "Needs attention", _RED, _RED_TINT
+        if not computed:
+            return "Not yet checked", _GREY, _GREY_TINT
+        if relevant:
+            return "Issues found", "var(--accent)", "var(--accent-tint)"
+        return "No issues found", "var(--brand)", "var(--brand-tint)"
+
+    repayment_status, repayment_color, repayment_tint = status_for(
+        {"dscr"}, bool(snapshot.financial_ratios.average_dscr)
+    )
+    cost_status, cost_color, cost_tint = status_for(
+        {"financial_calculation"}, bool(snapshot.project_cost.reconciliation)
+    )
+    funding_status, funding_color, funding_tint = status_for(
+        {"funding"}, bool(snapshot.means_of_finance.funding_gap)
+    )
+    return [
+        {
+            "title": "Repayment capacity",
+            "status": repayment_status,
+            "color": repayment_color,
+            "tint": repayment_tint,
+        },
+        {
+            "title": "Project cost",
+            "status": cost_status,
+            "color": cost_color,
+            "tint": cost_tint,
+        },
+        {
+            "title": "Funding plan",
+            "status": funding_status,
+            "color": funding_color,
+            "tint": funding_tint,
+        },
+        {
+            "title": "Identity and KYC",
+            "status": "Not yet checked",
+            "color": _GREY,
+            "tint": _GREY_TINT,
+        },
+    ]
+
+
+def _finding_counts(snapshot: CAMSnapshot) -> dict:
+    return {
+        "verified_calculation_errors": sum(
+            1 for f in snapshot.findings if f.value_classification.value == "recomputed"
+        ),
+        "feasibility_risks": sum(
+            1 for f in snapshot.findings if f.finding_class.value == "business_risk"
+        ),
+        "missing_evidence": sum(
+            1 for f in snapshot.findings if not f.evidence and not f.source_pages
+        ),
+        "outstanding_clarifications": (
+            snapshot.readiness_assessment.outstanding_clarifications_count
+        ),
+    }
+
+
+def build_page1_context(snapshot: CAMSnapshot) -> dict:
+    """All display values for page1_summary.html.jinja, computed from the
+    snapshot alone -- no hardcoded sample data (Section 19.3/19.4)."""
+    cost = snapshot.project_cost.dpr_reported_total
+    loan = snapshot.means_of_finance.requested_loan
+    promoter = snapshot.means_of_finance.promoter_contribution
+    year1 = snapshot.repayment_schedule[0] if snapshot.repayment_schedule else None
+    verified_benefit = next(
+        (
+            b
+            for b in snapshot.readiness_assessment.subsidy_benefits
+            if b.eligibility_status != "unverified"
+        ),
+        None,
+    )
+
+    project_summary_line = (
+        f"Analysis of the Detailed Project Report for "
+        f"{snapshot.project_profile.project_name}"
+        + (
+            f" in {snapshot.project_profile.project_location}."
+            if snapshot.project_profile.project_location
+            else "."
+        )
+        if snapshot.project_profile.project_name
+        else "Project details are not yet available for this analysis."
+    )
+
+    return {
+        "report_reference": snapshot.report_id,
+        "report_version": snapshot.report_version,
+        "report_date": snapshot.generated_at.strftime("%d %b %Y"),
+        "scheme_claimed": (
+            snapshot.readiness_assessment.subsidy_benefits[0].scheme_name
+            if snapshot.readiness_assessment.subsidy_benefits
+            else "None identified"
+        ),
+        "bd_name": snapshot.borrower_profile.bd_name or "Not recorded",
+        "service_request_id": snapshot.service_request_id,
+        "borrower_name": snapshot.borrower_profile.borrower_name,
+        "project_summary_line": project_summary_line,
+        "readiness": _readiness_copy(snapshot),
+        "loan": {
+            "requested_amount": format_money(loan),
+            "requested_sub": (
+                f"{format_pct(loan.amount, cost.amount)} of a "
+                f"{format_money(cost)} project"
+                if loan and cost
+                else None
+            ),
+            "year1_debt_service": (
+                format_money(year1.total_debt_service) if year1 else None
+            ),
+            "year1_debt_service_sub": (
+                f"{format_money(year1.principal_due)} principal + "
+                f"{format_money(year1.interest_due)} interest"
+                if year1
+                else None
+            ),
+            "promoter_amount": format_money(promoter),
+            "promoter_sub": (
+                f"{format_pct(promoter.amount, cost.amount)} of the project cost"
+                if promoter and cost
+                else None
+            ),
+        },
+        "subsidy": (
+            {
+                "label": f"{verified_benefit.scheme_name} benefit",
+                "amount": format_money(verified_benefit.eligible_amount),
+                "sub": verified_benefit.effective_period or "",
+            }
+            if verified_benefit
+            else {
+                "label": "Capital subsidy",
+                "amount": None,
+                "sub": (
+                    "No applicable capital subsidy has been verified from "
+                    "the available sources."
+                ),
+            }
+        ),
+        "checks": _checks(snapshot),
+        "finding_counts": _finding_counts(snapshot),
+    }
+
+
+def render_cam_report_html(
+    snapshot: CAMSnapshot,
+    *,
+    brand_color: str = DEFAULT_BRAND_COLOR,
+    accent_color: str = DEFAULT_ACCENT_COLOR,
+) -> str:
+    env = _env()
+    template = env.get_template("cam/report.html.jinja")
+    return template.render(
+        title=f"Loan Readiness Report - {snapshot.report_id}",
+        brand=brand_color,
+        accent=accent_color,
+        ctx=build_page1_context(snapshot),
+    )
+
+
+def render_cam_report_pdf(
+    snapshot: CAMSnapshot,
+    *,
+    brand_color: str = DEFAULT_BRAND_COLOR,
+    accent_color: str = DEFAULT_ACCENT_COLOR,
+) -> bytes:
+    """Renders the CAM report to PDF bytes. No network access is made:
+    fonts and the stylesheet are local files resolved via `base_url`."""
+    from weasyprint import HTML
+
+    html = render_cam_report_html(
+        snapshot, brand_color=brand_color, accent_color=accent_color
+    )
+    return HTML(string=html, base_url=str(CAM_TEMPLATES_DIR)).write_pdf()

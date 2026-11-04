@@ -14,6 +14,17 @@ dependencies = [
     "pydantic[email]>=2.7",
     "pydantic-settings>=2.3",
     "tenacity>=8.3",
+    "sqlalchemy>=2.0,<3",
+    "psycopg[binary]>=3.2,<4",
+    "langgraph>=1.0,<2",
+    "langgraph-checkpoint-postgres>=3.0,<4",
+    "pymupdf>=1.24,<2",
+    "openpyxl>=3.1,<4",
+    "liteparse>=1.2,<2",
+    "cryptography>=42,<47",
+    "reportlab>=4.2,<5",
+    "jinja2>=3.1,<4",
+    "weasyprint>=70,<71",
 ]
 
 [project.optional-dependencies]

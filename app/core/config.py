@@ -96,6 +96,11 @@ class Settings(BaseSettings):
     # agentic pipeline's output is byte-for-byte unchanged until this is
     # explicitly switched on; see PROGRESS.md milestone 2b.
     cam_engine_enabled: bool = False
+    # CAM report brand colors (Section 2.1): defaults are the original
+    # design's own values. A future deployment can rebrand the report
+    # without touching app/templates/cam/*.
+    cam_brand_color: str = "#1F5E46"
+    cam_accent_color: str = "#9A5408"
     # Core LAS-owned Postgres for the DPR job registry, branch status and
     # report artifacts (see app/services/dpr_agentic/jobs.py). Never the
     # vendor's data: Wallet remains the owner of customer/document/payment
