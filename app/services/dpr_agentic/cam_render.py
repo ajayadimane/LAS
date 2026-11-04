@@ -626,6 +626,113 @@ def build_page5_context(snapshot: CAMSnapshot) -> dict:
     }
 
 
+def build_page6_context(snapshot: CAMSnapshot) -> dict:
+    """All display values for page6_next_steps.html.jinja. The original
+    design's benefits cards (a specific AIF interest-subvention rupee
+    figure, a credit-guarantee note) and eligibility rows (AIF
+    registration, page-count-vs-26, a specific 0.45x-at-600-acres
+    repayment figure) have no corresponding field anywhere in
+    CAMSnapshot -- this pipeline computes no subvention amount and
+    tracks no "expected page count" or acreage-specific repayment
+    scenario (same gaps noted on Pages 3/4). Rather than reuse them, this
+    page builds a generic eligibility checklist and action list from what
+    the snapshot actually has: subsidy_benefits, means_of_finance,
+    findings, and outstanding_clarifications_count. "SBI"/"[Branch
+    name]" are replaced by the generic "your lender" -- CAMSnapshot never
+    records which bank (Section 19.3)."""
+    must_fix_count = sum(1 for f in snapshot.findings if f.priority.value == "must_fix")
+    outstanding = snapshot.readiness_assessment.outstanding_clarifications_count
+    promoter = snapshot.means_of_finance.promoter_contribution
+    verified_benefit = next(
+        (
+            b
+            for b in snapshot.readiness_assessment.subsidy_benefits
+            if b.eligibility_status != "unverified"
+        ),
+        None,
+    )
+
+    benefit_card = (
+        {
+            "label": f"{verified_benefit.scheme_name} benefit",
+            "value": format_money(verified_benefit.eligible_amount) or "To verify",
+            "note": verified_benefit.effective_period or "",
+        }
+        if verified_benefit
+        else {
+            "label": "Capital subsidy",
+            "value": "None identified",
+            "note": (
+                "No applicable capital subsidy has been verified from the "
+                "available sources."
+            ),
+        }
+    )
+
+    checklist = [
+        {
+            "requirement": "Your contribution",
+            "found": (format_money(promoter) if promoter else "Not yet confirmed"),
+            "status": "Met" if promoter else "Action needed",
+            "met": bool(promoter),
+        },
+        {
+            "requirement": "Must-fix issues from page 2",
+            "found": (
+                "None outstanding"
+                if must_fix_count == 0
+                else f"{must_fix_count} unresolved"
+            ),
+            "status": "Met" if must_fix_count == 0 else "Action needed",
+            "met": must_fix_count == 0,
+        },
+        {
+            "requirement": "Outstanding clarifications",
+            "found": (
+                "None outstanding" if outstanding == 0 else f"{outstanding} unresolved"
+            ),
+            "status": "Met" if outstanding == 0 else "Action needed",
+            "met": outstanding == 0,
+        },
+    ]
+
+    action_items = []
+    if must_fix_count:
+        action_items.append(
+            {
+                "title": f"Revise your DPR to fix the {must_fix_count} must-fix "
+                f"item(s) on page 2",
+                "detail": "Your consultant can update the projections.",
+            }
+        )
+    if outstanding:
+        bd_name = snapshot.borrower_profile.bd_name or "your Business Associate"
+        action_items.append(
+            {
+                "title": "Share the outstanding documents",
+                "detail": f"Share them with {bd_name} through the LAS customer screen.",
+            }
+        )
+
+    bd_name = snapshot.borrower_profile.bd_name or "your Business Associate"
+    next_steps = [
+        {"title": "Fix your DPR", "detail": "You and your consultant"},
+        {"title": "We re-run this report", "detail": "LAS"},
+        {"title": "Application submitted", "detail": f"{bd_name} to your lender"},
+        {"title": "Lender review", "detail": "Your lender's branch"},
+    ]
+
+    return {
+        "report_reference": snapshot.report_id,
+        "borrower_name": snapshot.borrower_profile.borrower_name,
+        "benefit_card": benefit_card,
+        "checklist": checklist,
+        "action_items": action_items,
+        "next_steps": next_steps,
+        "bd_name": bd_name,
+    }
+
+
 def render_cam_report_html(
     snapshot: CAMSnapshot,
     *,
@@ -643,6 +750,7 @@ def render_cam_report_html(
         ctx3=build_page3_context(snapshot),
         ctx4=build_page4_context(snapshot),
         ctx5=build_page5_context(snapshot),
+        ctx6=build_page6_context(snapshot),
     )
 
 

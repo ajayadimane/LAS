@@ -1,0 +1,89 @@
+{#- Page 6: Benefits and next steps. Ported from cam-design-reference/Page
+   5 — Benefits and next steps-html.zip. The original design's AIF
+   interest-subvention rupee figure, credit-guarantee note, and
+   acreage-specific eligibility rows have no corresponding CAMSnapshot
+   field (see build_page6_context's docstring) -- this page shows a
+   generic, snapshot-driven checklist instead. "SBI"/a specific branch
+   name are replaced by "your lender" (Section 19.3/19.20). #}
+<section class="cam-page">
+  <header class="cam-header">
+    <div class="cam-header__brand">
+      <div class="cam-header__logo">LOGO</div>
+      <div>
+        <div class="cam-header__product">Loan Advisory System</div>
+        <div class="cam-header__by">{{ ctx6.borrower_name or "Borrower name not yet confirmed" }}</div>
+      </div>
+    </div>
+    <div class="cam-header__meta">
+      <div class="cam-header__ref">{{ ctx6.report_reference }}</div>
+      <div class="cam-header__page">Page 6 of 6</div>
+    </div>
+  </header>
+
+  <main class="cam-main">
+    <section class="cam-section">
+      <h1 class="cam-h1" style="font-size: 26px;">Your benefits and next steps</h1>
+      <div class="cam-stat cam-stat--accent">
+        <div class="cam-stat__label">{{ ctx6.benefit_card.label }}</div>
+        <div class="cam-stat__value cam-stat__value--accent">{{ ctx6.benefit_card.value }}</div>
+        <div class="cam-stat__sub">{{ ctx6.benefit_card.note }}</div>
+      </div>
+    </section>
+
+    <section class="cam-section">
+      <h3 class="cam-h3">Eligibility checklist</h3>
+      <table class="cam-table">
+        <thead><tr><th>Requirement</th><th>What we found</th><th>Status</th></tr></thead>
+        <tbody>
+          {% for row in ctx6.checklist %}
+          <tr>
+            <td><strong>{{ row.requirement }}</strong></td>
+            <td>{{ row.found }}</td>
+            <td><span class="cam-badge {{ 'cam-badge--good-to-fix' if row.met else 'cam-badge--should-fix' }}">{{ row.status }}</span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+
+    <section class="cam-section">
+      <h3 class="cam-h3">What you need to do</h3>
+      {% if ctx6.action_items %}
+      {% for item in ctx6.action_items %}
+      <div class="cam-note-tile" style="border: 1px solid var(--accent); background: var(--accent-tint);">
+        <strong>{{ item.title }}</strong><br>
+        <span style="color: var(--text-secondary);">{{ item.detail }}</span>
+      </div>
+      {% endfor %}
+      {% else %}
+      <p class="cam-empty-note">No further action is needed before submission.</p>
+      {% endif %}
+    </section>
+
+    <section class="cam-section">
+      <h3 class="cam-h3">What happens next</h3>
+      <div class="cam-steps-wrap">
+        <div class="cam-steps-wrap__line"></div>
+        <ol class="cam-steps" style="grid-template-columns: repeat(4, minmax(0, 1fr));">
+          {% for step in ctx6.next_steps %}
+          <li class="cam-step">
+            <div class="cam-step__num{{ ' cam-step__num--outline' if not loop.first else '' }}">{{ loop.index }}</div>
+            <div class="cam-step__title">{{ step.title }}</div>
+            <div class="cam-step__detail">{{ step.detail }}</div>
+          </li>
+          {% endfor %}
+        </ol>
+      </div>
+    </section>
+
+    <section class="cam-note-tile" style="display:flex;justify-content:space-between;align-items:center;gap:16px;">
+      <div><strong>Questions?</strong> Contact {{ ctx6.bd_name }}</div>
+      <a href="mailto:las@integramicro.co.in" style="font-weight:700;">las@integramicro.co.in</a>
+    </section>
+  </main>
+
+  <footer class="cam-footer">
+    <p class="cam-footer__disclaimer">Pre-submission AI assistance only; not a bank sanction, eligibility certification, or authenticated source verification.</p>
+    <div class="cam-footer__label">Page 6 of 6</div>
+  </footer>
+</section>

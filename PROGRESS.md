@@ -642,7 +642,7 @@ ruff check app/ tests/ scripts/                                   → clean
   from the simulated narrative agent output, not this check.
 - Dairy/polyhouse: still explicit stubs, by design.
 - The balance-sheet/cash-flow gap (milestone 2, disclosed above) remains.
-## Status: Milestone 4 (Templates and PDF) — started, Page 5 of 6 done
+## Status: Milestone 4 (Templates and PDF) — all six pages done
 
 ### PDF engine decision
 
@@ -955,12 +955,74 @@ ruff check app/ tests/                                       → clean
 ruff format --check app/ tests/                               → clean
 ```
 
-### Remaining work
+### Page 6 (Benefits and next steps) -- final page of milestone 4
 
-- Page 6 (Benefits and next steps) -- not started. Needs the same
-  treatment: read the design archive, identify recommendation/approval
-  language to re-author, map CAMSnapshot fields, write the Jinja
-  template, write `build_page6_context()`, write tests.
+Ported from `cam-design-reference/Page 5 — Benefits and next
+steps-html.zip` (`NextSteps.dc.html`). Like Pages 3-5, several of the
+original design's figures have no CAMSnapshot source: a specific AIF
+interest-subvention rupee amount, a credit-guarantee card, "23 of 26
+pages received" (no "expected page count" field exists), and "0.45x at
+600 acres" (the same acreage-scenario gap noted on Page 4). Rather than
+reuse them, this page builds:
+
+- One benefit card from `readiness_assessment.subsidy_benefits` (same
+  pattern as Page 1's subsidy card) -- real scheme name and amount when
+  verified, an honest "None identified" otherwise.
+- A generic eligibility checklist from data every snapshot actually
+  carries: promoter contribution present/absent, the real must-fix
+  finding count, and `outstanding_clarifications_count` -- generalizes to
+  any sector without template changes, unlike the original's
+  harvester/AIF-specific rows.
+- Action items generated from the same real counts (e.g. "Revise your
+  DPR to fix the 4 must-fix item(s) on page 2" using the fixture's actual
+  count, not a hardcoded "six").
+- "SBI" and "[Branch name]" replaced by "your lender"/"your lender's
+  branch" -- CAMSnapshot never records which bank is involved, and Page
+  5 made the same choice for the same reason (Section 19.3/19.20).
+
+- `app/templates/cam/page6_next_steps.html.jinja`, `build_page6_context()`.
+  Reuses `.cam-steps-wrap`/`.cam-step*` from the Page 5 fix for the
+  "What happens next" 4-step flow (confirmed the connector line renders
+  correctly here too).
+- `report.html.jinja` now includes all six pages -- the six-page CAM
+  report template is complete end to end.
+
+### Tests run
+
+```
+python3 -m pytest tests/test_dpr_cam_render_page6.py -q   → 12 passed
+python3 -m pytest tests/ -q                                 → 559 passed, 63 skipped
+ruff check app/ tests/                                       → clean
+ruff format --check app/ tests/                               → clean
+```
+
+Includes an end-to-end sanity check
+(`test_full_six_page_report_renders_with_no_unresolved_placeholders`)
+confirming all six pages render together with no unresolved Jinja
+placeholders and every page's "Page N of 6" label present.
+
+### Remaining work for milestone 4 and beyond
+
+- The project_cost/means_of_finance gap (nothing populates these two
+  models yet) still means Pages 1, 3, 5 and 6 show their "Requires
+  verification"/empty-state fallbacks even on the golden fixture --
+  closing it (wiring raw loan/means-of-finance figures into
+  `CamEngineOutputs`) would populate several pages more fully at once.
+- `sector_feasibility.py` and `debt_service_threshold_breakeven()` are
+  implemented but not called from `cam_engine_bridge.py` -- wiring them
+  in would unlock the acreage-range/break-even-acreage content that
+  Pages 3 and 4 currently and correctly omit.
+- Dealer-quotation/document-completeness tracking (Page 6's dropped "23
+  of 26 pages" row) and an AIF-subvention calculator (Page 6's dropped
+  benefit card) are both new scope, not implemented anywhere yet.
+- Detailed CAM annexures (Section 12, milestone 7) -- not started.
+- `Settings.cam_brand_color`/`cam_accent_color` exist but nothing calls
+  `render_cam_report_pdf()` with them yet -- milestone 5 work (API
+  wiring).
+- Milestone 5 (persistence/APIs/authorization, including the
+  `report_store.py` overwrite-on-conflict issue), milestone 6 (frontend
+  PDF download link), and milestone 7 (annexures) are all still open --
+  see the top-level execution plan.
 - Wiring `sector_feasibility.assess_sector_feasibility()` and
   `cam_financial_engine.debt_service_threshold_breakeven()` into
   `cam_engine_bridge.run_harvester_engine()` would close two real gaps at
