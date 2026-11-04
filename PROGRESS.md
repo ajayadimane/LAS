@@ -642,7 +642,7 @@ ruff check app/ tests/ scripts/                                   → clean
   from the simulated narrative agent output, not this check.
 - Dairy/polyhouse: still explicit stubs, by design.
 - The balance-sheet/cash-flow gap (milestone 2, disclosed above) remains.
-## Status: Milestone 4 (Templates and PDF) — started, Page 1 of 6 done
+## Status: Milestone 4 (Templates and PDF) — started, Page 2 of 6 done
 
 ### PDF engine decision
 
@@ -736,31 +736,69 @@ Spilling onto a second physical page at all is acceptable per Section 14
 ("do not force a section to remain on one page if content would
 overflow"); slicing a card is not, and is what the test guards.
 
+### Page 2 (Fix before you apply)
+
+Ported from `cam-design-reference/Fix-html.zip` (`Fix.dc.html`). This page
+needed no recommendation-language rewrite -- it is already findings-first,
+priority-labeled content (Must fix / Should fix / Good to fix), which is
+exactly `VerifiedFinding.priority` as already computed upstream by
+`finding_rules.py` and consolidated by `finding_consolidation.py`. Nothing
+on this page is decided in the template: `build_page2_context()` only
+groups `snapshot.findings` by their own `priority` field and formats each
+one's page reference.
+
+- `app/templates/cam/page2_fix_before_you_apply.html.jinja` -- must-fix
+  items render as full-width rows (title, explanation + suggested action,
+  page reference); should-fix/good-to-fix render as a 2-column card grid.
+  Each priority group shows an explicit "No {priority} issues were found"
+  note rather than an empty section when there are none.
+- `app/services/dpr_agentic/cam_render.py` -- `build_page2_context()`,
+  `_finding_ref()`. The page-reference label prefers the finding's own
+  `source_pages` (e.g. "p.8", or "p.8, p.22" for more than one); when a
+  finding has no page evidence at all, it falls back to the finding's
+  `category` (title-cased) rather than fabricating a page number --
+  distinguishable in the rendered report ("Dscr", "Projections") from a
+  real citation.
+- `app/templates/cam/base.css` -- new shared classes for this page's
+  layout: `.cam-pill`/`.cam-pill--{must,should,good}-fix` (the colored
+  priority pill), `.cam-priority-group`, `.cam-finding-row` (must-fix full
+  rows), `.cam-finding-card` (should/good-to-fix grid cards),
+  `.cam-empty-note`. All carry `break-inside: avoid`, same reasoning as
+  the Page 1 fix.
+- `report.html.jinja` now includes both pages; `render_cam_report_html()`
+  passes both `ctx` (page 1) and `ctx2` (page 2) into one shared template
+  render.
+
+Verified by rendering the Tikamgarh fixture to PDF and inspecting each
+page as a PNG: the four must-fix items, one should-fix item and one
+good-to-fix item (totals the fixture's own 6 consolidated findings) render
+with their real explanations and real page numbers (p.8, p.8, p.12, p.3),
+with no invented text.
+
 ### Tests run
 
 ```
-python3 -m pytest tests/test_dpr_cam_render.py -q   → 18 passed
-python3 -m pytest tests/ -k dpr -q                    → all pass/skip, 0 failed
+python3 -m pytest tests/test_dpr_cam_render.py tests/test_dpr_cam_render_page2.py -q
+  → 27 passed
 python3 -m pytest tests/ -q                            → full repo suite, 0 failed
 ruff check app/ tests/                                  → clean
+ruff format --check app/ tests/                         → clean
 ```
 
-Covers (Section 18 "Template tests"/"Rendering tests", for Page 1): no
-unresolved Jinja placeholders, no canvas runtime markup, no literal
-bracket placeholders, no sample-data leakage into an unrelated snapshot's
-render, missing-data states, dimensions- vs. status-mode score display, no
-approval/recommendation language, the page-break/card-slicing regression,
-long names, Unicode, and that autoescape blocks markup injection from
-snapshot text.
+Covers (Section 18, for Page 2): findings grouped by their own `priority`
+field (not re-decided in the template), page-reference precedence
+(`source_pages` over category fallback), no invented must-fix count when
+there are none, explicit empty-group notes, no unresolved placeholders, no
+canvas runtime markup, and autoescape blocking markup injection from an
+LLM-authored finding title.
 
 ### Remaining work
 
-- Pages 2-6 (Fix before you apply; Project, cost and corrections;
-  Repayment; Security and obligations; Benefits and next steps) --
-  not started. Each needs the same treatment as Page 1: read the design
-  archive, identify recommendation/approval language to re-author, map
-  CAMSnapshot fields, write the Jinja template, write
-  `build_pageN_context()`, write tests.
+- Pages 3-6 (Project, cost and corrections; Repayment; Security and
+  obligations; Benefits and next steps) -- not started. Each needs the
+  same treatment: read the design archive, identify recommendation/
+  approval language to re-author, map CAMSnapshot fields, write the Jinja
+  template, write `build_pageN_context()`, write tests.
 - The `project_cost`/`means_of_finance` gap from milestone 2b means Page 1
   currently shows "Requires verification" for loan/promoter amounts even
   on the populated Tikamgarh fixture -- closing that gap (wiring the raw

@@ -14,8 +14,8 @@ All display-value computation (readiness copy, money formatting, which
 unit-testable Python -- the templates only loop and substitute, no
 business logic in Jinja.
 
-Only milestone 4's first page (Summary) is wired up so far; see
-PROGRESS.md for the remaining five.
+Pages 1-2 (Summary, Fix before you apply) are wired up so far; see
+PROGRESS.md for the remaining four.
 """
 
 from __future__ import annotations
@@ -293,6 +293,56 @@ def build_page1_context(snapshot: CAMSnapshot) -> dict:
     }
 
 
+def _finding_ref(finding) -> str:
+    """Page-reference label shown beside a finding. Prefers the finding's
+    own source pages; falls back to its category when no page is known --
+    never fabricates a page number (Section 19.3)."""
+    if finding.source_pages:
+        return ", ".join(f"p.{p}" for p in finding.source_pages)
+    return finding.category.replace("_", " ").title()
+
+
+def build_page2_context(snapshot: CAMSnapshot) -> dict:
+    """All display values for page2_fix_before_you_apply.html.jinja, built
+    entirely from CAMSnapshot.findings -- priority/severity grouping is
+    computed upstream by finding_rules.py, never decided in the template."""
+    must_fix = [f for f in snapshot.findings if f.priority.value == "must_fix"]
+    should_fix = [f for f in snapshot.findings if f.priority.value == "should_fix"]
+    good_to_fix = [f for f in snapshot.findings if f.priority.value == "good_to_fix"]
+
+    def _entry(f) -> dict:
+        return {
+            "title": f.title,
+            "explanation": f.explanation,
+            "suggested_action": f.suggested_action,
+            "ref": _finding_ref(f),
+        }
+
+    total = len(must_fix) + len(should_fix) + len(good_to_fix)
+    if total == 0:
+        intro_line = "No issues were found in this DPR."
+    elif must_fix:
+        intro_line = (
+            f"We found {total} issue(s) in your DPR. Fix the "
+            f"{len(must_fix)} “must fix” item(s) before your BD "
+            f"submits to the bank."
+        )
+    else:
+        intro_line = (
+            f"We found {total} issue(s) in your DPR. None are must-fix, "
+            f"but review them before your BD submits to the bank."
+        )
+
+    return {
+        "report_reference": snapshot.report_id,
+        "borrower_name": snapshot.borrower_profile.borrower_name,
+        "intro_line": intro_line,
+        "must_fix": [_entry(f) for f in must_fix],
+        "should_fix": [_entry(f) for f in should_fix],
+        "good_to_fix": [_entry(f) for f in good_to_fix],
+    }
+
+
 def render_cam_report_html(
     snapshot: CAMSnapshot,
     *,
@@ -306,6 +356,7 @@ def render_cam_report_html(
         brand=brand_color,
         accent=accent_color,
         ctx=build_page1_context(snapshot),
+        ctx2=build_page2_context(snapshot),
     )
 
 
