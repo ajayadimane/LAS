@@ -306,6 +306,73 @@ def store_report(
     )
 
 
+def rerender_failed_pdfs(
+    engine,
+    *,
+    run_id: str | None = None,
+    timeout_seconds: float = DEFAULT_PDF_RENDER_TIMEOUT_SECONDS,
+) -> list[dict]:
+    """Renders again every stored version whose CAM PDF failed
+    (pdf_render_status='FAILED'), or only `run_id`'s. Uses the stored,
+    immutable report JSON -- no Gemini call, the analysis is not re-run.
+
+    Allowed by migration 009 (FAILED -> RENDERED, with the bytes, once). A
+    render that fails again leaves the row FAILED, untouched. Returns one
+    {run_id, source_reference, version, status} per row tried, status
+    "RENDERED" or "FAILED"."""
+    query = (
+        "SELECT id, run_id::text, source_reference, version, report::text "
+        "FROM dpr_report_artifacts WHERE pdf_render_status = 'FAILED'"
+    )
+    params: dict[str, str] = {}
+    if run_id is not None:
+        query += " AND run_id = CAST(:run_id AS uuid)"
+        params["run_id"] = run_id
+    query += " ORDER BY id"
+    with engine.connect() as conn:
+        rows = conn.execute(text(query), params).all()
+
+    outcomes = []
+    for row_id, row_run_id, source_reference, version, report_json in rows:
+        result = AnalysisResult.model_validate_json(report_json)
+        pdf = _render_cam_pdf(
+            result,
+            run_id=row_run_id,
+            source_reference=source_reference,
+            version=version,
+            timeout_seconds=timeout_seconds,
+        )
+        status = "FAILED"
+        if pdf is not None:
+            with engine.begin() as conn:
+                updated = conn.execute(
+                    text(
+                        "UPDATE dpr_report_artifacts "
+                        "SET pdf_render_status = 'RENDERED', report_pdf = :pdf "
+                        "WHERE id = :id AND pdf_render_status = 'FAILED'"
+                    ),
+                    {"id": row_id, "pdf": pdf},
+                ).rowcount
+            # 0 rows: someone else re-rendered it meanwhile -- also fine.
+            status = "RENDERED" if updated else "ALREADY_RENDERED"
+        logger.info(
+            "dpr_cam_pdf_rerender run_id=%s source_reference=%s version=%d status=%s",
+            row_run_id,
+            source_reference,
+            version,
+            status,
+        )
+        outcomes.append(
+            {
+                "run_id": row_run_id,
+                "source_reference": source_reference,
+                "version": version,
+                "status": status,
+            }
+        )
+    return outcomes
+
+
 def get_report(
     engine, source_reference: str, *, version: int | None = None
 ) -> AnalysisResult | None:

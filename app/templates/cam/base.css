@@ -78,11 +78,18 @@ body {
   color: var(--text-primary);
 }
 
+/* Performance: .cam-page, .cam-main, .cam-priority-group and
+   .cam-finding-card are deliberately display:block, not flex columns.
+   WeasyPrint re-lays-out a flex container's children at every nesting level
+   and again on every page break inside it, so four nested flex columns made
+   the render time explode with the number of findings (measured on a real
+   55-finding report: >300 s, past the worker's 120 s timeout, so no PDF;
+   with block layout: ~4 s). Spacing that `gap` used to give is the
+   `> * + *` margin rules below. Do not turn these back into flex. */
 .cam-page {
   width: 210mm;
   min-height: 297mm;
-  display: flex;
-  flex-direction: column;
+  display: block;
   break-after: page;
 }
 .cam-page:last-child { break-after: auto; }
@@ -110,15 +117,13 @@ body {
 .cam-header__page { font-size: 12px; color: rgba(255,255,255,0.88); }
 
 .cam-main {
-  flex-grow: 1;
   padding: 6mm 12mm 0;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
+  display: block;
 }
+.cam-page .cam-main > * + * { margin-top: 14px; }
 
 .cam-footer {
-  margin-top: auto;
+  margin-top: 18px;
   border-top: 1px solid var(--border);
   padding: 12px 12mm 10mm;
   display: flex;
@@ -226,7 +231,9 @@ table.cam-table th { font-size: 11px; color: var(--text-tertiary); font-weight: 
 .cam-pill--should-fix { color: var(--accent); background: var(--accent-tint); border: 1px solid var(--accent); }
 .cam-pill--good-to-fix { color: var(--grey); background: var(--grey-tint); border: 1px solid #C9D2CD; }
 
-.cam-priority-group { display: flex; flex-direction: column; gap: 2px; }
+.cam-priority-group { display: block; }
+.cam-page .cam-priority-group > * + * { margin-top: 2px; }
+.cam-page .cam-priority-group--loose > * + * { margin-top: 8px; }
 .cam-priority-group__head {
   display: flex; align-items: center; gap: 10px;
   padding-bottom: 4px;
@@ -250,9 +257,10 @@ table.cam-table th { font-size: 11px; color: var(--text-tertiary); font-weight: 
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px 12px;
-  display: flex; flex-direction: column; gap: 3px;
+  display: block;
   break-inside: avoid;
 }
+.cam-page .cam-finding-card > * + * { margin-top: 3px; }
 .cam-finding-card__head {
   display: flex; justify-content: space-between; gap: 8px; align-items: baseline;
 }

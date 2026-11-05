@@ -502,3 +502,25 @@ def test_a_mobile_held_by_another_person_is_explained(client, vendor, settings):
     error = response.json()["error"]
     assert error["code"] == "MOBILE_NUMBER_ALREADY_EXISTS"
     assert error["message"].startswith("This mobile number is already registered")
+
+
+def test_switched_off_no_otp_is_asked_for_anywhere(
+    client, vendor, settings, onboarding, owned
+):
+    """OTP_REQUIRED=false: the dashboard is told to hide the steps, and both
+    saves go through without any token."""
+    settings.otp_required = False
+
+    assert client.get("/api/v1/otp/settings").json()["required"] is False
+    vendor.post(BY_PERSON_ID).mock(
+        return_value=httpx.Response(404, json=error_envelope(404, "PERSON_NOT_FOUND"))
+    )
+    created = client.post("/api/v1/bd/customers", json=FORM, headers=AUTH)
+    assert created.status_code == 201, created.text
+
+    vendor.post(BY_PERSON_ID).mock(return_value=httpx.Response(200, json=REAL_PERSON))
+    vendor.put("/customermgmt/person/emailAddress").mock(
+        return_value=httpx.Response(200, json=ack())
+    )
+    changed = client.put(EDIT, json={"email_address": NEW_EMAIL}, headers=AUTH)
+    assert changed.status_code == 200, changed.text

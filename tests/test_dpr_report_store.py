@@ -25,7 +25,9 @@ from app.services.dpr_agentic import report_store
 from app.services.dpr_agentic.jobs import claim, finish, submit
 from app.services.dpr_agentic.report_store import (
     get_report,
+    get_report_pdf,
     list_report_versions,
+    rerender_failed_pdfs,
     store_report,
 )
 from app.services.dpr_agentic.schemas import AgentOutput, AnalysisResult
@@ -331,3 +333,106 @@ def test_store_report_marks_pdf_failed_when_the_render_times_out(dpr_pg):
         ).one()
     assert pdf_render_status == "FAILED"
     assert pdf is None
+
+
+# --- Re-rendering a failed PDF (migration 009) ------------------------------
+
+
+def _store_with_failed_pdf(dpr_pg, source_reference: str = "svc:1") -> str:
+    run_id = _submit(dpr_pg, source_reference=source_reference)
+    claim(dpr_pg, run_id)
+    with patch.object(report_store, "_render_cam_pdf", return_value=None):
+        store_report(dpr_pg, run_id, _report("a" * 64))
+    return run_id
+
+
+def _pdf_row(dpr_pg, source_reference: str = "svc:1"):
+    with dpr_pg.connect() as conn:
+        return conn.execute(
+            text(
+                "SELECT pdf_render_status, report_pdf FROM dpr_report_artifacts "
+                "WHERE source_reference=:ref AND version=1"
+            ),
+            {"ref": source_reference},
+        ).one()
+
+
+def test_rerender_fills_in_a_failed_pdf(dpr_pg):
+    run_id = _store_with_failed_pdf(dpr_pg)
+    assert get_report_pdf(dpr_pg, "svc:1") is None
+
+    with patch.object(report_store, "_render_cam_pdf", return_value=b"%PDF-new"):
+        outcomes = rerender_failed_pdfs(dpr_pg)
+
+    assert outcomes == [
+        {
+            "run_id": run_id,
+            "source_reference": "svc:1",
+            "version": 1,
+            "status": "RENDERED",
+        }
+    ]
+    assert tuple(_pdf_row(dpr_pg)) == ("RENDERED", b"%PDF-new")
+    assert get_report_pdf(dpr_pg, "svc:1") == b"%PDF-new"
+    # Nothing left to do on a second pass.
+    assert rerender_failed_pdfs(dpr_pg) == []
+
+
+def test_rerender_that_fails_again_leaves_the_row_failed(dpr_pg):
+    _store_with_failed_pdf(dpr_pg)
+    with patch.object(report_store, "_render_cam_pdf", return_value=None):
+        outcomes = rerender_failed_pdfs(dpr_pg)
+    assert [o["status"] for o in outcomes] == ["FAILED"]
+    assert tuple(_pdf_row(dpr_pg)) == ("FAILED", None)
+
+
+def test_rerender_can_be_limited_to_one_run(dpr_pg):
+    first = _store_with_failed_pdf(dpr_pg, "svc:1")
+    _store_with_failed_pdf(dpr_pg, "svc:2")
+    with patch.object(report_store, "_render_cam_pdf", return_value=b"%PDF"):
+        outcomes = rerender_failed_pdfs(dpr_pg, run_id=first)
+    assert [o["source_reference"] for o in outcomes] == ["svc:1"]
+    assert _pdf_row(dpr_pg, "svc:2")[0] == "FAILED"
+
+
+def test_a_failed_pdf_may_not_become_rendered_without_bytes(dpr_pg):
+    _store_with_failed_pdf(dpr_pg)
+    with pytest.raises(DBAPIError):
+        with dpr_pg.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE dpr_report_artifacts SET pdf_render_status='RENDERED' "
+                    "WHERE source_reference='svc:1' AND version=1"
+                )
+            )
+
+
+def test_a_rendered_pdf_can_still_never_be_replaced_or_unrendered(dpr_pg):
+    _store_with_failed_pdf(dpr_pg)
+    with patch.object(report_store, "_render_cam_pdf", return_value=b"%PDF-1"):
+        rerender_failed_pdfs(dpr_pg)
+    for sql in (
+        "UPDATE dpr_report_artifacts SET report_pdf='\\x00' "
+        "WHERE source_reference='svc:1' AND version=1",
+        "UPDATE dpr_report_artifacts SET pdf_render_status='FAILED', "
+        "report_pdf=NULL WHERE source_reference='svc:1' AND version=1",
+        "UPDATE dpr_report_artifacts SET pdf_render_status='PENDING', "
+        "report_pdf=NULL WHERE source_reference='svc:1' AND version=1",
+    ):
+        with pytest.raises(DBAPIError):
+            with dpr_pg.begin() as conn:
+                conn.execute(text(sql))
+    assert tuple(_pdf_row(dpr_pg)) == ("RENDERED", b"%PDF-1")
+
+
+def test_rerendering_never_unlocks_the_report_json(dpr_pg):
+    _store_with_failed_pdf(dpr_pg)
+    with pytest.raises(DBAPIError):
+        with dpr_pg.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE dpr_report_artifacts SET pdf_render_status='RENDERED', "
+                    "report_pdf='\\x00', report='{}'::jsonb "
+                    "WHERE source_reference='svc:1' AND version=1"
+                )
+            )

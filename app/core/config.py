@@ -180,6 +180,12 @@ class Settings(BaseSettings):
     # hypothetical -- see PROGRESS.md milestone 5) must never stall the
     # worker process itself; it just becomes pdf_render_status='FAILED'.
     dpr_cam_pdf_render_timeout_seconds: float = Field(default=120.0, gt=0)
+    # Start scripts/dpr_worker.py as a child process when the API starts, and
+    # stop it with the API (app/services/dpr_agentic/worker_process.py).
+    # Needs the same DPR_* settings as the worker; skipped with a warning
+    # otherwise. Off = run the worker yourself (or via
+    # deploy/las-dpr-worker.service).
+    dpr_worker_autostart: bool = False
     # Fakes the vendor's money-moving transfer call (PUT
     # /transfer/systemAccountPayment) so dev/Playwright/local runs can click
     # through the full pay-later flow without real vendor credentials or
@@ -263,8 +269,11 @@ class Settings(BaseSettings):
     otp_api_key: SecretStr | None = None
     otp_verify_ssl: bool = False
     otp_timeout_seconds: float = 10.0
-    # When true, registering a customer needs a verified mobile and email,
-    # and changing an email needs the new one verified. Turn off only locally.
+    # The one switch for OTP verification (OTP_REQUIRED in .env; restart to
+    # apply). True: registering a customer needs a verified mobile and email,
+    # and changing an email needs the new one verified. False: no OTP is asked
+    # for or checked anywhere, and the dashboard hides the OTP steps (it reads
+    # this from GET /api/v1/otp/settings).
     otp_required: bool = True
     # Signs the OTP session and proof tokens we hand the dashboard (we have no
     # database to keep them in). Unset = a random key per process: tokens die

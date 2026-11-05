@@ -19,6 +19,9 @@ from app.core.logging import configure_logging, get_logger
 from app.services.admin_session import AdminSession
 from app.services.dpr_agentic.jobs import engine_for
 from app.services.dpr_agentic.migrate import apply_migrations
+from app.services.dpr_agentic.worker_process import (
+    start_if_enabled as start_dpr_worker_if_enabled,
+)
 from app.services.mailer import Mailer
 from app.services.otp import OtpGuard
 
@@ -75,9 +78,12 @@ async def lifespan(app: FastAPI):
     otp_http = build_otp_http_client(settings)
     app.state.otp_client = OtpClient(otp_http, settings)
     app.state.otp_guard = OtpGuard.from_settings(settings)
+    app.state.dpr_worker = await start_dpr_worker_if_enabled(settings)
     try:
         yield
     finally:
+        if app.state.dpr_worker is not None:
+            await app.state.dpr_worker.stop()
         await client.aclose()
         await gemini_client.aclose()
         if app.state.dpr_engine is not None:

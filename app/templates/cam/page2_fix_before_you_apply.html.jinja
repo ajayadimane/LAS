@@ -42,7 +42,7 @@
       {% endif %}
     </section>
 
-    <section class="cam-priority-group" style="gap: 8px;">
+    <section class="cam-priority-group cam-priority-group--loose">
       <div class="cam-priority-group__head">
         <span class="cam-pill cam-pill--should-fix">Should fix</span>
         <span class="cam-priority-group__count">{{ ctx2.should_fix | length }} issue(s)</span>
@@ -64,7 +64,7 @@
       {% endif %}
     </section>
 
-    <section class="cam-priority-group" style="gap: 8px;">
+    <section class="cam-priority-group cam-priority-group--loose">
       <div class="cam-priority-group__head">
         <span class="cam-pill cam-pill--good-to-fix">Good to fix</span>
         <span class="cam-priority-group__count">{{ ctx2.good_to_fix | length }} issue(s)</span>
