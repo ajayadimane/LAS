@@ -161,12 +161,23 @@ export interface ReportSummary {
   };
 }
 
-/** Mirrors report_http.resolve_annexures()'s dict shape. */
+/** Mirrors report_http.resolve_annexures()'s dict shape: Section 12's
+ * seven annexures (A-G), each with its own shape plus a `missing` list --
+ * see app/services/dpr_agentic/cam_annexures.py. Left loose here since the
+ * frontend only shows this as a read-only JSON panel today. */
+export interface ReportAnnexureSection {
+  missing: string[];
+  [key: string]: unknown;
+}
+
 export interface ReportAnnexures {
-  project_cost: unknown;
-  means_of_finance: unknown;
-  financial_ratios: unknown;
-  scenario_analysis: unknown[];
+  A_financial_statements: ReportAnnexureSection;
+  B_repayment: ReportAnnexureSection;
+  C_sensitivity_analysis: ReportAnnexureSection;
+  D_project_feasibility: ReportAnnexureSection;
+  E_findings_register: ReportAnnexureSection;
+  F_sbi_and_scheme_references: ReportAnnexureSection;
+  G_audit_trail: ReportAnnexureSection;
 }
 
 /** The service catalogue and fees, from the middleware's config. */

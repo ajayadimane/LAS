@@ -548,7 +548,12 @@ def test_report_versions_endpoint_lists_every_version(dpr_client, dpr_pg, vendor
     assert response.json() == [1, 2]
 
 
-def test_report_annexures_endpoint_returns_computed_figures(dpr_client, dpr_pg, vendor):
+def test_report_annexures_endpoint_returns_all_seven_sections(
+    dpr_client, dpr_pg, vendor
+):
+    """Section 12: Annexures A-G, each keyed by letter, each with an
+    explicit `missing` list -- see docs/CAM_REPORT_SPEC.md and
+    app/services/dpr_agentic/cam_annexures.py."""
     _paid_person(vendor)
     sha = hashlib.sha256(b"doc").hexdigest()
     ref = f"wallet-person-custom-field:{PID}:GEO_CHECK"
@@ -559,11 +564,18 @@ def test_report_annexures_endpoint_returns_computed_figures(dpr_client, dpr_pg, 
     assert response.status_code == 200
     body = response.json()
     assert set(body.keys()) == {
-        "project_cost",
-        "means_of_finance",
-        "financial_ratios",
-        "scenario_analysis",
+        "A_financial_statements",
+        "B_repayment",
+        "C_sensitivity_analysis",
+        "D_project_feasibility",
+        "E_findings_register",
+        "F_sbi_and_scheme_references",
+        "G_audit_trail",
     }
+    for section in body.values():
+        assert "missing" in section
+    assert body["G_audit_trail"]["analysis_id"]
+    assert body["G_audit_trail"]["report_version"] >= 1
 
 
 def test_report_summary_endpoint_returns_readiness_and_counts(

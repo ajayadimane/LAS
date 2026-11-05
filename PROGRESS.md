@@ -2219,3 +2219,144 @@ typecheck` and `npm run build` clean. Playwright: five real screenshots in
 Next: milestone 7 (the full Annexure B / CAM Annexures document --
 `/report/annexures` today returns the computed figures as JSON, not yet a
 rendered Annexure B document in its own right).
+
+## Before milestone 7: process_one() resilience, then all seven Section 12 annexures (2026-11-05)
+
+### Fix 1: the SimpleNamespace test, then process_one()'s real bug
+
+Root cause, confirmed precisely this round (last round only flagged it as
+"one pre-existing unrelated failure"): `process_one()` passes
+`cam_engine_enabled=settings.cam_engine_enabled` as a keyword argument
+while **building** the call to `run_claimed_analysis(...)` -- Python
+evaluates every argument before the call executes, so a `settings` object
+missing that attribute raises `AttributeError` *before* `claim()` ever
+runs. `run_claimed_analysis()`'s own `except` block (which calls
+`finish()`) never gets a chance to run, because `run_claimed_analysis`
+itself was never entered. `process_one()`'s own `except` block only
+logged a warning -- it never touched the run's row. Net effect: the run
+stays `QUEUED` forever, retried identically (and identically failing)
+every poll cycle, with no terminal state and no bound on the retries
+(`claim()`'s `attempts` counter never increments either, since `claim()`
+never ran) -- exactly the "stuck, silently swallowed" failure mode the
+user described.
+
+Three tests in `tests/test_dpr_log_safety.py` shared the same bare
+`SimpleNamespace(dpr_agentic_vision_enabled=..., dpr_agentic_vision_max_pages=...,
+dpr_agentic_liteparse_page_min_chars=...)` settings shape, missing
+`cam_engine_enabled`/`dpr_cam_pdf_render_timeout_seconds`. One of the
+three (`test_process_one_sets_current_run_id_for_the_whole_call_chain`)
+actually asserted real completion (11 LLM calls with a consistent
+`run_id`) and so failed outright. The other two
+(`test_worker_never_logs_page_text_or_llm_output`,
+`test_worker_failure_logging_never_includes_exception_message_text`)
+"passed" only because their assertions (no canary text in logs) hold
+trivially whether or not anything actually ran -- the second one in
+particular never got to exercise what it claims to test (a `RuntimeError`
+from the LLM), because the unrelated `AttributeError` fired first every
+time.
+
+**Fixed**:
+1. All three tests now share a `_worker_settings()` helper returning a
+   real `Settings(_env_file=None, ...)`, not a bare `SimpleNamespace` --
+   all three now genuinely exercise what they claim to.
+2. `jobs.fail_stuck_run(engine, run_id, error_code)` (new): terminal-fails
+   a `QUEUED` or `RUNNING` run regardless of lease-token state -- the
+   backstop for exactly this class of error, which has none to check. A
+   safe no-op once a run is already `COMPLETED`/`FAILED` (so it is always
+   safe to call unconditionally from `process_one()`'s `except` block,
+   even on the normal path where `run_claimed_analysis()` already
+   terminal-failed the run itself).
+3. `scripts/dpr_worker.py`'s `process_one()` now calls `fail_stuck_run()`
+   in its `except` block, so **any** exception -- before `claim()`, during
+   analysis, or anywhere else -- ends with the run `FAILED` and an
+   `error_code` recorded, never silently left `QUEUED`/`RUNNING`.
+
+**New regression test**:
+`test_a_config_error_before_claim_still_terminal_fails_the_run`
+(`tests/test_dpr_log_safety.py`) reproduces the exact bug (a `settings`
+missing `cam_engine_enabled`, an `UnreachableGemini` that asserts if ever
+called) and proves the run ends `FAILED` with `error_code="AttributeError"`,
+not stuck. Plus three new `jobs.py`-level tests in `tests/test_dpr_jobs.py`
+for `fail_stuck_run()` itself: fails a `QUEUED` run, fails a `RUNNING` run
+ignoring its lease, and is a no-op once a run is already terminal.
+
+**Full suite confirmed green**: re-ran `tests/` twice more on fresh
+throwaway Postgres instances -- zero failures, not even the one
+pre-existing failure every prior round carried. `ruff check`/
+`ruff format --check` clean; frontend `typecheck`/`build` clean.
+
+### Fix 2: all seven Section 12 annexures (A-G), not only B
+
+The user pasted Section 12 verbatim (saved to `docs/CAM_REPORT_SPEC.md`,
+and `CLAUDE.md` now points there before any CAM report milestone). It
+defines seven annexures: **A** Financial Statements, **B** Repayment, **C**
+Sensitivity Analysis, **D** Project Feasibility, **E** Findings Register,
+**F** SBI and Scheme References, **G** Audit Trail. `GET .../report/annexures`
+previously returned only B's figures (project cost, means of finance,
+financial ratios, scenario analysis) under unlettered keys. As asked:
+audited what each needs against the `CAMSnapshot` fields that actually
+exist and are actually populated, **before** writing any code, then built
+the gaps -- reading what's already in the snapshot, inventing no new
+calculation engine.
+
+**The audit** (full detail and exact field names in
+`app/services/dpr_agentic/cam_annexures.py`'s docstrings; summarized
+here):
+
+| Annexure | What's available today | What's missing |
+|---|---|---|
+| **A** Financial Statements | `financial_ratios` (DSCR/break-even family only) | `financial_projections` (P&L) is modeled but **never populated by any code path**; no balance sheet, cash flow or working capital model exists at all; ratio analysis beyond DSCR (current ratio, debt-equity, ...) is not modeled |
+| **B** Repayment | `repayment_schedule` (year 1 only, when `cam_engine_enabled`), `scenario_analysis[*].dscr_by_year` | The engine only ever computes **year 1** of repayment, never a full tenure/amortization; moratorium treatment and repayment assumptions have no field at all |
+| **C** Sensitivity Analysis | `scenario_analysis` (labels, descriptions, debt-service impact via DSCR/break-even) | `ScenarioAnalysis` has **no revenue_impact or cost_impact field** -- only the debt-service side of a scenario is modeled |
+| **D** Project Feasibility | `operational_assumptions`'s shape exists (sector, free-form assumptions dict, classification) | **Always the empty default** -- no agent populates it; installed capacity, utilization, raw material, production assumptions and market evidence have no code path at all |
+| **E** Findings Register | `findings` (`VerifiedFinding`): id, dedup key, merged count, severity, priority+rule, class, verification, dpr/recomputed value, source pages | `evidence` (quotes/pages as structured objects) is **always `[]`** -- `_map_finding()` hardcodes it; no structured financial-impact field (only text inside `priority_rule`); `proposed_corrections` is **never generated** by any code path; `resolution_status` has **no write path** -- every finding stays `"open"` |
+| **F** SBI and Scheme References | Schema-ready models exist (`policy_assessment`, `readiness_assessment.subsidy_benefits`) | **Always empty** -- the policy agent explicitly refuses to invent policy without a real corpus (documented, not a bug); no subsidy/AIF-eligibility agent exists; "lending product" has no field anywhere |
+| **G** Audit Trail | `analysis_run_id`, `report_id`, `report_version`, document checksum, `generated_at`, `dscr_definition_used`, readiness `score_mode`/`status`, `schema_version`, job-registry `run` row | Per-role **execution timing** isn't captured (only which roles ran, from `agent_outputs`' keys); the Gemini model name was **never persisted onto `AnalysisResult` at all** (only logged transiently) -- fixed this round (see below); priority thresholds are hardcoded constants in `finding_rules.py`, never recorded per run; no reviewer-action workflow exists |
+
+**One small, real plumbing fix alongside the audit** (not new business
+logic, just capturing an already-real value that was being thrown away):
+`AnalysisResult.gemini_model` (new, optional, defaults `None`) is now set
+from `getattr(llm, "model", None)` at the exact point each `AnalysisResult`
+is constructed (`parallel_graph.py`, `orchestrator.py`) -- the real model
+string the client actually used for that run, not reconstructed from
+current config (which could have changed since). `None` for any report
+stored before this field existed, reported as explicitly missing in
+Annexure G rather than guessed from today's `Settings`.
+
+**Built**: `app/services/dpr_agentic/cam_annexures.py` -- one pure
+function per annexure (`build_annexure_a` .. `build_annexure_g`) plus
+`build_annexures()` combining all seven, each reading only from the
+existing `CAMSnapshot`/`AnalysisResult`/job-registry `run` row, each
+returning an explicit `missing: list[str]` naming exactly what it could
+not populate and why (per spec: "Do not invent content merely to make
+annexures appear complete... may explicitly state that data is
+unavailable"). `report_http.resolve_annexures()` now calls this instead of
+hand-building the old four-key B-only dict; same gate, same "no
+re-rendering on GET" discipline as before. No borrower KYC/bureau data is
+in any annexure (Aadhaar is already masked to last 4 digits at the
+`BorrowerProfile` level, and no annexure here reads `BorrowerProfile` at
+all today since the adapter never has one to supply outside the PDF
+render path).
+
+**Tests**: `test_report_annexures_endpoint_returns_all_seven_sections`
+(replaces the old four-key assertion) confirms all seven lettered keys,
+that every section carries a `missing` list, and that Annexure G's
+`analysis_id`/`report_version` are populated. Full suite re-run green
+again after this change.
+
+### Status: milestone 7's data layer is complete; the real Gemini run is blocked on one missing input
+
+Per the user's own three-part instruction, the third step -- "I approve
+one real Gemini run: the Tikamgarh DPR end to end with
+`CAM_ENGINE_ENABLED=true`" -- cannot run yet: **no real Tikamgarh DPR file
+exists anywhere in this repo.** `scripts/build_tikamgarh_fixture.py`'s own
+docstring says so explicitly: *"No real Tikamgarh DPR source file exists
+anywhere in this repo ... the brief's '[PATH TO TIKAMGARH DPR]' was never
+filled in."* `tests/fixtures/tikamgarh_cam_snapshot.json` and
+`docs/review/tikamgarh/tikamgarh_cam_report.pdf` are both built from a
+`FakeLLM` returning hand-derived golden figures (from
+`cam-design-reference/LAS Customer CAM Report Template.pdf`), explicitly
+labeled as a simulation, never a real document run. Needed before that
+step: the actual Tikamgarh DPR file (or a path to it on this machine).
+Not fabricated or substituted here -- flagged back to the user instead,
+per this file's standing discipline throughout every prior round.

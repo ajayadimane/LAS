@@ -85,3 +85,10 @@ class AnalysisResult(BaseModel):
     # set only when Settings.cam_engine_enabled is True (milestone 2b).
     # cam_adapter.py revalidates it into CamEngineOutputs when present.
     cam_engine_outputs: dict | None = None
+    # The exact Gemini model string used for this run (e.g.
+    # "gemini-2.5-flash"), read off the llm client at call time -- for
+    # Annexure G's audit trail (Section 12). None for any result produced
+    # before this field existed, or by a non-Gemini test double with no
+    # `.model` attribute; never guessed from current config, since config
+    # may have changed since a past run.
+    gemini_model: str | None = None

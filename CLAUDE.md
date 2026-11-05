@@ -241,6 +241,8 @@ tests/
 ```
 
 ## Rules
+- Before starting or resuming any CAM report milestone, read
+  `docs/CAM_REPORT_SPEC.md` and `PROGRESS.md`.
 - Routers stay thin: validate input, call a service, return a schema.
 - Never return raw vendor JSON to the dashboard; map it into our schemas.
 - Never hardcode secrets or URLs; everything comes from `config.py`.

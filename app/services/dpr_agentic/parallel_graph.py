@@ -145,4 +145,5 @@ async def analyze_parallel(
         findings=findings,
         unresolved_questions=list(dict.fromkeys(questions)),
         cam_engine_outputs=cam_engine_outputs,
+        gemini_model=getattr(llm, "model", None),
     )

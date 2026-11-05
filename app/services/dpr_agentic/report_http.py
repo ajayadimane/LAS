@@ -18,6 +18,8 @@ from fastapi import HTTPException, Response, status
 from app.clients.vendor_client import VendorCallContext
 from app.services.bd import CustomerNotFoundError
 from app.services.dpr_agentic.cam_adapter import build_snapshot_from_analysis
+from app.services.dpr_agentic.cam_annexures import build_annexures
+from app.services.dpr_agentic.jobs import latest_run_for
 from app.services.dpr_agentic.report_service import (
     ReportNotFoundError,
     access_report,
@@ -164,16 +166,17 @@ async def resolve_annexures(
     not_found: HTTPException,
     unknown_service: Callable[[str], HTTPException],
 ) -> dict:
-    """The computed Annexure B figures (project cost, means of finance,
-    financial ratios and per-scenario calculations, each with its full
-    CalculationTrace) for the same gated report.
+    """All seven Section 12 annexures (A-G; docs/CAM_REPORT_SPEC.md) for the
+    same gated report, keyed by letter (e.g. "A_financial_statements").
 
     This reshapes the already-stored, already-gated AnalysisResult with
     cam_adapter.build_snapshot_from_analysis() -- pure Python model mapping,
     not the WeasyPrint PDF render -- so it does not violate "no re-rendering
     on GET" for the PDF; no borrower/project profile is available here any
     more than it is in report_store.py's own one-time PDF render, so those
-    fields are left at their explicit missing-data default.
+    fields are left at their explicit missing-data default. Each annexure
+    also lists what it cannot yet populate ("missing"), per spec: an
+    annexure states unavailable data rather than padding it.
     """
     report = await resolve_report(
         engine=engine,
@@ -198,14 +201,8 @@ async def resolve_annexures(
         report_version=resolved_version,
         analysis_run_id=report.wallet_document_id,
     )
-    return {
-        "project_cost": snapshot.project_cost.model_dump(mode="json"),
-        "means_of_finance": snapshot.means_of_finance.model_dump(mode="json"),
-        "financial_ratios": snapshot.financial_ratios.model_dump(mode="json"),
-        "scenario_analysis": [
-            s.model_dump(mode="json") for s in snapshot.scenario_analysis
-        ],
-    }
+    run = latest_run_for(engine, ref)
+    return build_annexures(snapshot, report, run)
 
 
 async def resolve_summary(

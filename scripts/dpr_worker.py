@@ -47,6 +47,7 @@ from app.services.dpr_agentic.document_pipeline.vision import (  # noqa: E402
 from app.services.dpr_agentic.gemini import CURRENT_RUN_ID, GeminiAgentClient  # noqa: E402
 from app.services.dpr_agentic.jobs import (  # noqa: E402
     engine_for,
+    fail_stuck_run,
     get_run,
     list_claimable,
     reap_exhausted,
@@ -235,9 +236,21 @@ async def process_one(
                 run_id,
                 upload_to_report_ms,
             )
-    except Exception as exc:  # noqa: BLE001 - run_claimed_analysis already
-        # recorded this as a FAILED run; log it here only for operator
-        # visibility, never re-raise (one bad document must not kill the loop).
+    except Exception as exc:  # noqa: BLE001 - one bad document/config must
+        # never kill the poll loop.
+        #
+        # run_claimed_analysis() marks the run FAILED itself for any error
+        # from claim() onward -- but an error raised while *building* this
+        # very call (e.g. a misconfigured `settings` missing an attribute
+        # this function reads as a keyword argument, below) happens before
+        # claim() ever runs, so the run is never touched and stays QUEUED
+        # forever, retried identically by every poll cycle (confirmed via
+        # test_dpr_log_safety.py's SimpleNamespace settings fixture, which
+        # reproduced exactly this). fail_stuck_run() is the backstop: it
+        # terminal-fails a QUEUED-or-RUNNING run regardless of lease state,
+        # and is a safe no-op if finish() already marked it FAILED or
+        # COMPLETED.
+        fail_stuck_run(engine, run_id, type(exc).__name__)
         logger.warning(
             "dpr_run_failed run_id=%s duration_ms=%d error=%s",
             run_id,
