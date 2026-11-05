@@ -96,6 +96,30 @@ BEGIN
     END IF;
 END $$;
 
+-- Pre-006 version numbers were per-run (always 1, since the old PK was
+-- (run_id, version)), but two completed runs can share one
+-- source_reference for real -- that is exactly what this migration exists
+-- to support (a re-analysis after corrections submits a new run_id; see
+-- the header comment above). Rescoping version to source_reference without
+-- renumbering first means two such rows collide on (source_reference, 1)
+-- below. Renumber every pre-006 row sequentially within its
+-- source_reference group, oldest first (the same chronological order
+-- get_report()/latest_run_for() already treat as version history) --
+-- a no-op for any source_reference that only ever had one run. Confirmed
+-- against real pre-006 data, not just a freshly created test database:
+-- this collision is real, not hypothetical (two COMPLETED runs for the
+-- same source_reference, both originally version 1).
+WITH renumbered AS (
+    SELECT id, ROW_NUMBER() OVER (
+        PARTITION BY source_reference ORDER BY version, created_at, id
+    ) AS new_version
+    FROM dpr_report_artifacts
+)
+UPDATE dpr_report_artifacts a
+SET version = r.new_version
+FROM renumbered r
+WHERE a.id = r.id AND a.version IS DISTINCT FROM r.new_version;
+
 DO $$
 BEGIN
     IF NOT EXISTS (

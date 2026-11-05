@@ -2360,3 +2360,132 @@ labeled as a simulation, never a real document run. Needed before that
 step: the actual Tikamgarh DPR file (or a path to it on this machine).
 Not fabricated or substituted here -- flagged back to the user instead,
 per this file's standing discipline throughout every prior round.
+
+## The real Tikamgarh run (2026-11-05)
+
+The user supplied the real file: `DPRData/Approved DPR /TikamgarhDPR.pdf`
+(910,758 bytes, 23 pages, sha256 `0b335886...`). Ran the real production
+code path end to end -- `jobs.submit()` -> `upload_staging.stage_upload()`
+-> `scripts/dpr_worker.py`'s real `process_one()` -> a real
+`GeminiAgentClient` against the real Gemini API (no respx, no mock, no
+FakeLLM) -- with `cam_engine_enabled=True`, via the new, one-off
+`scripts/run_tikamgarh_real.py`. The vendor (iWallet) was never contacted
+(this worker path never calls it, by design). Written under a clearly
+fake `service_request_id`/`source_reference`
+(`TEST-TIKAMGARH-REAL-RUN:GEO_CHECK`), never a real customer id.
+
+### A real migration bug found and fixed first, before the run could proceed
+
+`apply_migrations()` failed against the real database (`LASUAT`, the one
+named by `.env`'s `DPR_DATABASE_URL`) on its first attempt:
+`UniqueViolation: could not create unique index
+"dpr_report_artifacts_source_version_key" ... Key (source_reference,
+version)=(wallet-person-custom-field:9000000013:GEO_CHECK, 1) is
+duplicated.` Migrations run in one transaction
+(`migrate.py`'s `with engine.begin()`), so this rolled back cleanly --
+nothing was left half-migrated, and no real data was at risk.
+
+**Root cause**: migration 006 rescopes `version` from per-`run_id` to
+per-`source_reference`, but its backfill copies each pre-006 row's old
+version number verbatim (always `1`, since the old PK was
+`(run_id, version)`). Two real, legitimate `COMPLETED` runs already shared
+one `source_reference` in `LASUAT` (from real work on 2026-11-03/04,
+confirmed by reading the actual rows, read-only, before touching
+anything) -- exactly the "re-analysis after corrections, new `run_id`,
+same version history" case migration 006 exists to support. Backfilling
+both to version `1` collided on the very constraint meant to make that
+case work. This had never surfaced before because every prior round's
+migration tests only ever ran against a freshly created database with at
+most one run per `source_reference`.
+
+**Fixed** in migration 006 itself (never a follow-up migration file: it
+had not successfully applied anywhere with this data shape, so there was
+nothing already "in production" to preserve) -- a `ROW_NUMBER() OVER
+(PARTITION BY source_reference ORDER BY version, created_at, id)` pass
+renumbers every pre-006 row sequentially within its source_reference
+group, oldest first, before the uniqueness constraint is added. Verified
+against a reproduction of the exact real collision (two `COMPLETED` runs,
+same `source_reference`, both originally version 1, one an hour older) in
+a throwaway Postgres: the older run correctly becomes version 1, the
+newer version 2, migration succeeds, and a second `apply_migrations()`
+call is a confirmed no-op (idempotent). Full suite re-run green again
+after this change (fresh throwaway Postgres has no pre-006 rows, so the
+new step is a harmless no-op there).
+
+### The real run's results
+
+- **Upload-to-report time**: **367.7s (~6.1 minutes)**, end to end
+  (`dpr_upload_to_report_ms`) -- this is the real number the earlier
+  synthetic measurement (11.3s, infra-only) explicitly said it could not
+  provide. Dominated by the 11 real Gemini calls (1 extraction + 1
+  `generate()` per of 10 orchestrator roles) over a 23-page document, run
+  sequentially.
+- **Headline ("golden") figures** -- reporting the 9 figures this
+  pipeline actually treats as headline outputs (project cost, means of
+  finance, DSCR and break-even), not a predefined list of nine found
+  anywhere in the code, since none exists:
+  | Figure | Value |
+  |---|---|
+  | Project cost (DPR-reported total) | Rs.30.0 lakh |
+  | Project cost (recomputed total) | not available |
+  | Requested loan | Rs.22.5 lakh |
+  | Promoter contribution | Rs.7.5 lakh |
+  | Proposed tenure (months) | not available |
+  | Average DSCR | not available |
+  | Break-even (accounting) | not available |
+  | Break-even (operating cash flow) | not available |
+  | Break-even (debt-service threshold) | not available |
+
+  Cost-of-project and means-of-finance each reconciled exactly (variance
+  `0.0` against their own stated totals) -- the four "not available" DSCR/
+  break-even/tenure figures are real extraction gaps, not a bug: reading
+  the stored `cam_engine_outputs` directly confirms `tax_rate`,
+  `year1_principal_due`, `year1_interest_due` and
+  `proposed_tenure_months` all came back `null`, meaning this real
+  document does not state (or the extraction did not recover) the
+  interest rate, repayment schedule or loan tenure needed to compute
+  DSCR/break-even -- consistent with 41 `unresolved_questions` logged for
+  this run.
+- **Findings**: 43 total -- 6 critical, 15 high, 19 medium, 2 low, 1 info;
+  by priority, 6 must-fix, 15 should-fix, 22 good-to-fix. Readiness status
+  would be `EXPERT_REVIEW_REQUIRED` (critical findings present).
+- **Verification checks**: this pipeline runs **12** checks
+  (`cam_verification._ALL_CHECKS`), not 13 -- correcting the number here
+  rather than padding the report to match. Result: **`is_publishable=True`,
+  0 issues** (0 blocking, 0 warning) against the real snapshot.
+- **Missing-state count per page** (counting "not available"/"not yet
+  checked"/"not computable"/"requires verification"/"insufficient
+  information" strings in each page's own render context): **page 1: 2,
+  pages 2-6: 0**. The two on page 1 track directly to the DSCR/break-even
+  gap above (Page 1's repayment-capacity summary has nothing to show).
+- **Annexure completeness** (`build_annexures()` on the real snapshot):
+  every annexure returned its full real content where the pipeline has
+  any, and its already-documented `missing` list elsewhere -- **A: 5
+  missing, B: 3, C: 3, D: 5, E: 4, F: 3, G: 3** (26 total), unchanged from
+  the audit above, since a single real document run does not by itself
+  populate balance sheets, policy statements, or any of the other
+  structurally-absent fields -- confirming the audit was accurate, not
+  just plausible-sounding.
+- **One new real finding from this run, not previously known**: the PDF
+  render **timed out and failed**
+  (`dpr_cam_pdf_render_timeout`, `pdf_render_status=FAILED` on the stored
+  row) at the default 120-second cap -- the JSON report itself rendered
+  and stored fine (`render_status=RENDERED`, 152KB). 43 real findings is
+  far more than any fixture this pipeline has been tested against, and
+  WeasyPrint's render time scales with content -- a real signal that
+  `DPR_CAM_PDF_RENDER_TIMEOUT_SECONDS` (default 120s) may be too tight for
+  a real, finding-heavy document in production, not just a theoretical
+  concern. Not changed here (a production tuning decision, not a bug fix
+  this task asked for) -- flagged for the user's call.
+- **Gemini model actually used**: `gemini-3.8-flash` (captured via this
+  round's `AnalysisResult.gemini_model` plumbing -- confirms that fix
+  works against a real call, not just the schema).
+
+### Status: milestone 7 complete
+
+All three of the user's asks for this round are done: `process_one()`
+hardened and tested, all seven Section 12 annexures built and audited,
+and the one approved real Gemini run completed end to end with results
+reported above -- including one real migration bug and one real PDF-
+timeout-at-scale finding that only a real run against real data and a
+real document could have surfaced.
