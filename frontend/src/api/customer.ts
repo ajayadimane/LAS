@@ -10,6 +10,7 @@ import type {
   ReportAnnexures,
   ReportSummary,
 } from "./services";
+import type { CustomerServices, DocumentUploadResponse, PaymentMode, PaymentResponse, ServiceDetails } from "./services";
 
 /** The signed-in customer's own record. Mirrors app/api/v1/customer.py. */
 
@@ -18,6 +19,8 @@ export interface ServiceRequestInput {
   mode: PaymentMode;
   /** Pay later: "I promise to pay these service charges". */
   customer_consent?: boolean;
+  /** Required for every chosen service with details. */
+  details?: ServiceDetails;
 }
 
 export interface ServiceRequestResponse {

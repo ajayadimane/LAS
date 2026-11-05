@@ -18,6 +18,7 @@ from app.services.dpr_agentic.jobs import engine_for
 from app.services.dpr_agentic.migrate import apply_migrations
 
 VENDOR_BASE = "https://vendor.test:8080"
+OTP_BASE = "https://otp.test:8003"
 
 
 # --- Test isolation: never the real .env, never a real outbound call -------
@@ -191,6 +192,11 @@ def settings() -> Settings:
         # Off by default here regardless of .env -- tests that need it on
         # (the dpr_settings/dpr_client fixtures below) opt in explicitly.
         dpr_agentic_enabled=False,
+        # Off for the tests of other features; tests/test_otp.py turns it on.
+        otp_required=False,
+        otp_base_url=OTP_BASE,
+        otp_api_key="test-otp-key",
+        otp_token_secret="test-otp-secret",
     )
 
 

@@ -79,6 +79,10 @@ class CreateCustomerRequest(BaseModel):
     state_province: str = Field(min_length=2, max_length=100)
     postal_code: str = Field(min_length=5, max_length=12)
     country_code: str = Field(default="IN", pattern=r"^[A-Za-z]{2}$")
+    # From POST /api/v1/otp/verify (purpose "register", person_id = the
+    # mobile). Required while OTP_REQUIRED is on.
+    mobile_otp_token: str | None = Field(default=None, max_length=2000)
+    email_otp_token: str | None = Field(default=None, max_length=2000)
 
     @field_validator("last_name", mode="before")
     @classmethod
@@ -90,6 +94,9 @@ class UpdateEmailRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     email_address: EmailStr = Field(max_length=100)
+    # From POST /api/v1/otp/verify (purpose "update") for the new email.
+    # Required while OTP_REQUIRED is on.
+    email_otp_token: str | None = Field(default=None, max_length=2000)
 
 
 class UpdateAddressRequest(BaseModel):

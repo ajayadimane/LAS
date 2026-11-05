@@ -2,7 +2,9 @@ import { useState, type FormEvent, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { useCreateCustomer, useCreateLogin, useOpenWallet, type CreateCustomerInput } from "@/api/bd";
 import { ApiError } from "@/api/client";
+import { proves, useOtpSettings, type OtpProof } from "@/api/otp";
 import { useSession } from "@/auth/AuthContext";
+import { OtpVerify } from "@/components/OtpVerify";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
 import { Icon } from "@/components/ui/Icon";
@@ -18,9 +20,10 @@ import { ServicesPayment } from "./ServicesPayment";
  * login (all in one middleware call). Services unlock once the wallet is open;
  * opting, payment and documents are in ServicesPayment.
  * The login's temporary password is shown once, here; it is never stored.
+ * The mobile number and email are each verified by OTP before saving.
  */
 
-type Form = Required<Omit<CreateCustomerInput, "country_code">>;
+type Form = Required<Omit<CreateCustomerInput, "country_code" | "mobile_otp_token" | "email_otp_token">>;
 
 const EMPTY: Form = {
   first_name: "", last_name: "", mobile_number: "", email_address: "",
@@ -56,8 +59,19 @@ export default function AddCustomer() {
 
   const [form, setForm] = useState<Form>(EMPTY);
   const [submitted, setSubmitted] = useState(false);
+  const [proofs, setProofs] = useState<{ mobile?: OtpProof; email?: OtpProof }>({});
+  // A mobile the OTP step found already registered (409 before any OTP is sent).
+  const [registeredMobile, setRegisteredMobile] = useState<string | null>(null);
+  const otpRequired = useOtpSettings().data?.required ?? true;
 
-  const errors = validate(form);
+  const fieldErrors = validate(form);
+  const mobile = digits(form.mobile_number);
+  // Both proofs are for this registration, i.e. this mobile: change it and both start over.
+  const mobileVerified = proves(proofs.mobile, "mobile", form.mobile_number, mobile);
+  const emailVerified = proves(proofs.email, "email", form.email_address, mobile);
+  const errors = { ...fieldErrors };
+  if (otpRequired && !errors.mobile_number && !mobileVerified) errors.mobile_number = "Verify the mobile number with an OTP.";
+  if (otpRequired && !errors.email_address && !emailVerified) errors.email_address = "Verify the email with an OTP.";
   const set = (k: keyof Form) => (e: { target: { value: string } }) => setForm((f) => ({ ...f, [k]: e.target.value }));
   const show = (k: keyof Form) => submitted && errors[k];
 
@@ -65,7 +79,8 @@ export default function AddCustomer() {
   const personId = create.data?.person_id ?? openWallet.data?.person_id ?? null;
   const walletReady = !!create.data?.wallet_opened || openWallet.isSuccess;
   const locked = personId !== null || create.isPending;
-  const alreadyRegistered = create.error instanceof ApiError && create.error.status === 409;
+  const alreadyRegistered =
+    (create.error instanceof ApiError && create.error.status === 409) || (registeredMobile !== null && registeredMobile === mobile);
   const name = [form.first_name.trim(), form.last_name.trim()].filter(Boolean).join(" ");
 
   const loginReady = !!create.data?.login_created || (createLogin.isSuccess && !createLogin.data.already_exists);
@@ -91,6 +106,8 @@ export default function AddCustomer() {
         city: form.city.trim(),
         state_province: form.state_province.trim(),
         postal_code: form.postal_code.trim(),
+        mobile_otp_token: mobileVerified ? proofs.mobile!.token : undefined,
+        email_otp_token: emailVerified ? proofs.email!.token : undefined,
       },
       {
         onSuccess: (res) => {
@@ -146,10 +163,24 @@ export default function AddCustomer() {
                   onChange={(e) => setForm((f) => ({ ...f, mobile_number: e.target.value.replace(/[^\d ]/g, "").slice(0, 11) }))} />
               </div>
               <p className="mt-1.5 text-xs text-muted-foreground">Also becomes the customer's ID.</p>
+              {otpRequired && (
+                <OtpVerify channel="mobile" purpose="register" value={form.mobile_number} personId={mobile}
+                  ready={!fieldErrors.mobile_number} verified={mobileVerified}
+                  onVerified={(proof) => setProofs((p) => ({ ...p, mobile: proof }))}
+                  onError={(err) => err.code === "CUSTOMER_ALREADY_REGISTERED" && setRegisteredMobile(mobile)} />
+              )}
             </Field>
             <Field label="Email ID" required htmlFor="ac-email" error={show("email_address")}>
               <Input id="ac-email" type="email" className="h-12" placeholder="name@example.com" autoComplete="off"
                 value={form.email_address} onChange={set("email_address")} />
+              {otpRequired && (
+                <OtpVerify channel="email" purpose="register" value={form.email_address} personId={mobile}
+                  ready={!fieldErrors.email_address && !fieldErrors.mobile_number} verified={emailVerified}
+                  onVerified={(proof) => setProofs((p) => ({ ...p, email: proof }))} />
+              )}
+              {otpRequired && !fieldErrors.email_address && fieldErrors.mobile_number && (
+                <p className="mt-1.5 text-xs text-muted-foreground">Enter the mobile number first.</p>
+              )}
             </Field>
             <Field label="Street address" required htmlFor="ac-street" error={show("street_address")} className="md:col-span-2">
               <Input id="ac-street" className="h-12" placeholder="House no., street, area"
@@ -170,9 +201,9 @@ export default function AddCustomer() {
             </Field>
           </fieldset>
 
-          {create.isError && (
+          {(create.isError || alreadyRegistered) && (
             <Notice tone="error">
-              <p>{create.error.message}</p>
+              <p>{create.error?.message ?? "A customer with this mobile number is already registered."}</p>
               {alreadyRegistered && !openWallet.isSuccess && (
                 <div className="mt-2">
                   <p className="text-xs">

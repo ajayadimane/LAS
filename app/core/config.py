@@ -7,6 +7,17 @@ from pydantic import BaseModel, Field, SecretStr, field_validator, model_validat
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+class ServiceDetail(BaseModel):
+    """Something the customer must tell us when choosing a service, e.g. the
+    bank and project for a DPR Analysis. Stored in its own person custom
+    field (`field_id`), one value per customer."""
+
+    key: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
+    label: str
+    field_id: str
+    max_length: int = Field(default=100, ge=1, le=500)
+
+
 class ServiceConfig(BaseModel):
     """One LAS service the dashboard sells. Fees are whole rupees.
 
@@ -25,6 +36,8 @@ class ServiceConfig(BaseModel):
     # The vendor custom field that records this service on a person. "NA" or
     # empty means not opted. None for portal services, which have no field.
     field_id: str | None = None
+    # Asked for when the service is chosen (user, 2026-11-05).
+    details: list[ServiceDetail] = Field(default_factory=list)
 
 
 DEFAULT_SERVICES = [
@@ -43,6 +56,12 @@ DEFAULT_SERVICES = [
         description="Review your existing Project Report and flag gaps before "
         "you submit it.",
         field_id="DPR_Analysis",
+        details=[
+            ServiceDetail(key="bank_name", label="Bank name", field_id="BankName"),
+            ServiceDetail(
+                key="project_name", label="Project name", field_id="Project_Name"
+            ),
+        ],
     ),
     ServiceConfig(
         code="GEO_CHECK",
@@ -235,6 +254,33 @@ class Settings(BaseSettings):
     # Where customers sign in; put in the login-details email.
     dashboard_sign_in_url: str = "https://demo.botaiml.com/las/signin"
 
+    # --- OTP (IBC OTP service; user, 2026-11-04) ---------------------------
+    # A separate service from iWallet: `api-key` header, no bearer.
+    # POST /ibc/v1/otp/generate {identifier, channel: text|email} returns a
+    # `response_code`; POST /ibc/v1/otp/verify {response_code, otp}.
+    # Empty base URL or key = OTPs cannot be sent (503 OTP_NOT_CONFIGURED).
+    otp_base_url: str = ""
+    otp_api_key: SecretStr | None = None
+    otp_verify_ssl: bool = False
+    otp_timeout_seconds: float = 10.0
+    # When true, registering a customer needs a verified mobile and email,
+    # and changing an email needs the new one verified. Turn off only locally.
+    otp_required: bool = True
+    # Signs the OTP session and proof tokens we hand the dashboard (we have no
+    # database to keep them in). Unset = a random key per process: tokens die
+    # on restart. Set it in every deployed environment.
+    otp_token_secret: SecretStr | None = None
+    otp_length: int = 6
+    # Wrong codes allowed per OTP sent; then a new one must be sent.
+    otp_max_attempts: int = 3
+    # How long an OTP session (send -> verify) lasts. The service's own
+    # expiry is undocumented; ours applies on top.
+    otp_session_ttl_seconds: int = 600
+    # How long a verified mobile/email stays good for the save that uses it.
+    otp_proof_ttl_seconds: int = 1800
+    # Minimum gap between two OTPs to the same mobile or email.
+    otp_resend_cooldown_seconds: int = 30
+
     # --- Customer onboarding (POST /api/v1/bd/customers) -------------------
     # The person's business group (not the IAM groupName) and the tag of the
     # wallet opened for them. One wallet per tag per person.
@@ -333,7 +379,7 @@ class Settings(BaseSettings):
         v = v.strip().strip("/")
         return f"/{v}" if v else ""
 
-    @field_validator("vendor_base_url")
+    @field_validator("vendor_base_url", "otp_base_url")
     @classmethod
     def _normalise_base_url(cls, v: str) -> str:
         """Drop a trailing slash, and a trailing dot on the host.

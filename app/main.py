@@ -11,6 +11,7 @@ from fastapi import FastAPI
 
 from app.api.v1 import dpr_analysis, health
 from app.api.v1.router import api_router
+from app.clients.otp_client import OtpClient, build_otp_http_client
 from app.clients.vendor_client import VendorClient
 from app.core.config import Settings, get_settings
 from app.core.exceptions import register_exception_handlers
@@ -19,6 +20,7 @@ from app.services.admin_session import AdminSession
 from app.services.dpr_agentic.jobs import engine_for
 from app.services.dpr_agentic.migrate import apply_migrations
 from app.services.mailer import Mailer
+from app.services.otp import OtpGuard
 
 logger = get_logger(__name__)
 
@@ -69,6 +71,10 @@ async def lifespan(app: FastAPI):
     app.state.admin_session = AdminSession(app.state.vendor_client, settings)
     app.state.mailer = Mailer(settings)
     app.state.dpr_engine = build_dpr_engine(settings)
+    # The OTP service is a separate host with its own key: its own client.
+    otp_http = build_otp_http_client(settings)
+    app.state.otp_client = OtpClient(otp_http, settings)
+    app.state.otp_guard = OtpGuard.from_settings(settings)
     try:
         yield
     finally:
@@ -76,6 +82,7 @@ async def lifespan(app: FastAPI):
         await gemini_client.aclose()
         if app.state.dpr_engine is not None:
             app.state.dpr_engine.dispose()
+        await otp_http.aclose()
         logger.info("shutdown complete")
 
 

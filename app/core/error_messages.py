@@ -44,6 +44,13 @@ _SPECIFIC_MESSAGES = {
         "cannot be added for them yet. Nothing was charged. Please contact "
         "support."
     ),
+    # Seen 2026-11-04 on POST /customermgmt/person/ (HTTP 400). Mobile numbers
+    # are unique per program manager; the holder can have a different person
+    # id (e.g. a BD), so the OTP step's person-id check does not catch it.
+    "MOBILE_NUMBER_ALREADY_EXISTS": (
+        "This mobile number is already registered to another account. Use a "
+        "different mobile number."
+    ),
 }
 
 # Our own codes, raised by app/services/admin_session.py when the middleware

@@ -78,6 +78,9 @@ export interface CreateCustomerInput {
   state_province: string;
   postal_code: string;
   country_code?: string;
+  /** From useVerifyOtp (purpose "register", person_id = the mobile). Required unless OTP is off. */
+  mobile_otp_token?: string;
+  email_otp_token?: string;
 }
 
 export interface VendorAck {
@@ -185,7 +188,7 @@ function useUpdateDetail<T>(bdId: string, personId: string, rest: string) {
 }
 
 export const useUpdateEmail = (bdId: string, personId: string) =>
-  useUpdateDetail<{ email_address: string }>(bdId, personId, "email");
+  useUpdateDetail<{ email_address: string; email_otp_token?: string }>(bdId, personId, "email");
 
 export const useUpdateAddress = (bdId: string, personId: string) =>
   useUpdateDetail<AddressInput>(bdId, personId, "address");

@@ -6,6 +6,7 @@ from app.api.v1 import (
     custom_fields,
     customer,
     identity,
+    otp,
     persons,
     wallet,
 )
@@ -18,6 +19,7 @@ from app.api.v1 import (
 # isolation is outside this repo's control; see PROGRESS.md milestone 5).
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(identity.router)
+api_router.include_router(otp.router)
 api_router.include_router(persons.router)
 api_router.include_router(bd.router)
 api_router.include_router(wallet.router)

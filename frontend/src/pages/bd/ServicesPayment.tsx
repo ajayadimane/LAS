@@ -1,10 +1,11 @@
 import { useRef, useState } from "react";
 import {
   documentPath, isOutcomeUnknown, useAuthorize, useCatalog, useCustomerServices, useDecline, usePayment, useUploadDocument,
-  type CustomerService, type PaymentMode,
+  type CustomerService, type PaymentMode, type ServiceDetails,
 } from "@/api/services";
 import { ApiError } from "@/api/client";
 import { DocumentPreview } from "@/components/DocumentPreview";
+import { DetailsSummary, ServiceDetailsFields, detailsComplete, detailsPayload } from "@/components/ServiceDetailsFields";
 import { Button } from "@/components/ui/Button";
 import { Icon } from "@/components/ui/Icon";
 import { Notice } from "@/components/ui/Notice";
@@ -114,6 +115,7 @@ function ChooseAndPay({ bdId, personId, opted, firstPayment, onPaid }: {
   const [mode, setMode] = useState<PaymentMode | null>(null);
   const [bdConsent, setBdConsent] = useState(false);
   const [customerConsent, setCustomerConsent] = useState(false);
+  const [details, setDetails] = useState<ServiceDetails>({});
 
   const available = catalog.services.filter((s) => !opted.includes(s.code));
   const joiningFee = firstPayment ? catalog.joining_fee : 0;
@@ -122,6 +124,7 @@ function ChooseAndPay({ bdId, personId, opted, firstPayment, onPaid }: {
   const total = inHouse.length ? inHouse.reduce((sum, s) => sum + s.fee, 0) + joiningFee : 0;
   const unknown = isOutcomeUnknown(pay.error);
   const busy = pay.isPending || unknown;
+  const detailsDone = detailsComplete(inHouse, details);
 
   const toggle = (code: string) => {
     if (busy) return;
@@ -130,7 +133,13 @@ function ChooseAndPay({ bdId, personId, opted, firstPayment, onPaid }: {
 
   const submit = () =>
     pay.mutate(
-      { services: inHouse.map((s) => s.code), mode: mode!, bd_consent: bdConsent, customer_consent: customerConsent },
+      {
+        services: inHouse.map((s) => s.code),
+        mode: mode!,
+        bd_consent: bdConsent,
+        customer_consent: customerConsent,
+        details: detailsPayload(inHouse, details),
+      },
       {
         onSuccess: (res) => {
           if (res.status_recorded) {
@@ -154,7 +163,8 @@ function ChooseAndPay({ bdId, personId, opted, firstPayment, onPaid }: {
         {available.map((s) => {
           const on = selected.includes(s.code);
           return (
-            <label key={s.code} className={cn("flex cursor-pointer items-start gap-3 px-4 py-3.5 hover:bg-muted/50", on && "bg-accent/50")}>
+            <div key={s.code} className={cn(on && "bg-accent/50")}>
+            <label className="flex cursor-pointer items-start gap-3 px-4 py-3.5 hover:bg-muted/50">
               <input type="checkbox" className="check mt-0.5" checked={on} onChange={() => toggle(s.code)} />
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-bold">{s.name}</p>
@@ -168,6 +178,12 @@ function ChooseAndPay({ bdId, personId, opted, firstPayment, onPaid }: {
               </div>
               <span className="shrink-0 text-sm font-bold tabular-nums">{inrShort(s.fee)}</span>
             </label>
+            {on && !s.external && s.details.length > 0 && (
+              <div className="px-4 pb-4 pl-11">
+                <ServiceDetailsFields service={s} values={details} onChange={setDetails} disabled={busy} />
+              </div>
+            )}
+            </div>
           );
         })}
       </fieldset>
@@ -187,6 +203,9 @@ function ChooseAndPay({ bdId, personId, opted, firstPayment, onPaid }: {
           </div>
 
           <div className="border-t p-5">
+            {!detailsDone && (
+              <p className="mb-3 text-xs text-warning-foreground">Fill in the details asked for above to continue.</p>
+            )}
             <p className="text-sm font-bold">How will the customer pay?</p>
             <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
               <ModeCard active={mode === "pay_now"} disabled={busy} onClick={() => setMode("pay_now")}
@@ -200,7 +219,7 @@ function ChooseAndPay({ bdId, personId, opted, firstPayment, onPaid }: {
                 <UpiQr text={upiLink(UPI_ID, total, `LAS services ${personId}`)} size={180} />
                 <p className="text-sm font-semibold">{inr(total)} to {UPI_ID}</p>
                 <p className="text-xs text-muted-foreground">Sample QR for now: no real payment is collected yet.</p>
-                <Button className="mt-1 rounded-xl" disabled={busy} onClick={submit}>
+                <Button className="mt-1 rounded-xl" disabled={busy || !detailsDone} onClick={submit}>
                   {pay.isPending ? "Recording…" : <><Icon name="check" /> Payment received</>}
                 </Button>
               </div>
@@ -214,7 +233,7 @@ function ChooseAndPay({ bdId, personId, opted, firstPayment, onPaid }: {
                 <Consent checked={customerConsent} disabled={busy} onChange={setCustomerConsent}>
                   TThe customer has promised to pay these service charges of {inr(total)}.
                 </Consent>
-                <Button className="rounded-xl" disabled={busy || !bdConsent || !customerConsent} onClick={submit}>
+                <Button className="rounded-xl" disabled={busy || !bdConsent || !customerConsent || !detailsDone} onClick={submit}>
                   {pay.isPending ? "Processing payment…" : `Confirm pay later (${inr(total)})`}
                 </Button>
               </div>
@@ -276,6 +295,7 @@ function RequestRow({ bdId, personId, service }: { bdId: string; personId: strin
         <StatusPill tone="warning">Customer request · {later ? "Pay later" : "Pay now"}</StatusPill>
         <span className="text-xs text-muted-foreground">Fee {inrShort(service.fee)}</span>
       </div>
+      <DetailsSummary details={service.details} className="mt-1 text-xs text-muted-foreground" />
       {later ? (
         <div className="mt-3">
           <Consent checked={guarantee} disabled={busy} onChange={setGuarantee}>
@@ -325,6 +345,7 @@ function OptedRow({ bdId, personId, service }: { bdId: string; personId: string;
           <StatusPill tone={status.tone}>{status.label}</StatusPill>
           <StatusPill tone={pay.tone}>{pay.label}{mode ? ` · ${mode}` : ""}</StatusPill>
         </div>
+        <DetailsSummary details={service.details} />
         <p className={cn("mt-1 text-xs", doc ? "text-success-foreground" : "text-muted-foreground")}>
           {doc ? <><Icon name="check" className="inline h-3 w-3" /> {doc.name} ({Math.ceil(doc.size_bytes / 1024)} KB)</> : "No document yet"}
         </p>
