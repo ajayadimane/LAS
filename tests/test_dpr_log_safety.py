@@ -24,7 +24,11 @@ from cryptography.fernet import Fernet
 from app.core.config import Settings
 from app.services.documents import StoredFile
 from app.services.dpr_agentic.financial_schema import ProjectFinancials
-from app.services.dpr_agentic.gemini import CURRENT_RUN_ID, GeminiAgentClient
+from app.services.dpr_agentic.gemini import (
+    CURRENT_RUN_ID,
+    CURRENT_RUN_USAGE,
+    GeminiAgentClient,
+)
 from app.services.dpr_agentic.jobs import get_run, submit
 from app.services.dpr_agentic.orchestrator import analyze
 from app.services.dpr_agentic.schemas import AgentOutput, AnalysisInput
@@ -150,6 +154,52 @@ def test_gemini_client_logs_the_current_run_id_when_set(caplog):
     assert "run_id=run-abc-123" in _all_log_text(caplog)
 
 
+def test_gemini_client_appends_usage_to_the_current_run_usage_list_when_set():
+    """CURRENT_RUN_USAGE is the aggregation point process_one() reads at the
+    end of a run to log one end-to-end token total; this confirms the client
+    actually appends to it (and leaves it alone when nothing is listening,
+    e.g. the ad hoc scripts/tests that never set it)."""
+    fake_response = {
+        "candidates": [{"content": {"parts": [{"text": json.dumps({"text": "x"})}]}}],
+        "usageMetadata": {
+            "promptTokenCount": 10,
+            "candidatesTokenCount": 20,
+            "totalTokenCount": 30,
+        },
+    }
+
+    async def run(usage_log):
+        run_token = CURRENT_RUN_USAGE.set(usage_log)
+        try:
+            with respx.mock(assert_all_called=True) as router:
+                router.post(
+                    "https://generativelanguage.googleapis.com/v1beta/models/"
+                    "gemini-2.5-flash:generateContent"
+                ).mock(return_value=httpx.Response(200, json=fake_response))
+                async with httpx.AsyncClient() as http:
+                    client = GeminiAgentClient(http, "fake-key", "gemini-2.5-flash")
+                    await client.ocr_page(b"fake-image-bytes")
+        finally:
+            CURRENT_RUN_USAGE.reset(run_token)
+
+    # Nothing listening (the default outside a run): must not raise or
+    # fabricate a list.
+    asyncio.run(run(None))
+    assert CURRENT_RUN_USAGE.get() is None
+
+    usage_log: list[dict] = []
+    asyncio.run(run(usage_log))
+    assert usage_log == [
+        {
+            "role": "unknown",
+            "prompt_tokens": 10,
+            "completion_tokens": 20,
+            "total_tokens": 30,
+        }
+    ]
+    assert CURRENT_RUN_USAGE.get() is None  # reset after
+
+
 def test_orchestrator_never_logs_page_text_or_llm_output(caplog):
     caplog.set_level(logging.DEBUG)
 
@@ -263,6 +313,66 @@ def test_process_one_sets_current_run_id_for_the_whole_call_chain(dpr_pg):
     assert len(seen_run_ids) == 11
     assert all(seen == run_id for seen in seen_run_ids)
     assert CURRENT_RUN_ID.get() is None  # reset after the run finishes
+
+
+def test_process_one_logs_a_token_usage_summary_and_resets_the_context(dpr_pg, caplog):
+    """The end-to-end rollup process_one() is responsible for, independent of
+    the per-call dpr_gemini_call lines GeminiAgentClient emits itself. This
+    fake Gemini bypasses GeminiAgentClient entirely (no HTTP, no usage
+    metadata), so the summary is expected to show zero -- the point here is
+    that the line is always emitted and the context var is always reset,
+    not the arithmetic (covered by the gemini.py-level test above)."""
+    caplog.set_level(logging.INFO)
+
+    class CanaryGemini:
+        async def generate(self, prompt, context):
+            return AgentOutput(summary="checked")
+
+        async def extract(self, prompt, context):
+            return ProjectFinancials()
+
+    run_id, _ = submit(
+        dpr_pg,
+        service_request_id="SR-1",
+        document_sha256=hashlib.sha256(b"doc4").hexdigest(),
+        source_reference="wallet-person-custom-field:9000000013:GEO_CHECK",
+    )
+    stage_upload(
+        dpr_pg,
+        run_id,
+        StoredFile(name="report.pdf", content_type="application/pdf", data=b"dummy"),
+        KEY,
+    )
+    parsed = SimpleNamespace(
+        sha256=hashlib.sha256(b"doc4").hexdigest(),
+        mime="application/pdf",
+        doc_class="DPR",
+        confidence=0.99,
+        needs_vision=False,
+        pages=[{"page": 1, "text": "Detailed project report cost 100"}],
+    )
+
+    assert CURRENT_RUN_USAGE.get() is None
+    with patch.object(dpr_worker, "inspect_document", return_value=parsed):
+        settings = _worker_settings()
+        asyncio.run(
+            dpr_worker.process_one(dpr_pg, KEY, CanaryGemini(), run_id, settings)
+        )
+
+    log_text = _all_log_text(caplog)
+    assert f"dpr_run_token_usage run_id={run_id}" in log_text
+    assert "total_tokens=0" in log_text
+    assert CURRENT_RUN_USAGE.get() is None  # reset after the run finishes
+
+    # Migration 008: persisted on dpr_analysis_runs, not just logged -- a
+    # fake Gemini that bypasses GeminiAgentClient still exercises the
+    # persistence path itself (gemini_calls=0 is a real, written value, not
+    # the NULL a pre-migration or never-run row would show).
+    row = get_run(dpr_pg, run_id)
+    assert row["gemini_calls"] == 0
+    assert row["prompt_tokens"] == 0
+    assert row["completion_tokens"] == 0
+    assert row["total_tokens"] == 0
 
 
 def test_worker_failure_logging_never_includes_exception_message_text(dpr_pg, caplog):

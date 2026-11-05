@@ -16,6 +16,7 @@ from app.services.dpr_agentic.jobs import (
     get_run,
     list_claimable,
     reap_exhausted,
+    record_token_usage,
     renew_lease,
     submit,
 )
@@ -209,6 +210,53 @@ def test_fail_stuck_run_is_a_no_op_once_already_terminal(dpr_pg):
 
 def test_get_run_returns_none_for_an_unknown_id(dpr_pg):
     assert get_run(dpr_pg, "00000000-0000-0000-0000-000000000000") is None
+
+
+def test_get_run_token_columns_are_null_before_record_token_usage_is_called(dpr_pg):
+    run_id, _ = _submit(dpr_pg)
+    row = get_run(dpr_pg, run_id)
+    assert row["gemini_calls"] is None
+    assert row["prompt_tokens"] is None
+    assert row["completion_tokens"] is None
+    assert row["total_tokens"] is None
+
+
+def test_record_token_usage_persists_the_totals_onto_the_run(dpr_pg):
+    run_id, _ = _submit(dpr_pg)
+    record_token_usage(
+        dpr_pg,
+        run_id,
+        gemini_calls=11,
+        prompt_tokens=10000,
+        completion_tokens=2000,
+        total_tokens=12000,
+    )
+    row = get_run(dpr_pg, run_id)
+    assert row["gemini_calls"] == 11
+    assert row["prompt_tokens"] == 10000
+    assert row["completion_tokens"] == 2000
+    assert row["total_tokens"] == 12000
+
+
+def test_record_token_usage_is_unconditional_and_never_checks_status_or_lease(dpr_pg):
+    """Called from scripts/dpr_worker.py's own `finally`, after the run has
+    already reached its terminal state (finish() or fail_stuck_run() already
+    ran) -- there is nothing left to race, so this writes regardless of
+    status, unlike finish()/fail_stuck_run() which both guard their UPDATE."""
+    run_id, _ = _submit(dpr_pg)
+    token = claim(dpr_pg, run_id)
+    finish(dpr_pg, run_id, token, success=True, artifact_ref="report-123")
+    record_token_usage(
+        dpr_pg,
+        run_id,
+        gemini_calls=5,
+        prompt_tokens=500,
+        completion_tokens=100,
+        total_tokens=600,
+    )
+    row = get_run(dpr_pg, run_id)
+    assert row["status"] == "COMPLETED"  # untouched
+    assert row["total_tokens"] == 600
 
 
 def _expire(engine, run_id: str) -> None:

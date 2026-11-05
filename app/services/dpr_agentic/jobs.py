@@ -160,12 +160,48 @@ def fail_stuck_run(engine, run_id: str, error_code: str) -> bool:
         return row is not None
 
 
+def record_token_usage(
+    engine,
+    run_id: str,
+    *,
+    gemini_calls: int,
+    prompt_tokens: int,
+    completion_tokens: int,
+    total_tokens: int,
+) -> None:
+    """Persists the end-to-end Gemini token total for a run (migration 008).
+    Deliberately unconditional -- no status or lease check, unlike finish()/
+    fail_stuck_run() -- because scripts/dpr_worker.py calls this from its own
+    `finally`, after the run has already reached whatever terminal state it's
+    going to reach (COMPLETED, FAILED via finish(), or FAILED via
+    fail_stuck_run()); there's nothing left to race against. Writing 0s for a
+    run that made no Gemini calls (e.g. failed before the first one) is
+    correct and distinct from a pre-migration row, which stays NULL."""
+    with engine.begin() as db:
+        db.execute(
+            text("""
+            UPDATE dpr_analysis_runs SET gemini_calls=:calls, prompt_tokens=:prompt,
+              completion_tokens=:completion, total_tokens=:total,
+              updated_at=CURRENT_TIMESTAMP
+            WHERE run_id=:id
+        """),
+            {
+                "id": run_id,
+                "calls": gemini_calls,
+                "prompt": prompt_tokens,
+                "completion": completion_tokens,
+                "total": total_tokens,
+            },
+        )
+
+
 def get_run(engine, run_id: str) -> dict | None:
     with engine.connect() as db:
         row = (
             db.execute(
                 text("""SELECT run_id, service_request_id, source_reference,
             document_sha256, status, attempts, artifact_ref, error_code,
+            gemini_calls, prompt_tokens, completion_tokens, total_tokens,
             created_at, updated_at
             FROM dpr_analysis_runs WHERE run_id=:id"""),
                 {"id": run_id},
@@ -187,6 +223,7 @@ def latest_run_for(engine, source_reference: str) -> dict | None:
             db.execute(
                 text("""SELECT run_id, service_request_id, source_reference,
             document_sha256, status, attempts, artifact_ref, error_code,
+            gemini_calls, prompt_tokens, completion_tokens, total_tokens,
             created_at, updated_at
             FROM dpr_analysis_runs WHERE source_reference=:ref
             ORDER BY created_at DESC LIMIT 1"""),

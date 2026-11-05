@@ -44,13 +44,18 @@ from app.services.dpr_agentic.document_pipeline.vision import (  # noqa: E402
     extract_pages_via_vision,
     render_pages_to_images,
 )
-from app.services.dpr_agentic.gemini import CURRENT_RUN_ID, GeminiAgentClient  # noqa: E402
+from app.services.dpr_agentic.gemini import (  # noqa: E402
+    CURRENT_RUN_ID,
+    CURRENT_RUN_USAGE,
+    GeminiAgentClient,
+)
 from app.services.dpr_agentic.jobs import (  # noqa: E402
     engine_for,
     fail_stuck_run,
     get_run,
     list_claimable,
     reap_exhausted,
+    record_token_usage,
 )
 from app.services.dpr_agentic.migrate import apply_migrations  # noqa: E402
 from app.services.dpr_agentic.report_store import store_report  # noqa: E402
@@ -204,6 +209,8 @@ async def process_one(
     started = time.monotonic()
     run_created_at = (get_run(engine, run_id) or {}).get("created_at")
     run_id_token = CURRENT_RUN_ID.set(run_id)
+    usage_log: list[dict] = []
+    usage_token = CURRENT_RUN_USAGE.set(usage_log)
     try:
         await run_claimed_analysis(
             engine,
@@ -258,6 +265,42 @@ async def process_one(
             type(exc).__name__,
         )
     finally:
+        # Logged regardless of success/failure -- a config error that fails
+        # the run before any Gemini call just reports zero, a failure partway
+        # through (e.g. a bad role) still reports whatever was spent getting
+        # there. Full end-to-end total for this run, from the first call
+        # (classification/vision/financial extraction) through the last
+        # orchestrator role; the PDF render itself calls no LLM, so this is
+        # also the total for upload-to-report-ready. Per-call detail is the
+        # dpr_gemini_call log line in gemini.py, already emitted as each call
+        # happens -- this is the one-line rollup for the whole run.
+        total_prompt_tokens = sum(u["prompt_tokens"] for u in usage_log)
+        total_completion_tokens = sum(u["completion_tokens"] for u in usage_log)
+        total_tokens = sum(u["total_tokens"] for u in usage_log)
+        logger.info(
+            "dpr_run_token_usage run_id=%s gemini_calls=%d total_prompt_tokens=%d "
+            "total_completion_tokens=%d total_tokens=%d",
+            run_id,
+            len(usage_log),
+            total_prompt_tokens,
+            total_completion_tokens,
+            total_tokens,
+        )
+        # Persisted (migration 008) so the total is queryable per run, not
+        # just grep-able in logs -- e.g. for cost reporting or surfacing on
+        # the BD dashboard later. Unconditional: the run has already reached
+        # its terminal state by this point (finish() or fail_stuck_run()
+        # above already ran), so there's no lease/status race to guard
+        # against here.
+        record_token_usage(
+            engine,
+            run_id,
+            gemini_calls=len(usage_log),
+            prompt_tokens=total_prompt_tokens,
+            completion_tokens=total_completion_tokens,
+            total_tokens=total_tokens,
+        )
+        CURRENT_RUN_USAGE.reset(usage_token)
         CURRENT_RUN_ID.reset(run_id_token)
     # Terminal either way (run_claimed_analysis's claim() already succeeded,
     # so finish() always ran): the staged bytes are never needed again.

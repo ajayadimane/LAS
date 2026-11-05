@@ -25,6 +25,16 @@ CURRENT_RUN_ID: ContextVar[str | None] = ContextVar("dpr_current_run_id", defaul
 # log line below can be attributed to a specific process/role, not just the
 # run as a whole.
 CURRENT_ROLE: ContextVar[str | None] = ContextVar("dpr_current_role", default=None)
+# Set once per run (scripts/dpr_worker.py's process_one, alongside
+# CURRENT_RUN_ID) to a fresh list. Every call below appends its usage record
+# to it -- the same list object, since ContextVar.set() stores a reference
+# and asyncio tasks copy the context (not the list) at creation time, so
+# concurrent roles (parallel_graph.py) all append to one shared list. Left
+# None outside of process_one() (e.g. ad hoc scripts, tests) so appending is
+# opt-in, never required.
+CURRENT_RUN_USAGE: ContextVar[list[dict] | None] = ContextVar(
+    "dpr_current_run_usage", default=None
+)
 
 
 class GeminiAgentError(RuntimeError):
@@ -150,6 +160,16 @@ class GeminiAgentClient:
             usage.get("candidatesTokenCount"),
             usage.get("totalTokenCount"),
         )
+        usage_log = CURRENT_RUN_USAGE.get()
+        if usage_log is not None:
+            usage_log.append(
+                {
+                    "role": CURRENT_ROLE.get() or "unknown",
+                    "prompt_tokens": usage.get("promptTokenCount") or 0,
+                    "completion_tokens": usage.get("candidatesTokenCount") or 0,
+                    "total_tokens": usage.get("totalTokenCount") or 0,
+                }
+            )
         return "".join(
             p.get("text", "") for p in result["candidates"][0]["content"]["parts"]
         )
