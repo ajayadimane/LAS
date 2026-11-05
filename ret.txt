@@ -1,0 +1,1191 @@
+# ROLE: Principal Solution Architect, Senior Agentic AI Engineer, Banking Credit Appraisal Specialist and Full-Stack Engineer
+
+You are an expert Principal Solution Architect with extensive production experience in Python, FastAPI, PostgreSQL, LangGraph, Google Gemini, document processing, financial analysis, React, HTML/CSS, PDF generation and Indian Agri-MSME banking.
+
+Your responsibility is to implement a production-grade, AI-powered **DPR Loan Readiness Report with Detailed CAM Annexures** inside the existing Core LAS application.
+
+This is an end-to-end implementation task. Do not stop after creating a plan or writing documentation.
+
+You must inspect the existing source code, understand its architecture, reuse working components, implement the required changes, run appropriate tests, and provide a detailed implementation summary.
+
+## 1. Project context and existing ownership
+
+Our Loan Advisory Services platform has three components.
+
+**Core LAS**
+- FastAPI backend and React frontend.
+- BD and customer dashboards.
+- Service requests and document-upload workflows.
+- Document classification and parsing.
+- Gemini-based agentic DPR analysis.
+- LangGraph orchestration.
+- Report generation and report access control.
+
+**Wallet**
+- Authoritative customer records.
+- Authoritative document storage.
+- Payment transactions and payment verification.
+
+**LAS_Email**
+- Inbound and outbound email processing.
+- Email classification and intake.
+- Email-specific PostgreSQL persistence and synchronization.
+
+All changes for this task must be made within Core LAS.
+
+Do not modify LAS_Email.
+
+Do not recreate Wallet-owned functionality.
+
+Do not directly query Wallet's database.
+
+Preserve existing authentication, service-request ownership, consent and payment rules.
+
+## 2. Reference designs
+
+I have provided six HTML design archives, exported from the latest six-page version of the design:
+
+1. `Page 1 — Summary-html.zip`
+2. `Page 2 — Fix before you apply-html.zip`
+3. `Page 3 — Project, cost and corrections-html.zip`
+4. `Page 4 — Repayment-html.zip`
+5. `Page 5 — Security and obligations-html.zip`
+6. `Page 6 — Benefits and next steps-html.zip`
+
+Location: '/home/islam/Videos/Prod-LAS/LAS/cam-design-reference'
+
+The user-facing page order is:
+
+| Page | Content |
+| --- | --- |
+| 1 | Executive summary |
+| 2 | Fix before you apply |
+| 3 | Project, cost and corrections |
+| 4 | Repayment and financial feasibility |
+| 5 | Security and obligations |
+| 6 | Benefits and next steps |
+
+Verify this order against the archive contents. If an archive's content does not match the page described in Sections 6–11 (for example, a "Project" page containing a "Changes we made" table instead of "Corrections needed in your DPR"), stop and report that the archive appears to be from an older design version.
+
+**Use the actual uploaded HTML/CSS assets as the visual source of truth.**
+
+Do not generate a different report design.
+
+Preserve the original:
+- Typography and visual hierarchy.
+- Colors and branding.
+- Page composition.
+- Cards and tables.
+- Status presentation.
+- Icons and visual emphasis.
+- Borrower-friendly language.
+- Overall layout and design quality.
+
+Make only the changes necessary to correct data population, financial accuracy, readability, responsive/print behavior and production reliability.
+
+Do not hardcode sample borrower values, fictional project details, example calculations or template-specific financial figures into production output. The archives contain a worked sample (an AS-930 harvester Custom Hiring Centre in Tikamgarh). Every figure in them is sample data.
+
+### 2.1 Design file format
+
+The archives were exported from a design canvas. Each page uses canvas-specific markup: an `<x-dc>` root, `<sc-if>` and `<sc-for>` control elements, `{{hole}}` bindings, a `<script type="text/x-dc">` logic block with `data-props`, and a `support.js` runtime.
+
+Do not run, ship or emulate this runtime. Do not regex-replace `{{...}}` holes in the exported files.
+
+Instead, port each page to a server-side **Jinja2** template:
+- Autoescape enabled.
+- Canvas runtime removed (`support.js`, `x-dc`, `sc-if`, `sc-for`, `data-props`, the logic class).
+- Conditional branches expressed as Jinja `{% if %}` / `{% for %}` driven by the CAM snapshot.
+- Inline styles may be consolidated into a shared stylesheet, provided the rendered result stays visually equivalent.
+- The `brand` and `accent` colour props become configuration values, defaulting to `#1F5E46` and `#9A5408`.
+
+## 3. Inspect before implementing
+
+Inspect the repository and identify:
+
+- Existing FastAPI application entry point.
+- Existing DPR upload and processing endpoints.
+- Existing document classification and parsing.
+- LiteParse and Gemini fallback integration.
+- LangGraph orchestration and agent states.
+- Current Document, Planner, Finance, Sector, Research, SBI Policy, Risk, Verification, Correction and Report agents.
+- Existing Pydantic schemas.
+- Financial computation tools.
+- Report generation and persistence.
+- Wallet integration.
+- Payment and report access controls.
+- Frontend routes and dashboard components.
+- Current database migrations.
+- Existing tests.
+
+Expected areas may include:
+
+```text
+app/services/dpr_agentic/
+app/services/dpr_agentic/parallel_graph.py
+app/services/dpr_agentic/orchestrator.py
+app/services/dpr_agentic/schemas.py
+app/services/dpr_agentic/report_access.py
+app/api/v1/dpr_analysis.py
+app/api/v1/customer.py
+app/services/enrolment.py
+app/services/documents.py
+frontend/src/
+migrations/
+tests/
+```
+
+These paths are indicative. Verify them against the actual repository.
+
+Provide a concise architecture assessment before editing, then proceed with implementation.
+
+Reuse existing capabilities wherever possible.
+
+Do not create duplicate agent frameworks, report generators, Wallet clients or API abstractions.
+
+## 3A. Execution plan and checkpoints
+
+This task is large. Work through these milestones in order. After each one: run the relevant tests, commit, and update `PROGRESS.md` at the repository root. Record in it what was done, what tests ran and their results, and what remains.
+
+1. **Inspection and schema.** Architecture assessment, `CAMSnapshot` models, and the mapping from existing agent outputs to the snapshot.
+2. **Financial engine and finding consolidation.** Deterministic calculations (Section 9), finding deduplication (Section 5.1), severity rules (Section 7).
+3. **Verification layer.** Section 13.
+4. **Templates and PDF.** Sections 2.1 and 14.
+5. **Persistence, APIs and authorization.** Sections 15 and 16.
+6. **Frontend.** Section 17.
+7. **Annexures.** Section 12.
+
+If your context or session budget runs low, finish the current milestone cleanly, commit it, and record the remaining work in `PROGRESS.md`. Do not leave a milestone half-implemented across several files.
+
+---
+
+# 4. Core implementation objective
+
+Implement this end-to-end workflow:
+
+```text
+DPR uploaded in Core LAS
+        |
+        v
+Existing classification and parsing
+        |
+        v
+Gemini Document Agent
+        |
+        v
+Gemini Planner Agent
+        |
+        +-----------------------------------+
+        |            |          |           |
+        v            v          v           v
+     Finance       Sector    Research    SBI Policy
+      Agent        Agent      Agent        Agent
+        |            |          |           |
+        +------------+----------+-----------+
+                         |
+                         v
+                     Risk Agent
+                         |
+                         v
+                Verification Agent
+                         |
+                         v
+                 Correction Agent
+                         |
+                         v
+                  Report Agent
+                         |
+                         v
+          Snapshot Adapter + Finding Consolidation
+                         |
+                         v
+               Canonical CAM JSON
+                         |
+                         v
+           Deterministic Verification
+                         |
+                         v
+           Six-page HTML Report
+                         |
+                         v
+              Detailed CAM Annexures
+                         |
+                         v
+              PDF Generation
+                         |
+                         v
+          Secure Persistence and Access
+```
+
+The Report Agent must generate structured, source-grounded content.
+
+The final renderer must populate the HTML templates from the validated structured data.
+
+Do not allow the Report Agent to invent missing values or generate its own unverified financial calculations.
+
+Do not rerun the entire agent pipeline merely because the user views or downloads a report.
+
+## 4.1 Agent output mapping
+
+Prefer an **adapter** that maps existing agent outputs into the `CAMSnapshot`. Do not rewrite agents.
+
+Extend an agent's output schema or prompt only when a required snapshot field cannot be derived from what the agent already returns. Examples are verification status and evidence class.
+
+For every such extension, record in the summary:
+- The agent.
+- The field added.
+- Why it could not be derived.
+
+---
+
+# 5. Critical requirement: Single source of truth for report values
+
+Every financial amount, ratio, borrower detail, project assumption, risk finding and policy statement shown in the report must originate from a canonical, versioned CAM data snapshot.
+
+Create or extend an appropriate Pydantic model to represent this snapshot.
+
+Use strongly typed fields, not unvalidated arbitrary dictionaries.
+
+Include at least:
+
+```python
+class CAMSnapshot(BaseModel):
+    schema_version: str
+    report_id: str
+    report_version: int
+    analysis_run_id: str
+    service_request_id: str
+
+    borrower_profile: BorrowerProfile
+    project_profile: ProjectProfile
+    document_inventory: list[DocumentReference]
+
+    project_cost: ProjectCost
+    means_of_finance: MeansOfFinance
+    operational_assumptions: OperationalAssumptions
+
+    financial_projections: list[FinancialProjection]
+    repayment_schedule: list[RepaymentPeriod]
+    financial_ratios: FinancialRatios
+    scenario_analysis: list[ScenarioAnalysis]
+
+    findings: list[VerifiedFinding]
+    proposed_corrections: list[CorrectionProposal]
+    policy_assessment: PolicyAssessment
+
+    readiness_assessment: ReadinessAssessment
+    report_limitations: list[str]
+    evidence_registry: list[EvidenceReference]
+
+    generated_at: datetime
+```
+
+These class definitions are illustrative. Define the necessary nested models properly.
+
+Use `Decimal` for financial values.
+
+Preserve amount units, currency, year, period and calculation provenance.
+
+Persist the final immutable snapshot before rendering.
+
+All report pages and annexures must use this same snapshot.
+
+No page may independently ask Gemini to regenerate a number.
+
+## 5.1 Finding deduplication and consolidation
+
+The current pipeline emits duplicate findings. In one real analysis, about 50 findings covered only 13 distinct issues. The same issue appeared up to seven times, sometimes with different severities.
+
+Before building the snapshot:
+
+1. **Deduplicate deterministically.** Use a dedup key of category + affected metric + source page references.
+2. **Merge evidence** from all duplicates into one finding.
+3. **Assign one severity by rule** (Section 7), never by taking the LLM's label from whichever duplicate came first.
+4. **Investigate the root cause.** It is likely that the Verification or Correction agents append findings rather than replace them, or that retries re-append. Fix it at the source.
+5. **Add a test** asserting that no two findings in a snapshot share a dedup key.
+6. **Separate document defects from business risks.** A defect is an error, inconsistency or omission in the DPR. A business risk is a property of the project, such as single-asset dependency or seasonal idle time. Defects go to Page 2; business risks go to the risk section and Annexure E.
+
+---
+
+# 6. Page 1 — Executive Summary
+
+Retain the supplied Summary design.
+
+Implement dynamic population for:
+
+- Borrower name.
+- Project name.
+- Business sector.
+- Project location.
+- BD information, where authorized.
+- Service request number.
+- Report reference.
+- Report date and version.
+- Project cost.
+- Requested loan.
+- Promoter contribution.
+- Proposed loan tenure.
+- DPR readiness status.
+- Critical findings.
+- Outstanding clarifications.
+- Potential financing or subsidy benefits.
+
+## Required corrections
+
+### 6.1 Readiness display
+
+The design displays a DPR quality score of `7/100`. Do not retain this as a fixed value.
+
+By default, replace the numerical score with a readiness status:
+
+- READY_FOR_SUBMISSION_REVIEW
+- CORRECTIONS_REQUIRED
+- EXPERT_REVIEW_REQUIRED
+- INSUFFICIENT_INFORMATION
+
+Optionally, behind the configuration flag `READINESS_SCORE_MODE=dimensions` (default `status`), compute a DPR quality score using this method:
+
+- Four dimensions of 25 points each: Arithmetic accuracy, Internal consistency, Assumption realism, Completeness.
+- Each document-defect finding is assigned to one dimension.
+- Within a dimension: a Critical finding sets the dimension to 0. Otherwise High deducts 10, Medium deducts 5 and Low deducts 3, with a floor of 0.
+- Business-risk findings are excluded from the score.
+- Show the total and the four dimension bars.
+
+Never imply that the readiness status or score represents an SBI loan approval probability.
+
+### 6.2 Resolve template placeholders
+
+No unresolved placeholders may appear in generated reports.
+
+Examples:
+
+```text
+{{o.badge}}
+{{o.headline}}
+{{o.body}}
+```
+
+All bindings must resolve from the CAM snapshot or display an explicit missing-data state.
+
+Do not invent missing values.
+
+### 6.3 Separate findings by verification status
+
+Display separate counts for:
+
+- Verified calculation errors.
+- Potential feasibility risks.
+- Missing supporting evidence.
+- Unverified policy or market assumptions.
+- Outstanding borrower clarifications.
+
+### 6.4 Financial summary
+
+Ensure project cost equals the valid components of the funding structure.
+
+Treat conditional and back-ended subsidies separately.
+
+Show financing differences only when calculation inputs and classifications are established.
+
+---
+
+# 7. Page 2 — Fix Before You Apply
+
+Retain the existing Must Fix, Should Fix and Good to Fix design.
+
+This page must be populated dynamically from the consolidated findings (Section 5.1) and correction proposals.
+
+## Required finding fields
+
+Each issue must contain:
+
+- Finding ID.
+- Title.
+- Category.
+- Severity.
+- Verification status.
+- Explanation.
+- Original DPR value, where available.
+- Recomputed value, where applicable.
+- Source page.
+- Supporting evidence.
+- Proposed corrective action.
+- Responsible person.
+- Resolution status.
+- Whether borrower confirmation is required.
+
+## Critical corrections
+
+Do not convert a hypothetical benchmark into a verified fact.
+
+For example:
+
+A harvester DPR may show 1,200 acres annually.
+
+If the AI estimates 300 acres from 10 acres/day × 30 operating days, this is an **assumption-based scenario**, not automatically the confirmed realistic operating capacity.
+
+Clearly distinguish:
+
+- Verified source fact.
+- Recomputed mathematical value.
+- External benchmark.
+- Illustrative scenario.
+- Unverified assumption.
+
+Do not automatically replace 1,200 acres with 300 acres.
+
+Similarly, do not insert artificial cash balances merely to reconcile an unexplained cash-flow difference.
+
+Every proposed correction must be supported by either:
+- Verified source evidence.
+- Reproducible calculation.
+- Confirmed borrower information.
+- Documented external benchmark.
+
+## Priority mapping
+
+Severity and priority are assigned by deterministic rules, not by the LLM. Implement these as configurable rules with these defaults:
+
+| Priority | Rule |
+| --- | --- |
+| Must fix | Changes project cost, funding or Year-1 cash available for debt service by 5% or more; or makes the DPR internally impossible (for example, capacity that cannot be reached with the stated inputs); or a document needed for submission is missing (quotation, missing pages, required registration) |
+| Should fix | Internal inconsistency or calculation error below the Must-fix impact threshold; non-standard presentation that changes a reported ratio |
+| Good to fix | Completeness or good-practice gap with no effect on the reported financials |
+
+A material cash-flow reconciliation discrepancy must not be assigned a low priority merely because it appears in an annexure.
+
+Record the rule that fired for each finding so the priority is explainable.
+
+## Correction interaction
+
+If the current dashboard supports interactive fixes:
+
+- Allow the user to review a proposed correction.
+- Display the original and proposed values.
+- Explain downstream financial effects.
+- Require authorization before applying a factual change.
+- Recalculate dependent projections.
+- Preserve the source DPR.
+- Record the reviewer and timestamp.
+
+Do not treat an AI-suggested correction as accepted automatically.
+
+---
+
+# 8. Page 3 — Project, Cost and Corrections
+
+Retain the provided visual design.
+
+Dynamically populate:
+
+- Project purpose.
+- Sector and subsector.
+- Machinery/equipment.
+- Installed capacity.
+- Proposed utilization.
+- Location.
+- Project cost.
+- Promoter contribution.
+- Requested loan.
+- Subsidy structure.
+- Operational assumptions.
+- DPR-reported values.
+- Recomputed values.
+- Proposed corrections.
+
+## Replace misleading headings
+
+The design's corrections table uses a "Should be" column. Do not use a universal "Should be" column for all findings.
+
+Use clear labels such as:
+
+- DPR Reported.
+- Independently Recomputed.
+- Proposed Scenario.
+- Requires Verification.
+
+Different findings may require different classifications. Show the classification per row.
+
+## Mandatory financing validation
+
+Reconcile:
+
+```text
+Project Cost
+    versus
+Upfront Funding Sources
+```
+
+Do not double-count:
+- Back-ended subsidies.
+- Conditional grants.
+- Reimbursement schemes.
+- Future cash inflows.
+
+Explain funding gaps and classify unresolved differences accurately.
+
+## Technical feasibility
+
+Validate business-specific assumptions.
+
+For harvester DPRs:
+- Acres/day.
+- Annual usable operating days.
+- Machine availability.
+- Seasonal demand.
+- Rental price per acre.
+- Fuel and operator cost.
+- Travel time.
+- Repairs and downtime.
+
+For dairy:
+- Production or procurement capacity.
+- Yield.
+- Feed/input costs.
+- Spoilage.
+- Collection and processing cycles.
+
+For polyhouse:
+- Cultivation area.
+- Production cycles.
+- Crop yields.
+- Price assumptions.
+- Water availability.
+- Operational expenses.
+
+These checks should be selected dynamically by the Gemini agents.
+
+Do not hardcode industry conclusions.
+
+---
+
+# 9. Page 4 — Repayment and Financial Feasibility
+
+This is the highest-priority financial page.
+
+Preserve the visual design while replacing unsupported calculations.
+
+## Mandatory content
+
+Include:
+
+- Term loan.
+- Interest rate.
+- Repayment tenure.
+- Moratorium.
+- Installment frequency.
+- Principal repayment.
+- Interest expense.
+- Total debt service.
+- Cash available for debt service.
+- DSCR.
+- Year-wise repayment capacity.
+- Scenario comparison.
+
+## DSCR requirements
+
+Use a documented, configurable formula.
+
+Do not assume a universal DSCR formula applies to every lender.
+
+Show:
+
+```text
+DSCR = Cash Available for Debt Service
+       --------------------------------
+       Principal + Interest Due
+```
+
+Default configuration (`DSCR_CADS_DEFINITION=pat_dep_interest`):
+
+```text
+Cash Available for Debt Service = PAT + Depreciation + Interest on Term Loan
+```
+
+Also support `pat_dep` (PAT + Depreciation), which some DPRs use.
+
+The exact definition of cash available for debt service must be explicitly disclosed and consistent throughout the report.
+
+Where DPR-provided DSCR differs from independently recomputed DSCR, show both values and explain the difference (for example, "the DPR leaves interest out of earnings").
+
+Never combine cash flow from one scenario with debt service from another.
+
+## Existing design issue
+
+The reference HTML contains illustrative DSCR results such as:
+
+- 0.45× at 600 acres.
+- 1.00× at 910 acres.
+- 1.49× at 1,200 acres with corrected costs.
+- 1.97× at 1,200 acres using DPR assumptions.
+
+These figures must not remain hardcoded.
+
+Recalculate them using the actual project's inputs.
+
+Where insufficient data exists, show `NOT_COMPUTABLE` and explain why.
+
+## Financial calculations
+
+Use reproducible Python calculations, not unverified LLM arithmetic.
+
+Required supporting outputs:
+
+- Formula.
+- Source inputs.
+- Units.
+- Calculation trace.
+- Computation status.
+- Financial period.
+
+## Break-even analysis
+
+Differentiate:
+
+1. Accounting break-even.
+2. Operating cash-flow break-even.
+3. Debt-service coverage threshold.
+
+Do not treat these as interchangeable.
+
+## Scenario analysis
+
+Generate:
+
+- Original DPR case.
+- Verified base case.
+- Revenue downside.
+- Operating cost increase.
+- Combined adverse case.
+- Sector-specific operating scenario.
+
+Scenario assumptions must be configurable and labeled.
+
+Where a scenario is hypothetical, explicitly display that status.
+
+## Policy thresholds
+
+Do not hardcode a statement such as "SBI requires DSCR ≥1.25×" without a verified, applicable and dated policy source.
+
+The design currently labels 1.25× as a "typical bank minimum". If a threshold is illustrative or configured by a consultant, disclose that.
+
+---
+
+# 10. Page 5 — Security and Obligations
+
+Retain the existing page design.
+
+Separate:
+
+- Primary security.
+- Collateral security.
+- Credit guarantee.
+- Insurance.
+- Documentation obligations.
+- Proposed disbursement arrangements.
+- Post-disbursement conditions.
+
+Every obligation must be classified as:
+
+- VERIFIED_POLICY_REQUIREMENT
+- DOCUMENTED_DPR_CONDITION
+- BANK_CONFIRMATION_PENDING
+- RECOMMENDED_GOOD_PRACTICE
+
+Do not present proposed conditions as binding SBI requirements.
+
+Do not infer a security valuation from equipment purchase cost.
+
+Do not claim that government credit guarantee coverage automatically eliminates collateral requirements.
+
+Do not claim SBI will necessarily pay a dealer directly without verifying the applicable loan/disbursement terms.
+
+If security and collateral details are missing, state that they require bank confirmation.
+
+---
+
+# 11. Page 6 — Benefits and Next Steps
+
+Retain the design and action-oriented checklist.
+
+Include:
+
+- Potential financial benefits.
+- Potential subsidies.
+- Applicable government schemes.
+- Eligibility status.
+- Missing eligibility evidence.
+- Required borrower actions.
+- Consultant actions.
+- Bank confirmation requirements.
+- Final submission checklist.
+
+## AIF interest benefit
+
+Do not treat a potential Agriculture Infrastructure Fund benefit as confirmed.
+
+The reference design mentions approximately ₹0.68 lakh.
+
+This figure must not be hardcoded.
+
+Any projected benefit must identify:
+
+- Applicable scheme.
+- Verified eligibility status.
+- Eligible loan amount.
+- Benefit rate.
+- Effective period.
+- Outstanding loan assumptions.
+- Source and effective date.
+- Expected timing.
+
+If eligibility is unconfirmed, label the benefit as conditional.
+
+If no subsidy was discovered, say:
+
+"No applicable capital subsidy has been verified from the available sources."
+
+Do not state that no subsidy exists unless the required scheme coverage has been checked.
+
+## Next-step workflow
+
+Generate actions based on actual findings.
+
+Do not fabricate a fixed processing SLA. The design's "within [1] working day" text must be removed or bound to a configured value.
+
+Do not imply that Core LAS automatically submits a loan application to SBI.
+
+Bank submission requires explicit user authorization and an implemented submission interface.
+
+---
+
+# 12. Detailed CAM Annexures
+
+The six-page borrower report must remain concise.
+
+Create a separate technical annexure package for consultants and professional reviewers, generated from the same CAM snapshot.
+
+Mandatory annexures:
+
+### Annexure A — Financial Statements
+- Projected profit and loss.
+- Balance sheet.
+- Cash flow.
+- Working capital.
+- Ratio analysis.
+
+### Annexure B — Repayment
+- Loan amortization.
+- Principal schedule.
+- Interest schedule.
+- Moratorium treatment.
+- Year-wise DSCR.
+- Repayment assumptions.
+
+### Annexure C — Sensitivity Analysis
+- Scenario assumptions.
+- Revenue impact.
+- Cost impact.
+- Cash-flow impact.
+- Debt-service impact.
+
+### Annexure D — Project Feasibility
+- Sector-specific assumptions.
+- Installed capacity.
+- Utilization.
+- Raw material requirements.
+- Production assumptions.
+- Market evidence.
+
+### Annexure E — Findings Register
+- Finding ID.
+- Dedup key and merged duplicate count.
+- Severity and the priority rule that fired.
+- Defect or business-risk classification.
+- Verification status.
+- Financial impact.
+- Source evidence.
+- Proposed correction.
+- Resolution status.
+
+### Annexure F — SBI and Scheme References
+- Lending product.
+- Relevant public policy.
+- Document requirements.
+- Scheme eligibility.
+- Source URLs.
+- Effective dates.
+- Retrieval dates.
+- Unverified policy areas.
+
+### Annexure G — Audit Trail
+- Analysis ID.
+- Report version.
+- Source document checksum.
+- Agent execution details.
+- Gemini model and pinned version.
+- Calculation version.
+- Configuration values used (DSCR definition, priority thresholds, readiness mode).
+- Reviewer actions.
+- Report generation timestamp.
+
+Do not invent content merely to make annexures appear complete.
+
+An annexure may explicitly state that data is unavailable or analysis is incomplete.
+
+---
+
+# 13. Evidence and calculation verification
+
+Implement an independent verification layer between the Report Agent and final HTML/PDF rendering.
+
+Validate:
+
+1. Required schema fields.
+2. Financial units.
+3. Cross-page financial consistency.
+4. Source-reference existence.
+5. Page-level citations.
+6. Calculation reproducibility.
+7. Scenario labeling.
+8. Policy-source validity.
+9. Readiness-status consistency.
+10. Unsupported claims.
+11. Placeholder elimination.
+12. Report generation completeness.
+13. Finding uniqueness (no shared dedup keys).
+
+Example:
+
+If Page 1 shows a project cost of ₹30 lakh, Page 3 must not independently display ₹32 lakh unless it is explicitly a revised scenario.
+
+If Page 4 displays a DSCR of 1.49×, the annexure must contain the calculation inputs and formula reproducing that result.
+
+If Page 6 displays a subsidy, its status must be clearly identified as verified, conditional or unverified.
+
+Critical inconsistencies must block final report publication or produce a clearly labeled incomplete draft according to the existing report policy.
+
+---
+
+# 14. HTML and PDF rendering
+
+Use the uploaded HTML archives as the design baseline, ported as described in Section 2.1.
+
+**PDF engine:** use `[WeasyPrint | Playwright — choose one before running]`. Do not install a second engine.
+
+Requirements:
+
+- Preserve existing CSS design wherever possible.
+- Replace static sample content with controlled template bindings.
+- Avoid duplicate hardcoded financial calculations.
+- Support long borrower/project names.
+- Support multiple project types.
+- Support large or small numbers of findings.
+- Handle missing data gracefully.
+- Prevent text clipping and overlapping.
+- Keep table headers readable.
+- Support PDF page breaks.
+- Ensure font consistency.
+- Avoid horizontal overflow.
+- Add page numbering and report references.
+- Render INR values consistently.
+- Sanitize all model-generated text before insertion.
+- Prevent HTML/script injection.
+- Avoid loading unauthorized external resources during PDF generation.
+
+**Fonts:** the designs load Manrope and IBM Plex Mono from Google Fonts. Bundle both locally (both are SIL Open Font License) and reference them with `@font-face`. No network font loading at render time.
+
+**Page geometry:** the existing templates use fixed 794 × 1123 px roots (A4 at 96 dpi). Convert them to CSS paged media:
+- `@page { size: A4; }`
+- Running header and footer (report reference, page number, disclaimer) as page margin boxes or repeated elements, matching the design's header band and footer.
+- `min-height` instead of a fixed height, so a section can continue onto a following page.
+
+Do not force a section to remain on one page if content would overflow or become unreadable.
+
+If required, allow controlled page continuation while retaining the report's visual structure.
+
+Use a deterministic renderer with a validated CAM snapshot.
+
+---
+
+# 15. API integration
+
+Inspect existing routing conventions.
+
+Extend or implement APIs for:
+
+```text
+GET /dpr-analysis/{analysis_id}/report
+GET /dpr-analysis/{analysis_id}/report/status
+GET /dpr-analysis/{analysis_id}/report/findings
+GET /dpr-analysis/{analysis_id}/report/download
+GET /dpr-analysis/{analysis_id}/report/annexures
+```
+
+These paths are examples, not mandated route prefixes.
+
+Requirements:
+
+- Authenticated access.
+- Service-request ownership checks.
+- Correct report version.
+- Payment-based report locking.
+- Consent verification.
+- No unauthorized downloads.
+- No analysis rerun during GET.
+- Structured error responses.
+- Idempotent report generation.
+
+Use existing Core LAS access-control infrastructure.
+
+Do not bypass Wallet payment verification.
+
+---
+
+# 16. Report persistence and versioning
+
+Persist the validated CAM snapshot separately from the rendered PDF.
+
+Support:
+
+- Report ID.
+- Version.
+- Analysis run ID.
+- Service request ID.
+- Snapshot schema version.
+- Source document checksum.
+- Report checksum.
+- Render status.
+- Created timestamp.
+- Error information.
+
+Do not overwrite previous report versions.
+
+Do not store permanent reports in temporary upload directories.
+
+Reuse the existing approved storage interface.
+
+If that interface is absent, implement an adapter and explicitly report the integration dependency.
+
+Do not invent Wallet document IDs.
+
+---
+
+# 17. Frontend integration
+
+Extend the existing React Core LAS dashboard.
+
+Do not create a new standalone frontend.
+
+Display:
+
+- Report readiness.
+- Analysis status.
+- Findings summary.
+- Financial overview.
+- Outstanding corrections.
+- Six-page report preview.
+- Detailed CAM annexure access.
+- PDF download.
+- Source evidence references.
+- Pay Later report-lock state.
+- Meaningful error states.
+
+The report should be readable by borrowers and sufficiently detailed for consultants.
+
+Do not expose hidden report content to unpaid or unauthorized users merely because the frontend has a cached copy.
+
+Backend authorization is mandatory.
+
+---
+
+# 18. Tests and evaluation
+
+Implement automated tests covering:
+
+## Template tests
+- All placeholders are resolved.
+- No sample data leaks into production output. In particular, assert that none of these sample strings appear in output rendered from an unrelated snapshot: `Tikamgarh`, `Nachanwara`, `AS-930`, `0.68 lakh`, `910 acres`, `7 of 100`.
+- No canvas runtime markup remains (`x-dc`, `sc-if`, `sc-for`, `support.js`, `data-props`).
+- Every page uses the canonical snapshot.
+- Currency values are consistent.
+- Missing data is rendered appropriately.
+
+## Financial tests
+- Project cost reconciliation.
+- Loan and equity percentages.
+- Subsidy treatment.
+- Interest calculation.
+- DSCR under both CADS definitions.
+- Break-even (all three types).
+- Scenario consistency.
+- Cash-flow reconciliation.
+
+## Golden regression case
+
+Use the Tikamgarh AS-930 harvester DPR at `[PATH TO TIKAMGARH DPR]` as a golden test. These values come from the DPR's own figures and must reproduce exactly:
+
+| Check | Expected |
+| --- | --- |
+| Year-1 DSCR, `pat_dep` definition (DPR convention) | 1.58 |
+| Year-1 DSCR, `pat_dep_interest` definition | 1.97 (₹10.30 L ÷ ₹5.24 L) |
+| Year-1 debt service | ₹5.24 L (principal ₹3.21 L + interest ₹2.03 L) |
+| Fuel at 1,200 acres × 8.0 L/acre × ₹95/L | ₹9.12 L (DPR states ₹7.20 L) |
+| Crew wages per Annexure II staffing | ₹3.30 L (P&L states ₹2.40 L) |
+| Break-even at ₹900/acre variable cost and ₹6.53 L fixed cost | 726 acres (DPR states 622 at ₹750/acre) |
+| Means of finance | ₹22.50 L loan (75%) + ₹7.50 L promoter (25%) = ₹30.00 L |
+| Fund flow imbalance | Sources ₹102.65 L vs applications ₹62.36 L, gap ₹40.29 L |
+| Consolidated distinct findings | 13 or fewer, with no duplicate dedup keys |
+
+Scenario results (such as the 600-acre case) must be labelled as scenarios in this test, not asserted as facts.
+
+## Findings tests
+- Verified versus suspected issues.
+- Severity mapping by rule.
+- Deduplication and evidence merging.
+- Defect versus business-risk separation.
+- Source evidence validation.
+- Correction status.
+- Multiple findings.
+- No findings.
+- Missing evidence.
+- Contradictory findings.
+
+## Rendering tests
+- Short and long borrower names.
+- Large financial tables.
+- Multiple business sectors.
+- Numerous findings.
+- Missing fields.
+- Unicode.
+- Print layout.
+- Page overflow.
+- PDF rendering with no network access.
+
+## Integration tests
+- Agent output to CAM snapshot.
+- Snapshot to HTML.
+- HTML to PDF.
+- Report persistence.
+- Report versioning.
+- Duplicate report generation.
+- Authorized download.
+- Unauthorized access.
+- Payment-locked report.
+- Payment confirmation and unlocking.
+- Wallet document synchronization failure.
+- Worker retry and recovery.
+
+## Real DPR evaluations
+
+Use the approved and rejected DPR samples at '/home/islam/Videos/Prod-LAS/LAS/DPRData'. If that path does not exist, say so; do not search the filesystem for substitutes.
+
+Do not infer rejection reasons merely from folder names or historical decisions.
+
+Check:
+- Financial accuracy.
+- Source grounding.
+- Findings completeness.
+- Unverified claims.
+- False positives.
+- Report consistency.
+- Sector-specific analysis.
+
+Execute tests.
+
+Report actual pass/fail results.
+
+Do not claim tests passed if they were not run.
+
+---
+
+# 19. Implementation constraints
+
+These are mandatory:
+
+1. Preserve the supplied HTML visual design.
+2. Do not regenerate a generic CAM layout.
+3. Do not hardcode report data.
+4. Do not invent customer or DPR information.
+5. Do not fabricate financial calculations.
+6. Do not treat LLM-only arithmetic as verified.
+7. Do not treat scenario estimates as facts.
+8. Do not claim unverified SBI conditions are mandatory.
+9. Do not assume subsidy eligibility.
+10. Do not bypass payment or authentication.
+11. Do not modify LAS_Email.
+12. Do not recreate Wallet functionality.
+13. Do not rewrite the existing LangGraph agents unnecessarily (see Section 4.1).
+14. Do not break existing upload functionality.
+15. Do not change the parallel Wallet/AI execution design.
+16. Do not silently change borrower DPR figures.
+17. Do not allow a failed external research tool to produce fabricated source references.
+18. Do not introduce unbounded agent loops or retries.
+19. Do not publish reports containing unresolved critical financial contradictions as final verified reports.
+20. Do not claim an official SBI approval decision.
+21. **Personal data:** mask Aadhaar (last 4 digits only) everywhere. Keep bureau and KYC data out of logs, the borrower report and the annexures; refer to them by consent and transaction reference only. Follow DPDP Act obligations already implemented in Core LAS.
+22. **Dependencies:** list every new Python or npm dependency with its version and purpose. Do not add new services (queues, databases, browsers) without flagging them in the summary.
+23. **Model version:** pin the Gemini model version in configuration. Do not use a floating "latest" alias.
+
+Implement changes incrementally with regression tests.
+
+---
+
+# 20. Expected deliverables
+
+After implementation, provide:
+
+1. Existing code reuse summary.
+2. Architecture of the CAM report pipeline.
+3. Changed file list.
+4. Newly created file list.
+5. Database changes and migrations.
+6. CAM JSON schema.
+7. Agent-to-report mapping, including every agent schema extension (Section 4.1).
+8. Root cause and fix for duplicate findings.
+9. Template binding implementation.
+10. Financial verification implementation.
+11. Evidence verification implementation.
+12. HTML/PDF rendering implementation.
+13. Frontend modifications.
+14. Report persistence.
+15. Authorization behavior.
+16. Automated tests.
+17. Actual test results, including the golden case.
+18. New dependencies.
+19. Known limitations.
+20. Configuration/deployment instructions, including all new configuration keys and their defaults.
+21. Final `PROGRESS.md`.
+
+Provide full file paths.
+
+Do not give only code snippets or architecture recommendations.
+
+Make the actual changes in the repository.
+
+---
+
+# 21. Acceptance criteria
+
+The implementation is complete only when:
+
+- A DPR can be analyzed through the existing Core LAS agentic pipeline.
+- The resulting analysis is converted into one validated CAM snapshot.
+- Findings in the snapshot are deduplicated, with severity assigned by rule.
+- All six HTML report sections use the snapshot.
+- Financial values are consistent across pages.
+- DSCR and scenario results are reproducible.
+- The Tikamgarh golden case reproduces the expected values.
+- Findings contain appropriate evidence and verification status.
+- Missing information is represented transparently.
+- No unresolved template variables or canvas markup appear.
+- A borrower-friendly report can be rendered as PDF without network access.
+- Detailed CAM annexures can be generated.
+- Report versions are immutable.
+- Report access respects existing authorization and Wallet payment controls.
+- The supplied report design remains visually recognizable.
+- Existing Core LAS workflows do not regress.
+- Tests execute successfully in the available environment.
+
+If an external integration prevents full completion, implement everything possible locally and clearly identify the exact blocker without inventing a working integration.
+
+**Begin by inspecting the Core LAS repository and the six HTML reference archives. Then work through the milestones in Section 3A. Do not stop at planning.**

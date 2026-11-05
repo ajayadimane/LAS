@@ -1,0 +1,43 @@
+# systemd unit for the DPR analysis worker (scripts/dpr_worker.py).
+# Separate process from las-backend.service by design -- see
+# app/services/dpr_agentic/INCREMENT6.md's Phase A: it must not tie up the
+# process serving dashboard requests, and never needs a vendor bearer token.
+#   sudo cp deploy/las-dpr-worker.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now las-dpr-worker
+#   journalctl -u las-dpr-worker -f        # logs
+#
+# /opt/las and the `las` user are assumptions; change both to match the server.
+# .env is read from WorkingDirectory -- needs DPR_AGENTIC_ENABLED=true,
+# DPR_DATABASE_URL, DPR_STAGING_ENCRYPTION_KEY and DPR_AGENTIC_GEMINI_API_KEY;
+# the script exits immediately with a clear error if any are missing.
+# Safe to run more than one instance: jobs.claim()'s lease prevents two
+# workers taking the same run.
+#
+# document_pipeline/liteparse_client.py (LiteParse) is the primary parser for
+# PDFs/images -- local text + OCR, no network call -- with Gemini vision only
+# as a fallback. It needs these pinned system packages on THIS host (not in
+# the backend's Docker image; this worker runs directly via the venv above):
+#   sudo apt-get install -y imagemagick tesseract-ocr   # OCR rasterize + recognize
+#   # Node.js >= 18 (e.g. via nvm or nodesource), then:
+#   npm install -g @llamaindex/liteparse@1.5.2
+#   which liteparse   # put this absolute path in .env as DPR_AGENTIC_LITEPARSE_CLI_PATH
+# If this toolchain is missing or broken, the worker still analyzes every
+# document -- it logs a one-time "dpr_liteparse_unavailable" warning at
+# startup and falls back to the (costlier) whole-document Gemini vision path
+# for every upload until fixed. Check `journalctl -u las-dpr-worker` for that
+# warning if Gemini spend looks higher than expected.
+
+[Unit]
+Description=LAS DPR analysis worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=las
+WorkingDirectory=/opt/las
+ExecStart=/opt/las/.venv/bin/python scripts/dpr_worker.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
