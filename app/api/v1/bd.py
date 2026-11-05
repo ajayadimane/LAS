@@ -8,6 +8,7 @@ from app.api.deps import (
     get_authenticated_context,
     get_bd_service,
     get_enrolment_service,
+    get_otp_service,
     require_bd,
 )
 from app.api.uploads import file_response, read_upload
@@ -42,6 +43,7 @@ from app.services.enrolment import (
     PaymentRequestError,
     UnknownServiceError,
 )
+from app.services.otp import OtpService
 
 router = APIRouter(prefix="/bd", tags=["bd"])
 
@@ -108,16 +110,33 @@ async def create_customer(
     response: Response,
     bd_id: str = Depends(get_bd_id),
     service: BdService = Depends(get_bd_service),
+    otp: OtpService = Depends(get_otp_service),
     ctx: VendorCallContext = Depends(get_authenticated_context),
 ) -> CreateCustomerResponse:
     """Register a customer under the signed-in BD, open their wallet and
     create their login.
+
+    Needs `mobile_otp_token` and `email_otp_token` from `/otp/verify`
+    (purpose `register`, person_id = the mobile) while OTP_REQUIRED is on;
+    400 `OTP_VERIFICATION_REQUIRED` otherwise.
 
     201 once the customer is registered, even if a later step failed: check
     `wallet_opened` and `login_created`, and retry with
     `POST /customers/{person_id}/wallet` or `/login`. A registration failure
     (e.g. 409, already registered) is an error.
     """
+    for channel, value, token in (
+        ("mobile", payload.mobile_number, payload.mobile_otp_token),
+        ("email", str(payload.email_address), payload.email_otp_token),
+    ):
+        otp.require_proof(
+            token,
+            channel=channel,
+            value=value,
+            purpose="register",
+            person_id=payload.mobile_number,
+            user_id=bd_id,
+        )
     # The body carries the customer's temporary password.
     response.headers["Cache-Control"] = "no-store"
     return await service.create_customer(payload, bd_id, ctx)
@@ -175,9 +194,22 @@ async def update_email(
     payload: UpdateEmailRequest,
     bd_id: str = Depends(get_bd_id),
     service: BdService = Depends(get_bd_service),
+    otp: OtpService = Depends(get_otp_service),
     ctx: VendorCallContext = Depends(get_authenticated_context),
 ) -> UpdateCustomerResponse:
-    """Change a customer's email (person record only, not their login)."""
+    """Change a customer's email (person record only, not their login).
+
+    Needs `email_otp_token` for the new email (`/otp/verify`, purpose
+    `update`) while OTP_REQUIRED is on.
+    """
+    otp.require_proof(
+        payload.email_otp_token,
+        channel="email",
+        value=str(payload.email_address),
+        purpose="update",
+        person_id=person_id,
+        user_id=bd_id,
+    )
     try:
         return await service.update_email(person_id, payload, bd_id, ctx)
     except CustomerNotFoundError:

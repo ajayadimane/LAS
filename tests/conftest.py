@@ -11,6 +11,7 @@ from app.core.config import Settings
 from app.main import create_app
 
 VENDOR_BASE = "https://vendor.test:8080"
+OTP_BASE = "https://otp.test:8003"
 
 LOGIN_PATH = "/IdentityAccessMgmt/user/login"
 ADD_USER_PATH = "/IdentityAccessMgmt/user/"
@@ -82,6 +83,11 @@ def settings() -> Settings:
         smtp_password=None,  # never send real mail from tests, whatever .env says
         vendor_admin_user_id="test-admin",
         vendor_admin_password="test-admin-password",
+        # Off for the tests of other features; tests/test_otp.py turns it on.
+        otp_required=False,
+        otp_base_url=OTP_BASE,
+        otp_api_key="test-otp-key",
+        otp_token_secret="test-otp-secret",
     )
 
 

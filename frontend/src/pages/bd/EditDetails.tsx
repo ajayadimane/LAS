@@ -1,5 +1,7 @@
 import { useState, type ChangeEvent, type FormEvent } from "react";
 import { useUpdateAddress, useUpdateEmail, type AddressInput, type BdCustomer } from "@/api/bd";
+import { proves, useOtpSettings, type OtpProof } from "@/api/otp";
+import { OtpVerify } from "@/components/OtpVerify";
 import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
 import { Field } from "@/components/ui/Field";
@@ -12,6 +14,7 @@ import { fullName, phone } from "@/lib/customer";
  * only what changed is sent, and each succeeds or fails on its own. Name and
  * mobile number have no update API yet (the mobile is also the person id).
  * The email change is on the person record only; the login keeps its email.
+ * A new email is verified by OTP before it is saved.
  */
 
 type Form = { email_address: string } & AddressInput;
@@ -56,14 +59,21 @@ export function EditDetailsDialog({ open, onClose, bdId, customer }: {
   const [form, setForm] = useState(initial);
   const [submitted, setSubmitted] = useState(false);
   const [failed, setFailed] = useState<string[]>([]);
+  const [emailProof, setEmailProof] = useState<OtpProof>();
+  const otpRequired = useOtpSettings().data?.required ?? true;
 
-  const errors = validate(form);
+  const fieldErrors = validate(form);
   const show = (k: keyof Form) => submitted && errors[k];
   const set = (k: keyof Form) => (e: ChangeEvent<HTMLInputElement>) => setForm((f) => ({ ...f, [k]: e.target.value }));
   const trimmed = (f: Form) => Object.fromEntries(Object.entries(f).map(([k, v]) => [k, v.trim()])) as Form;
 
   const t = trimmed(form);
   const emailChanged = t.email_address !== initial.email_address.trim();
+  const emailVerified = proves(emailProof, "email", form.email_address, personId);
+  const errors = { ...fieldErrors };
+  if (otpRequired && emailChanged && !errors.email_address && !emailVerified) {
+    errors.email_address = "Verify the new email with an OTP.";
+  }
   const addressChanged = ADDRESS_KEYS.some((k) => t[k] !== initial[k].trim());
   const busy = email.isPending || address.isPending;
 
@@ -77,7 +87,10 @@ export function EditDetailsDialog({ open, onClose, bdId, customer }: {
     const errs: string[] = [];
     if (emailChanged) {
       try {
-        await email.mutateAsync({ email_address: t.email_address });
+        await email.mutateAsync({
+          email_address: t.email_address,
+          email_otp_token: emailVerified ? emailProof!.token : undefined,
+        });
         setInitial((i) => ({ ...i, email_address: t.email_address }));
         done.push("email");
       } catch (err) {
@@ -117,6 +130,10 @@ export function EditDetailsDialog({ open, onClose, bdId, customer }: {
         <div className="grid grid-cols-1 gap-x-6 gap-y-4 md:grid-cols-2">
           <Field label="Email ID" required htmlFor="ed-email" error={show("email_address")} className="md:col-span-2">
             <Input id="ed-email" type="email" className="h-12" autoComplete="off" value={form.email_address} onChange={set("email_address")} />
+            {otpRequired && emailChanged && (
+              <OtpVerify channel="email" purpose="update" value={form.email_address} personId={personId}
+                ready={!fieldErrors.email_address} verified={emailVerified} disabled={busy} onVerified={setEmailProof} />
+            )}
           </Field>
           <Field label="Street address" required htmlFor="ed-street" error={show("street_address")} className="md:col-span-2">
             <Input id="ed-street" className="h-12" value={form.street_address} onChange={set("street_address")} />

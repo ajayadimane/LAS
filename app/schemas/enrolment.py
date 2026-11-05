@@ -13,6 +13,29 @@ from app.schemas.document import FileInfo
 
 PaymentMode = Literal["pay_now", "pay_later"]
 
+# Per chosen service code, its details by key:
+# {"DPR_ANALYSIS": {"bank_name": "SBI", "project_name": "Dairy unit"}}
+ServiceDetails = dict[str, dict[str, str]]
+_DETAILS_DESCRIPTION = (
+    "What the chosen services ask for (`CatalogService.details`), keyed by "
+    "service code, then detail key. Required for every service that has "
+    "details, e.g. DPR_ANALYSIS: bank_name and project_name."
+)
+
+
+class ServiceDetailInfo(BaseModel):
+    """A detail a service asks for when it is chosen."""
+
+    key: str = Field(examples=["bank_name"])
+    label: str = Field(examples=["Bank name"])
+    max_length: int
+
+
+class ServiceDetailValue(BaseModel):
+    key: str
+    label: str
+    value: str | None = Field(description="null: not given yet.")
+
 
 class CatalogService(BaseModel):
     code: str = Field(examples=["GEO_CHECK"])
@@ -23,6 +46,11 @@ class CatalogService(BaseModel):
         description="Paid and documented on a partner portal, not here."
     )
     portal_url: str | None = None
+    details: list[ServiceDetailInfo] = Field(
+        default_factory=list,
+        description="Asked for when the service is chosen; send with the "
+        "payment or request.",
+    )
 
 
 class Catalog(BaseModel):
@@ -57,6 +85,9 @@ class CustomerService(BaseModel):
     )
     can_upload: bool = Field(
         description="Paid, and not yet approved: a document may be uploaded."
+    )
+    details: list[ServiceDetailValue] = Field(
+        default_factory=list, description="What was given when it was chosen."
     )
 
 
@@ -101,6 +132,11 @@ class PaymentRequest(BaseModel):
     customer_consent: bool = Field(
         default=False, description="Pay later only: the customer agrees."
     )
+    details: ServiceDetails = Field(
+        default_factory=dict,
+        description=_DETAILS_DESCRIPTION,
+        examples=[{"DPR_ANALYSIS": {"bank_name": "SBI", "project_name": "Dairy"}}],
+    )
 
 
 class PaymentResponse(BaseModel):
@@ -133,6 +169,9 @@ class ServiceRequest(BaseModel):
     mode: PaymentMode
     customer_consent: bool = Field(
         default=False, description="Pay later only: the customer promises to pay."
+    )
+    details: ServiceDetails = Field(
+        default_factory=dict, description=_DETAILS_DESCRIPTION
     )
 
 

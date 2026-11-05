@@ -2,6 +2,23 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "./client";
 import type { VendorAck } from "./bd";
 
+/** Something a service asks for when chosen, e.g. DPR Analysis: bank name, project name. */
+export interface ServiceDetailInfo {
+  key: string;
+  label: string;
+  max_length: number;
+}
+
+/** A detail as stored for one customer; null = not given yet. */
+export interface ServiceDetailValue {
+  key: string;
+  label: string;
+  value: string | null;
+}
+
+/** Per chosen service code, its details by key. */
+export type ServiceDetails = Record<string, Record<string, string>>;
+
 /** Mirrors app/schemas/enrolment.py. */
 export interface CatalogService {
   code: string;
@@ -11,6 +28,8 @@ export interface CatalogService {
   /** Paid and documented on a partner portal, not here. */
   external: boolean;
   portal_url: string | null;
+  /** Asked for when the service is chosen; sent with the payment or request. */
+  details: ServiceDetailInfo[];
 }
 
 export interface Catalog {
@@ -41,6 +60,8 @@ export interface CustomerService {
   document: FileInfo | null;
   /** Paid and not yet approved. */
   can_upload: boolean;
+  /** What was given when it was chosen (e.g. bank and project). */
+  details: ServiceDetailValue[];
 }
 
 export interface CustomerServices {
@@ -63,6 +84,8 @@ export interface PaymentInput {
   mode: PaymentMode;
   bd_consent?: boolean;
   customer_consent?: boolean;
+  /** Required for every chosen service with details. */
+  details?: ServiceDetails;
 }
 
 export interface PaymentResponse {

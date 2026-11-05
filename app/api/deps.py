@@ -2,6 +2,7 @@
 
 from fastapi import Depends, HTTPException, Request, status
 
+from app.clients.otp_client import OtpClient
 from app.clients.vendor_client import VendorCallContext, VendorClient
 from app.core.config import Settings, get_settings
 from app.core.exceptions import AppError
@@ -13,6 +14,7 @@ from app.services.custom_field import CustomFieldService
 from app.services.enrolment import EnrolmentService
 from app.services.identity import IdentityService
 from app.services.mailer import Mailer
+from app.services.otp import OtpGuard, OtpService
 from app.services.person import PersonService
 from app.services.wallet import WalletService
 
@@ -192,6 +194,18 @@ def get_custom_field_service(
     settings: Settings = Depends(get_app_settings),
 ) -> CustomFieldService:
     return CustomFieldService(client, settings)
+
+
+def get_otp_service(
+    request: Request,
+    settings: Settings = Depends(get_app_settings),
+    bd: BdService = Depends(get_bd_service),
+) -> OtpService:
+    client: OtpClient | None = getattr(request.app.state, "otp_client", None)
+    guard: OtpGuard | None = getattr(request.app.state, "otp_guard", None)
+    if client is None or guard is None:  # pragma: no cover - lifespan not run
+        raise RuntimeError("OTP client is not initialised")
+    return OtpService(client, guard, settings, bd)
 
 
 def get_enrolment_service(

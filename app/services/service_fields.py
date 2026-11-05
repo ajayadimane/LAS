@@ -102,7 +102,17 @@ def in_house(settings: Settings) -> list[ServiceConfig]:
 def all_field_ids(settings: Settings) -> list[str]:
     """Every LAS custom field a customer carries, for registration."""
     ids = [f for s in in_house(settings) for f in ServiceFields.of(s).all()]
-    return ids + list(SUMMARY_FIELDS)
+    ids += detail_field_ids(settings)
+    return list(dict.fromkeys(ids + list(SUMMARY_FIELDS)))
+
+
+def detail_field_ids(settings: Settings) -> list[str]:
+    """The fields holding what a customer told us when choosing a service
+    (e.g. BankName). Registration must send them: the vendor never adds a
+    field to an existing person (CUSTOM_FIELD_ID_NOT_EXISTS)."""
+    return list(
+        dict.fromkeys(d.field_id for s in in_house(settings) for d in s.details)
+    )
 
 
 def summary(values: Mapping[str, str], settings: Settings) -> dict[str, str]:

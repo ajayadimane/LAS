@@ -209,6 +209,42 @@ The vendor product is **iWallet**. There is no OpenAPI spec; the contract is 13 
   `400 CUSTOM_FIELD_ID_NOT_EXISTS` (nothing written). So customers registered
   before 2026-10-28, and everyone when a future service is added, cannot use
   new fields until the vendor backfills or upserts them -- raise with vendor.
+- **Service details** (user, 2026-11-05): choosing DPR Analysis asks for the
+  bank name and project name, stored per customer in custom fields
+  `BankName` (searchable, SK6) and `Project_Name`, written one each with
+  `PUT /customermgmt/person/customField/value` (the user's choice), before
+  anything is opted or charged; never retried. Config-driven
+  (`ServiceConfig.details`), sent as `details` on the BD payment and the
+  customer request, shown as `CustomerService.details`. Registration now sends
+  both as `"NA"`. **No customer registered before 2026-11-05 has them**
+  (verified: all 12 sandbox customers; the single-value API also returns
+  `CUSTOM_FIELD_ID_NOT_EXISTS`), so they cannot choose DPR Analysis until the
+  vendor backfills -- raise with vendor.
+- **OTP verification** (user, 2026-11-04) of the customer's mobile (SMS) and
+  email, on registration and when a detail changes. A **separate service**,
+  not iWallet: `POST /ibc/v1/otp/generate` `{identifier, channel: text|email}`
+  -> `response_code`; `POST /ibc/v1/otp/verify` `{response_code, otp}`. Auth
+  is an `api-key` header (`OTP_API_KEY`, `.env` only), none of iWallet's
+  headers. Host `OTP_BASE_URL` (given as `https://0.0.0.0:8003`, i.e. a local
+  placeholder; real host **UNKNOWN - ask user**). The verify response body is
+  **unconfirmed**: we accept `success: true` (or `verified: true`); a 4xx or
+  `success: false` is a wrong code. `app/clients/otp_client.py`,
+  `app/services/otp.py`, routes `/api/v1/otp/{settings,send,verify}`.
+  No database, so state travels as HMAC-signed tokens (`OTP_TOKEN_SECRET`,
+  `app/core/signed_tokens.py`): send returns an `otp_session` (wraps the
+  response_code, never exposed bare); verify returns a `verification_token`
+  bound to channel + value + purpose (`register`/`update`) + person id +
+  caller. `POST /bd/customers` needs `mobile_otp_token` + `email_otp_token`
+  (person id = the mobile); `PUT /bd/customers/{id}/email` needs
+  `email_otp_token` -- 400 `OTP_VERIFICATION_REQUIRED` otherwise, unless
+  `OTP_REQUIRED=false` (local only; tests default it off, `tests/test_otp.py`
+  turns it on). We enforce 6 digits, 3 wrong codes per OTP, 30 s resend
+  cooldown, in memory (fine for the one worker the Dockerfile runs).
+  Register = BD only; update = the customer's BD, or the customer themselves.
+  `send` first reads the person from iWallet with the caller's token: that
+  proves the token (the OTP service never sees it, so claims would otherwise
+  be trusted unverified) and 409s an already-registered mobile. Never retried.
+  Mobile change: OTP side ready, but no vendor update API yet.
 - Service prefixes: `/IdentityAccessMgmt` (identity), `/customermgmt` (persons and
   custom field definitions), `/regularWallet` (wallet creation),
   `/walletInfoRetrieval` (all reads).
@@ -244,7 +280,8 @@ tests/
 - Routers stay thin: validate input, call a service, return a schema.
 - Never return raw vendor JSON to the dashboard; map it into our schemas.
 - Never hardcode secrets or URLs; everything comes from `config.py`.
-- All vendor calls go through `vendor_client.py`; no httpx calls elsewhere.
+- All vendor calls go through `vendor_client.py` (the OTP service through
+  `otp_client.py`); no httpx calls elsewhere.
 - Every endpoint gets a test with the vendor mocked via respx.
 - Log every vendor call with method, path, status, and duration. Never log secrets.
   Log `transactionId` and `correlationId` from the response body too.
@@ -256,6 +293,8 @@ tests/
     repeated failures may lock a real account (lockout policy undocumented).
   - **Writes that create or change records** (registration, wallet, custom
     field updates): test data only, and say exactly what was created.
+  - **Sending a real OTP** (SMS or email): ask first, every time (user,
+    2026-11-04), and say which number or address.
   - **Anything that moves money** (transfers, payments, top-ups): still ask
     first, every time.
   Never print or commit credentials or tokens; they live in `.env`

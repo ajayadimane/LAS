@@ -70,7 +70,20 @@ def wanted(settings) -> list[CreateCustomFieldRequest]:
                     search_scope="NA",
                 )
             )
-    return out
+        # What the customer tells us when choosing it, e.g. BankName.
+        for detail in service.details:
+            out.append(
+                CreateCustomFieldRequest(
+                    custom_field_id=detail.field_id,
+                    custom_field_name=detail.field_id,
+                    custom_field_description=f"LAS {service.name} {detail.label}",
+                    custom_field_data_type="Text",
+                    is_searchable=False,
+                    is_unique=False,
+                    search_scope="NA",
+                )
+            )
+    return list({r.custom_field_id: r for r in out}.values())
 
 
 async def main(apply: bool) -> int:

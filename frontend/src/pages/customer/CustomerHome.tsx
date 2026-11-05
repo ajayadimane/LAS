@@ -1,7 +1,8 @@
 import { useState, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { downloadMyDocument, useMyProfile, useMyServices, useRequestServices, useUploadMyDocument } from "@/api/customer";
-import { useCatalog, type CatalogService, type CustomerService, type PaymentMode } from "@/api/services";
+import { useCatalog, type CatalogService, type CustomerService, type PaymentMode, type ServiceDetails } from "@/api/services";
+import { DetailsSummary, ServiceDetailsFields, detailsComplete, detailsPayload } from "@/components/ServiceDetailsFields";
 import { useWalletBalance } from "@/api/wallet";
 import { useSession } from "@/auth/AuthContext";
 import { clearSession } from "@/auth/session";
@@ -233,6 +234,7 @@ function ServiceRow({ service: s }: { service: CustomerService }) {
       <td className="px-5 py-5 align-top">
         <p className="font-bold">{s.name}</p>
         <p className="mt-0.5 text-xs text-muted-foreground">{inrShort(s.fee)}, {payLabel(s)}</p>
+        <DetailsSummary details={s.details} />
       </td>
       <td className="space-y-1.5 px-5 py-5">
         {doc ? (
@@ -295,17 +297,24 @@ function NewServiceDialog({ open, onClose, services, firstPayment, blocked, bdId
   const [chosen, setChosen] = useState<CatalogService | null>(null);
   const [mode, setMode] = useState<PaymentMode | null>(null);
   const [consent, setConsent] = useState(false);
+  const [details, setDetails] = useState<ServiceDetails>({});
 
-  const reset = () => { setChosen(null); setMode(null); setConsent(false); request.reset(); };
+  const reset = () => { setChosen(null); setMode(null); setConsent(false); setDetails({}); request.reset(); };
   const close = () => { reset(); onClose(); };
   const taken = (code: string) => services.some((s) => s.code === code && (s.opted || s.requested));
   const joiningFee = firstPayment ? (catalog.data?.joining_fee ?? 0) : 0;
   const total = chosen ? chosen.fee + joiningFee : 0;
   const yourBd = bdId ? `Your BD (ID ${bdId})` : "Your BD";
+  const detailsDone = !chosen || detailsComplete([chosen], details);
 
   const send = (m: PaymentMode) =>
     request.mutate(
-      { services: [chosen!.code], mode: m, customer_consent: m === "pay_later" && consent },
+      {
+        services: [chosen!.code],
+        mode: m,
+        customer_consent: m === "pay_later" && consent,
+        details: detailsPayload([chosen!], details),
+      },
       {
         onSuccess: (res) => {
           toast(
@@ -341,6 +350,12 @@ function NewServiceDialog({ open, onClose, services, firstPayment, blocked, bdId
               <span className="text-xl font-extrabold tabular-nums">{inr(total)}</span>
             </div>
           </div>
+          {chosen.details.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-sm font-semibold">A few details for {chosen.name}</p>
+              <ServiceDetailsFields service={chosen} values={details} onChange={setDetails} disabled={request.isPending} />
+            </div>
+          )}
           <p className="text-sm font-semibold">How would you like to pay?</p>
           <div className="grid grid-cols-2 gap-3">
             {([["pay_now", "Pay now", "Pay by UPI QR"], ["pay_later", "Pay later", "Your BD stands guarantor"]] as const).map(([m, title, text]) => (
@@ -361,7 +376,7 @@ function NewServiceDialog({ open, onClose, services, firstPayment, blocked, bdId
                 <p className="text-xs text-muted-foreground">Scan with any UPI app. Pay to {UPI_ID}</p>
                 <p className="text-xs text-muted-foreground">Sample QR for now: your BD confirms the payment.</p>
               </div>
-              <Button className="h-11 w-full rounded-xl" disabled={request.isPending} onClick={() => send("pay_now")}>
+              <Button className="h-11 w-full rounded-xl" disabled={request.isPending || !detailsDone} onClick={() => send("pay_now")}>
                 <Icon name="check" /> {request.isPending ? "Sending…" : "I have completed the payment"}
               </Button>
             </div>
@@ -379,12 +394,15 @@ function NewServiceDialog({ open, onClose, services, firstPayment, blocked, bdId
               <p className="text-xs text-muted-foreground">
                 {yourBd} will be asked to stand guarantor. You can upload documents once they confirm.
               </p>
-              <Button className="h-11 w-full rounded-xl" disabled={!consent || request.isPending} onClick={() => send("pay_later")}>
+              <Button className="h-11 w-full rounded-xl" disabled={!consent || request.isPending || !detailsDone} onClick={() => send("pay_later")}>
                 {request.isPending ? "Sending…" : "Send guarantee request to BD"}
               </Button>
             </div>
           )}
 
+          {mode && !detailsDone && (
+            <p className="text-xs text-warning-foreground">Fill in the details above to continue.</p>
+          )}
           {request.isError && (
             <p role="alert" className="rounded-xl bg-destructive/10 px-3 py-2.5 text-sm font-medium text-destructive">{request.error.message}</p>
           )}

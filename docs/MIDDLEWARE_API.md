@@ -76,8 +76,11 @@ OpenAPI page: run the backend and open `http://localhost:8000/docs`.
 | 29 | GET | `/custom-fields` | BD | `POST /walletInfoRetrieval/customerMgmtService/customFields` |
 | 30 | PUT | `/persons/{person_id}/custom-fields/{custom_field_id}` | BD | `PUT /customermgmt/person/customField/value` |
 | 31 | PUT | `/persons/{person_id}/custom-fields` | BD | `PUT /customermgmt/person/customFields` |
+| 32 | GET | `/otp/settings` | anyone | none (from config) |
+| 33 | POST | `/otp/send` | signed in | `POST …/getPersonDetailsByPersonId`, then OTP service `POST /ibc/v1/otp/generate` |
+| 34 | POST | `/otp/verify` | signed in | OTP service `POST /ibc/v1/otp/verify` |
 
-Endpoints 1–24 are what the dashboard uses. Endpoints 25–31 are lower-level
+Endpoints 1–24 and 32–34 are what the dashboard uses. Endpoints 25–31 are lower-level
 building blocks kept for admin and support use.
 
 ---
@@ -196,9 +199,16 @@ the payment and document summary.
   "city": "Bengaluru",
   "state_province": "Karnataka",
   "postal_code": "560001",
-  "country_code": "IN"
+  "country_code": "IN",
+  "mobile_otp_token": "…",
+  "email_otp_token": "…"
 }
 ```
+
+`mobile_otp_token` and `email_otp_token` come from endpoint 34, after
+verifying each with purpose `register` and `person_id` = the mobile number.
+Without them (while OTP is required) the response is `400
+OTP_VERIFICATION_REQUIRED` and nothing is registered.
 
 This runs three steps in order: register the person, open the wallet, create
 the login. The mobile number becomes the customer id and login user id.
@@ -253,8 +263,11 @@ returned.
 `PUT /api/v1/bd/customers/{person_id}/email`
 
 ```json
-{ "email_address": "test@gmail.com" }
+{ "email_address": "test@gmail.com", "email_otp_token": "…" }
 ```
+
+`email_otp_token` is for the **new** email (endpoint 34, purpose `update`,
+`person_id` = this customer). Without it: `400 OTP_VERIFICATION_REQUIRED`.
 
 ```json
 { "person_id": "9000000903",
@@ -315,8 +328,16 @@ Response: same shape as endpoint 12.
 Pay now (dummy QR; no money moves, the BD confirms receipt):
 
 ```json
-{ "services": ["DPR_ANALYSIS", "GEO_CHECK"], "mode": "pay_now" }
+{ "services": ["DPR_ANALYSIS", "GEO_CHECK"], "mode": "pay_now",
+  "details": { "DPR_ANALYSIS": { "bank_name": "SBI", "project_name": "Dairy unit" } } }
 ```
+
+`details`: what the chosen services ask for (`details` in endpoint 5). DPR
+Analysis needs `bank_name` and `project_name` (each up to 100 characters).
+Missing or extra details are a `422`. They are saved first, before anything
+is opted or charged; a customer registered before these fields existed gets
+`400 CUSTOM_FIELD_ID_NOT_EXISTS` and nothing else happens. Endpoint 14 returns
+them per service as `details: [{key, label, value}]`.
 
 Pay later (both consents required; **moves money** from the pool to `IntegraMain`):
 
@@ -427,6 +448,8 @@ authorizes):
 { "services": ["GEO_CHECK"], "mode": "pay_later", "customer_consent": true }
 ```
 
+`details` works as in endpoint 15 (DPR Analysis needs the bank and project).
+
 Pay now (while the QR is a placeholder, the BD confirms receipt):
 
 ```json
@@ -522,3 +545,59 @@ customer; use with care.
 - **Documents are stored on the customer record.** Every customer-list call
   returns them, so they should move to object storage before many customers
   have documents.
+
+## OTP verification
+
+Verifies a customer's mobile number (SMS) or email before it is saved: when
+a BD adds a customer (both) and when an email is changed. Send, then verify;
+the verify response's `verification_token` goes with the save. Tokens are
+bound to the exact value, purpose, customer and signed-in user, and expire
+(session 10 min, proof 30 min).
+
+### 32. OTP settings
+`GET /api/v1/otp/settings`. No body.
+
+```json
+{ "required": true, "code_length": 6, "max_attempts": 3, "resend_after_seconds": 30 }
+```
+
+`required: false` (local runs only) means saves need no token.
+
+### 33. Send an OTP
+`POST /api/v1/otp/send`
+
+```json
+{ "channel": "mobile", "value": "9000000013", "purpose": "register", "person_id": "9000000013" }
+```
+
+- `channel`: `mobile` (SMS) or `email`.
+- `purpose`: `register` (BD only; `person_id` = the mobile being registered,
+  and for `mobile` the value must be that same number) or `update` (the
+  customer's own BD, or the customer themselves; `person_id` = the customer).
+
+```json
+{ "otp_session": "…", "sent_to": "******0013", "expires_at": 1793785200,
+  "resend_after_seconds": 30, "max_attempts": 3, "code_length": 6 }
+```
+
+Errors: `409 CUSTOMER_ALREADY_REGISTERED` (register, mobile exists — no OTP is
+sent), `404 CUSTOMER_NOT_FOUND` (update, not your customer), `429
+OTP_RESEND_TOO_SOON`, `422 OTP_INVALID_MOBILE` / `OTP_INVALID_EMAIL` /
+`OTP_VALUE_MISMATCH`, `502 OTP_SEND_FAILED`, `503 OTP_NOT_CONFIGURED`.
+
+### 34. Verify an OTP
+`POST /api/v1/otp/verify`
+
+```json
+{ "otp_session": "…", "otp": "861283" }
+```
+
+```json
+{ "verified": true, "channel": "mobile", "value": "9000000013",
+  "verification_token": "…", "expires_at": 1793786400 }
+```
+
+Errors (all `400` unless noted): `OTP_INVALID` (message says how many
+attempts are left), `OTP_ATTEMPTS_EXCEEDED` (after 3 wrong codes — send a new
+OTP), `OTP_SESSION_EXPIRED`, `OTP_ALREADY_USED`, `502`/`504
+OTP_VERIFY_FAILED` (the service failed; no attempt is used).

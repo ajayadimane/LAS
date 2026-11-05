@@ -107,6 +107,9 @@ def test_registers_then_opens_the_wallet(client, vendor):
                 f"{service}_Doc",
             )
         }
+        # DPR Analysis details: sent now, since the vendor never adds a
+        # field to an existing person.
+        | {"BankName": "NA", "Project_Name": "NA"}
         | {"Doc_Status": "NA", "Payment_Status": "NA", "Payment_Mode": "NA"},
     }
     # The short spelling, on this path only.

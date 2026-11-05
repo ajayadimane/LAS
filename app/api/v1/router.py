@@ -1,9 +1,19 @@
 from fastapi import APIRouter
 
-from app.api.v1 import bd, catalog, custom_fields, customer, identity, persons, wallet
+from app.api.v1 import (
+    bd,
+    catalog,
+    custom_fields,
+    customer,
+    identity,
+    otp,
+    persons,
+    wallet,
+)
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(identity.router)
+api_router.include_router(otp.router)
 api_router.include_router(persons.router)
 api_router.include_router(bd.router)
 api_router.include_router(wallet.router)

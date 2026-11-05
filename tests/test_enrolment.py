@@ -18,6 +18,7 @@ from tests.conftest import ack, error_envelope
 from tests.test_bd import AUTH, BY_PERSON_ID, REAL_PERSON
 
 FIELDS = "/customermgmt/person/customFields"
+FIELD_VALUE = "/customermgmt/person/customField/value"
 TRANSFER = "/transfer/systemAccountPayment"
 PID = "9000000013"
 BASE = f"/api/v1/bd/customers/{PID}"
@@ -39,11 +40,15 @@ DOC = json.dumps(
     }
 )
 
+# DPR Analysis asks for these when chosen (user, 2026-11-05).
+DPR_DETAILS = {"DPR_ANALYSIS": {"bank_name": "SBI", "project_name": "Dairy unit"}}
+
 PAY_LATER = {
     "services": ["DPR_ANALYSIS", "GEO_CHECK"],
     "mode": "pay_later",
     "bd_consent": True,
     "customer_consent": True,
+    "details": DPR_DETAILS,
 }
 
 
@@ -75,6 +80,12 @@ def person(vendor):
 @pytest.fixture
 def fields(vendor):
     return vendor.put(FIELDS).mock(return_value=httpx.Response(200, json=ack()))
+
+
+@pytest.fixture(autouse=True)
+def field_value(vendor):
+    """The single-value update the service details are written with."""
+    return vendor.put(FIELD_VALUE).mock(return_value=httpx.Response(200, json=ack()))
 
 
 @pytest.fixture
@@ -194,6 +205,7 @@ def test_state_is_per_service(client, person):
             "size_bytes": len(PDF),
         },
         "can_upload": True,
+        "details": [],
     }
     assert by_code["DPR_ANALYSIS"]["payment_mode"] == "Pay now"
     assert by_code["DPR_ANALYSIS"]["document"] is None
@@ -211,7 +223,11 @@ def test_state_is_per_service(client, person):
 def test_pay_now_records_each_service_and_the_summary(client, person, fields, transfer):
     response = client.post(
         f"{BASE}/payment",
-        json={"services": ["GEO_CHECK", "DPR_ANALYSIS"], "mode": "pay_now"},
+        json={
+            "services": ["GEO_CHECK", "DPR_ANALYSIS"],
+            "mode": "pay_now",
+            "details": DPR_DETAILS,
+        },
         headers=AUTH,
     )
 
@@ -446,7 +462,7 @@ def test_a_paid_customer_can_add_a_service_without_the_joining_fee(
 
     response = client.post(
         f"{BASE}/payment",
-        json={"services": ["DPR_ANALYSIS"], "mode": "pay_now"},
+        json={"services": ["DPR_ANALYSIS"], "mode": "pay_now", "details": DPR_DETAILS},
         headers=AUTH,
     )
 
@@ -470,7 +486,7 @@ def test_an_added_service_paid_later_transfers_only_its_fee(
     client, person, fields, transfer
 ):
     person(GeoCheck="Opted", GeoCheck_Payment="Paid", GeoCheck_PayMode="Pay now")
-    payload = {**PAY_LATER, "services": ["DOC_VERIFICATION"]}
+    payload = {**PAY_LATER, "services": ["DOC_VERIFICATION"], "details": {}}
 
     response = client.post(f"{BASE}/payment", json=payload, headers=AUTH)
 

@@ -24,6 +24,13 @@ stays and blocks any further payment until support reconciles it.
 Services can be added after the first payment (Edit customer): same flow,
 only for services not yet opted, without the joining fee.
 
+Some services ask for details when chosen (`ServiceConfig.details`; DPR
+Analysis: bank name and project name, user 2026-11-05). They are written
+first, one `PUT /customermgmt/person/customField/value` each (the user's
+choice of API), before anything is opted or charged: if the vendor refuses
+(e.g. CUSTOM_FIELD_ID_NOT_EXISTS on a customer registered before the field
+existed), nothing else has happened.
+
 A signed-in customer can opt in too (`request`). Pay later then waits for
 their BD to authorize -- stand guarantor -- and the transfer runs at that
 point (`authorize`); the BD may `decline`. Waiting services are "Awaiting BD".
@@ -36,7 +43,10 @@ from app.core.config import ServiceConfig, Settings
 from app.core.exceptions import VendorError
 from app.core.logging import get_logger
 from app.schemas.common import VendorAck
-from app.schemas.custom_field import UpdateCustomFieldsRequest
+from app.schemas.custom_field import (
+    UpdateCustomFieldsRequest,
+    UpdateCustomFieldValueRequest,
+)
 from app.schemas.enrolment import (
     Catalog,
     CatalogService,
@@ -46,6 +56,8 @@ from app.schemas.enrolment import (
     PaymentMode,
     PaymentRequest,
     PaymentResponse,
+    ServiceDetails,
+    ServiceDetailValue,
     ServiceRequest,
     ServiceRequestResponse,
 )
@@ -168,6 +180,12 @@ class EnrolmentService:
             transaction_id=field_value(values.get(f.txn_id)),
             document=file_info(doc, s.code.lower()) if doc else None,
             can_upload=opted and paid and not self._locked(status),
+            details=[
+                ServiceDetailValue(
+                    key=d.key, label=d.label, value=field_value(values.get(d.field_id))
+                )
+                for d in s.details
+            ],
         )
 
     def _in_progress(self, values: Mapping[str, str]) -> bool:
@@ -249,6 +267,73 @@ class EnrolmentService:
         body = await self._client.put(TRANSFER_PATH, payload, ctx)
         return VendorAck.from_vendor(body)
 
+    # -- details -----------------------------------------------------------
+
+    def _check_details(
+        self, services: list[ServiceConfig], given: ServiceDetails
+    ) -> dict[str, str]:
+        """The details the chosen services need, as {field_id: value}.
+
+        Every detail of every chosen service is required; anything else
+        (another service, an unknown key) is refused rather than ignored.
+        """
+        chosen = {x.code: x for x in services}
+        stray = [code for code in given if code not in chosen]
+        if stray:
+            raise PaymentRequestError(
+                f"Details were sent for services not chosen: {', '.join(stray)}."
+            )
+        out: dict[str, str] = {}
+        for service in services:
+            sent = given.get(service.code, {})
+            known = {d.key for d in service.details}
+            unknown = [k for k in sent if k not in known]
+            if unknown:
+                raise PaymentRequestError(
+                    f"{service.name} does not take: {', '.join(unknown)}."
+                )
+            for d in service.details:
+                value = " ".join((sent.get(d.key) or "").split())
+                if field_value(value) is None:  # blank, or "NA" (= not set)
+                    raise PaymentRequestError(
+                        f"{service.name} needs the {d.label.lower()}."
+                    )
+                if len(value) > d.max_length:
+                    raise PaymentRequestError(
+                        f"The {d.label.lower()} can be at most {d.max_length} "
+                        "characters."
+                    )
+                out[d.field_id] = value
+        return out
+
+    async def _save_details(
+        self,
+        person_id: str,
+        values: Mapping[str, str],
+        details: Mapping[str, str],
+        ctx: VendorCallContext,
+    ) -> dict[str, str]:
+        """Write each changed detail with the single-value API. Never retried
+        (a /customermgmt write). Returns the values as they now are."""
+        after = dict(values)
+        for field_id, value in details.items():
+            if after.get(field_id) == value:
+                continue
+            await self._fields.update_value(
+                person_id,
+                field_id,
+                UpdateCustomFieldValueRequest(custom_field_value=value),
+                ctx,
+            )
+            after[field_id] = value
+        if details:
+            logger.info(
+                "service_details_saved person_id=%s fields=%s",
+                person_id,
+                sorted(details),
+            )
+        return after
+
     # -- payment -----------------------------------------------------------
 
     async def pay(
@@ -265,8 +350,11 @@ class EnrolmentService:
                 "Pay later needs the consent of both the BD and the customer."
             )
 
+        details = self._check_details(services, req.details)
+
         values = await self._values(person_id, broker_id, ctx)
         self._check_free(values, services)
+        values = await self._save_details(person_id, values, details, ctx)
         return await self._settle(person_id, values, services, req.mode, ctx)
 
     def _check_free(
@@ -461,9 +549,11 @@ class EnrolmentService:
         services = [self._service(c) for c in codes]  # UnknownServiceError
         if req.mode == "pay_later" and not req.customer_consent:
             raise PaymentRequestError("Pay later needs your consent to pay later.")
+        details = self._check_details(services, req.details)
 
         values = await self._values(person_id, None, ctx)
         self._check_free(values, services)
+        values = await self._save_details(person_id, values, details, ctx)
         first = self._first_payment(values)
         amount = sum(x.fee for x in services) + (s.joining_fee if first else 0)
 
