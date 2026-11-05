@@ -3,7 +3,7 @@
 from functools import lru_cache
 from urllib.parse import urlsplit, urlunsplit
 
-from pydantic import BaseModel, Field, SecretStr, field_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -103,6 +103,118 @@ class Settings(BaseSettings):
     # the reverse proxy forwards the full path; if it strips the prefix, leave
     # this empty and start uvicorn with --root-path instead.
     context_path: str = "/las-api"
+
+    # --- Feature-gated internal DPR agentic preview (no customer-facing access) ---
+    dpr_agentic_enabled: bool = False
+    dpr_agentic_internal_token: SecretStr | None = None
+    # Set during a rotation: both the new (dpr_agentic_internal_token) and
+    # this old secret are accepted until every caller is confirmed switched
+    # over, then unset this one. Lets the token be rotated without a
+    # window where every caller is rejected at once.
+    dpr_agentic_internal_token_previous: SecretStr | None = None
+    # A failed internal-token attempt is logged and counted per client IP
+    # (app/api/v1/dpr_analysis.py); past this many rejections in the
+    # window below, further attempts from that IP get 429 without even
+    # comparing the token, to blunt an online guessing attempt against a
+    # route with no network-level isolation.
+    dpr_agentic_internal_token_max_rejections: int = Field(default=10, ge=1)
+    dpr_agentic_internal_token_rejection_window_seconds: float = Field(
+        default=60.0, gt=0
+    )
+    dpr_agentic_gemini_api_key: SecretStr | None = None
+    dpr_agentic_gemini_model: str = "gemini-2.5-flash"
+    # Deterministic Section 9 financial engine (cam_financial_engine.py,
+    # sector_feasibility.py) and CAM snapshot build/verify
+    # (cam_adapter.py/cam_verification.py). Off by default so the existing
+    # agentic pipeline's output is byte-for-byte unchanged until this is
+    # explicitly switched on; see PROGRESS.md milestone 2b.
+    cam_engine_enabled: bool = False
+    # CAM report brand colors (Section 2.1): defaults are the original
+    # design's own values. A future deployment can rebrand the report
+    # without touching app/templates/cam/*.
+    cam_brand_color: str = "#1F5E46"
+    cam_accent_color: str = "#9A5408"
+    # Core LAS-owned Postgres for the DPR job registry, branch status and
+    # report artifacts (see app/services/dpr_agentic/jobs.py). Never the
+    # vendor's data: Wallet remains the owner of customer/document/payment
+    # records. Unset = durable tracking and report storage are disabled for
+    # this run; /document-with-analysis still works (ephemeral, as before)
+    # but /services/{code}/report always 503s.
+    dpr_database_url: SecretStr | None = None
+    # Symmetric key encrypting a document's bytes at rest in
+    # dpr_upload_staging while it waits for scripts/dpr_worker.py. Unset =
+    # analysis is never queued; /document-with-analysis still records the
+    # Wallet write but returns analysis_status "NOT_QUEUED".
+    dpr_staging_encryption_key: SecretStr | None = None
+    # Vision/OCR fallback for a scanned document (document_pipeline/vision.py).
+    # Off by default: a separate decision from dpr_agentic_enabled, since
+    # vision calls cost more per page than text and send page images (not
+    # just extracted text) to Gemini. A scanned document still just fails
+    # with NEEDSVISIONFALLBACK when this is off.
+    dpr_agentic_vision_enabled: bool = False
+    # Cap on pages rendered and sent for vision OCR, independent of the
+    # ordinary text pipeline's page cap -- a scanned document longer than
+    # this is only ever analyzed on its first N pages.
+    dpr_agentic_vision_max_pages: int = Field(default=20, ge=1, le=100)
+    # LiteParse (document_pipeline/liteparse_client.py) is the primary parser
+    # for PDFs and images: local text extraction + local OCR (ImageMagick +
+    # Tesseract), no network call. Gemini vision above is only the fallback
+    # for whatever LiteParse itself can't recover. Needs Node.js,
+    # @llamaindex/liteparse, imagemagick and tesseract-ocr on the worker host
+    # -- see deploy/README.md. Unset cli_path = resolved from PATH/npx.
+    dpr_agentic_liteparse_cli_path: str | None = None
+    dpr_agentic_liteparse_ocr_language: str = "en"
+    dpr_agentic_liteparse_timeout_seconds: float = Field(default=120.0, gt=0)
+    # Below this many stripped characters, a page is still considered
+    # unusable even after LiteParse's own OCR pass, and gets a targeted
+    # Gemini-vision retry (see scripts/dpr_worker.py).
+    dpr_agentic_liteparse_page_min_chars: int = Field(default=50, ge=1)
+    # Per-customer cap on new analyses queued in a rolling 24h window, across
+    # all their services -- caps Gemini spend from repeated uploads. The
+    # Wallet document write is never blocked by this, only queuing analysis
+    # of it (analysis_status becomes "RATE_LIMITED" instead of "QUEUED").
+    dpr_agentic_daily_submission_limit: int = Field(default=5, ge=1)
+    # Hard wall-clock cap on one CAM report's WeasyPrint render
+    # (report_store.py), enforced by running it in a subprocess that is
+    # killed on timeout -- a hang in WeasyPrint/cairo/pango (observed, not
+    # hypothetical -- see PROGRESS.md milestone 5) must never stall the
+    # worker process itself; it just becomes pdf_render_status='FAILED'.
+    dpr_cam_pdf_render_timeout_seconds: float = Field(default=120.0, gt=0)
+    # Fakes the vendor's money-moving transfer call (PUT
+    # /transfer/systemAccountPayment) so dev/Playwright/local runs can click
+    # through the full pay-later flow without real vendor credentials or
+    # moving real money -- see app/services/stub_wallet_client.py. The
+    # validator below is the hard rail: this can never be true for an
+    # environment outside the explicitly allowed dev/test set, whatever a
+    # misconfigured .env says.
+    vendor_wallet_stub_enabled: bool = False
+
+    @field_validator("dpr_agentic_liteparse_cli_path")
+    @classmethod
+    def _blank_liteparse_cli_path_means_unset(cls, v: str | None) -> str | None:
+        """`DPR_AGENTIC_LITEPARSE_CLI_PATH=` (present, empty) is how .env files
+        conventionally spell "unset" -- but an empty string is not None, so
+        the liteparse library's own `if self._cli_path is None` auto-detect
+        check would be skipped, and it would try to exec the literal string
+        "parse" as a command. Treat blank the same as unset."""
+        return v if v and v.strip() else None
+
+    @field_validator("dpr_staging_encryption_key")
+    @classmethod
+    def _validate_fernet_key(cls, v: SecretStr | None) -> SecretStr | None:
+        if v is None:
+            return v
+        from cryptography.fernet import Fernet
+
+        try:
+            Fernet(v.get_secret_value().encode())
+        except Exception as exc:
+            raise ValueError(
+                "dpr_staging_encryption_key must be a valid Fernet key "
+                '(python -c "from cryptography.fernet import Fernet; '
+                'print(Fernet.generate_key().decode())")'
+            ) from exc
+        return v
 
     # --- Vendor (iWallet) -------------------------------------------------
     # Only one host appears in api_docs/. Sandbox vs production split is
@@ -282,6 +394,21 @@ class Settings(BaseSettings):
             netloc = parts.netloc.replace(host, host.rstrip("."), 1)
             parts = parts._replace(netloc=netloc)
         return urlunsplit(parts)
+
+    @model_validator(mode="after")
+    def _wallet_stub_only_outside_production(self) -> "Settings":
+        if self.vendor_wallet_stub_enabled and self.environment not in {
+            "local",
+            "dev",
+            "test",
+        }:
+            raise ValueError(
+                "vendor_wallet_stub_enabled is only allowed with "
+                f"environment in {{local, dev, test}}, not {self.environment!r} "
+                "-- it fakes a successful money transfer and must never run "
+                "against a real deployment."
+            )
+        return self
 
 
 @lru_cache

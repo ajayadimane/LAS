@@ -1,0 +1,121 @@
+{#- Page 3: Project, cost and corrections. Ported from
+   cam-design-reference/Page 2 — Project, cost and DPR changes-html.zip.
+   Project cost / means-of-finance breakdowns and the corrections table
+   are only as complete as CAMSnapshot.project_cost/means_of_finance/
+   findings actually are -- an empty breakdown shows an explicit note,
+   never a fabricated line (Section 19.3/19.4). #}
+<section class="cam-page">
+  <header class="cam-header">
+    <div class="cam-header__brand">
+      <div class="cam-header__logo">LOGO</div>
+      <div>
+        <div class="cam-header__product">Loan Advisory System</div>
+        <div class="cam-header__by">{{ ctx3.borrower_name or "Borrower name not yet confirmed" }}</div>
+      </div>
+    </div>
+    <div class="cam-header__meta">
+      <div class="cam-header__ref">{{ ctx3.report_reference }}</div>
+      <div class="cam-header__page">Page 3 of 6</div>
+    </div>
+  </header>
+
+  <main class="cam-main">
+    <section class="cam-section">
+      <h1 class="cam-h1" style="font-size: 26px;">Your project</h1>
+      <div class="cam-grid-4">
+        {% for tile in ctx3.tiles %}
+        <div class="cam-tile">
+          <div class="cam-tile__label">{{ tile.label }}</div>
+          <div class="cam-tile__value">{{ tile.value or "Not yet confirmed" }}</div>
+        </div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="cam-section">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;">
+        <h3 class="cam-h3">Project cost</h3>
+        <div style="font-size:12px;color:var(--text-tertiary);">As stated in your DPR</div>
+      </div>
+      {% if ctx3.cost_rows %}
+      <table class="cam-table">
+        <thead><tr><th>Item</th><th style="text-align:right;">&#8377; lakh</th></tr></thead>
+        <tbody>
+          {% for row in ctx3.cost_rows %}
+          <tr><td>{{ row.label }}</td><td style="text-align:right;">{{ row.amount }}</td></tr>
+          {% endfor %}
+          <tr>
+            <td><strong>Total project cost</strong></td>
+            <td style="text-align:right;"><strong>{{ ctx3.cost_total or "Requires verification" }}</strong></td>
+          </tr>
+        </tbody>
+      </table>
+      {% if ctx3.cost_check %}
+      <span class="cam-badge {{ 'cam-badge--good-to-fix' if ctx3.cost_check.kind == 'ok' else 'cam-badge--should-fix' }}">{{ ctx3.cost_check.label }}</span>
+      {% endif %}
+      {% else %}
+      <p class="cam-empty-note">No itemized cost breakdown is available for this project yet.</p>
+      {% endif %}
+    </section>
+
+    <section class="cam-section">
+      <h3 class="cam-h3">How it is funded</h3>
+      {% if ctx3.funding_split %}
+      <div class="cam-funding-bar">
+        <div style="width: {{ ctx3.funding_split.promoter_pct }}%; background: var(--accent);"></div>
+        <div style="width: {{ ctx3.funding_split.loan_pct }}%; background: var(--brand);"></div>
+      </div>
+      <div class="cam-grid-2">
+        <div class="cam-funding-legend">
+          <div class="cam-funding-legend__swatch" style="background: var(--accent);"></div>
+          <div>
+            <div class="cam-funding-legend__label">Your contribution &middot; {{ ctx3.funding_split.promoter_pct }}%</div>
+            <div class="cam-funding-legend__value">{{ ctx3.funding_split.promoter_amount }}</div>
+          </div>
+        </div>
+        <div class="cam-funding-legend">
+          <div class="cam-funding-legend__swatch" style="background: var(--brand);"></div>
+          <div>
+            <div class="cam-funding-legend__label">Requested loan &middot; {{ ctx3.funding_split.loan_pct }}%</div>
+            <div class="cam-funding-legend__value">{{ ctx3.funding_split.loan_amount }}</div>
+          </div>
+        </div>
+      </div>
+      {% else %}
+      <p class="cam-empty-note">Funding split is not yet available for this project.</p>
+      {% endif %}
+      <div class="cam-tile" style="margin-top:6px;">
+        <div class="cam-tile__label">Capital subsidy</div>
+        <div class="cam-tile__value">{{ ctx3.subsidy_label }}</div>
+      </div>
+    </section>
+
+    <section class="cam-section">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;">
+        <h3 class="cam-h3">Corrections needed in your DPR</h3>
+      </div>
+      {% if ctx3.corrections %}
+      <table class="cam-table">
+        <thead><tr><th>Item</th><th style="text-align:right;">Your DPR</th><th style="text-align:right;">Should be</th><th>Why</th></tr></thead>
+        <tbody>
+          {% for row in ctx3.corrections %}
+          <tr>
+            <td><strong>{{ row.title }}</strong></td>
+            <td style="text-align:right;color:var(--text-tertiary);text-decoration:line-through;">{{ row.dpr_value }}</td>
+            <td style="text-align:right;"><strong>{{ row.should_be }}</strong></td>
+            <td>{{ row.why }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="cam-empty-note">No DPR-vs-recomputed corrections are available for this project yet.</p>
+      {% endif %}
+    </section>
+  </main>
+
+  <footer class="cam-footer">
+    <p class="cam-footer__disclaimer">Corrections are computed from figures in your own DPR.</p>
+    <div class="cam-footer__label">Page 3 of 6</div>
+  </footer>
+</section>

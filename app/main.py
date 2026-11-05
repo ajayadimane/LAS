@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI
 
-from app.api.v1 import health
+from app.api.v1 import dpr_analysis, health
 from app.api.v1.router import api_router
 from app.clients.otp_client import OtpClient, build_otp_http_client
 from app.clients.vendor_client import VendorClient
@@ -17,6 +17,8 @@ from app.core.config import Settings, get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging, get_logger
 from app.services.admin_session import AdminSession
+from app.services.dpr_agentic.jobs import engine_for
+from app.services.dpr_agentic.migrate import apply_migrations
 from app.services.mailer import Mailer
 from app.services.otp import OtpGuard
 
@@ -35,6 +37,18 @@ def build_http_client(settings: Settings) -> httpx.AsyncClient:
     )
 
 
+def build_gemini_http_client() -> httpx.AsyncClient:
+    """Separate client for the public Gemini API.
+
+    Must never inherit `vendor_verify_ssl`: that flag is a workaround for the
+    vendor's own broken cert chain (see CLAUDE.md) and is routinely False in
+    local/sandbox runs. Reusing the vendor client here would silently disable
+    TLS verification for calls that carry the Gemini API key and uploaded DPR
+    document text to a public third-party host.
+    """
+    return httpx.AsyncClient(timeout=60.0, verify=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings: Settings = app.state.settings
@@ -50,10 +64,13 @@ async def lifespan(app: FastAPI):
     )
 
     client = build_http_client(settings)
+    gemini_client = build_gemini_http_client()
     app.state.http_client = client
+    app.state.gemini_http_client = gemini_client
     app.state.vendor_client = VendorClient(client, settings)
     app.state.admin_session = AdminSession(app.state.vendor_client, settings)
     app.state.mailer = Mailer(settings)
+    app.state.dpr_engine = build_dpr_engine(settings)
     # The OTP service is a separate host with its own key: its own client.
     otp_http = build_otp_http_client(settings)
     app.state.otp_client = OtpClient(otp_http, settings)
@@ -62,8 +79,37 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await client.aclose()
+        await gemini_client.aclose()
+        if app.state.dpr_engine is not None:
+            app.state.dpr_engine.dispose()
         await otp_http.aclose()
         logger.info("shutdown complete")
+
+
+def build_dpr_engine(settings: Settings):
+    """The DPR job-registry/report-artifact Postgres engine, or None.
+
+    Unset dpr_database_url (or the feature flag off) leaves durable job
+    tracking and report storage disabled for this run: /document-with-analysis
+    still works ephemerally as before, but /services/{code}/report always
+    503s. Migrations are additive and idempotent, so applying them on every
+    startup is safe with several replicas starting concurrently; a failure
+    here must never crash the whole app, since the rest of the dashboard
+    doesn't depend on this database.
+    """
+    if not (settings.dpr_agentic_enabled and settings.dpr_database_url):
+        return None
+    try:
+        engine = engine_for(settings.dpr_database_url.get_secret_value())
+        apply_migrations(engine)
+    except Exception:
+        logger.exception(
+            "dpr_agentic_db_unavailable -- durable job tracking and report "
+            "storage are disabled for this run"
+        )
+        return None
+    logger.info("dpr_agentic_db_ready")
+    return engine
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -85,6 +131,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_exception_handlers(app)
     app.include_router(health.router, prefix=prefix)
     app.include_router(api_router, prefix=prefix)
+    # Off the versioned /api/v1 surface on purpose -- see router.py's note.
+    app.include_router(dpr_analysis.router, prefix=prefix)
     return app
 
 

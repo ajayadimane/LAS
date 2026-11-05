@@ -1,0 +1,94 @@
+{#- Page 2: Fix before you apply. Ported from
+   cam-design-reference/Fix-html.zip. Findings and their priority/severity
+   grouping come entirely from CAMSnapshot.findings (pipeline-computed,
+   see finding_rules.py) -- this template only loops and formats, no
+   judgment calls (Section 19.3). #}
+<section class="cam-page">
+  <header class="cam-header">
+    <div class="cam-header__brand">
+      <div class="cam-header__logo">LOGO</div>
+      <div>
+        <div class="cam-header__product">Loan Advisory System</div>
+        <div class="cam-header__by">{{ ctx2.borrower_name or "Borrower name not yet confirmed" }}</div>
+      </div>
+    </div>
+    <div class="cam-header__meta">
+      <div class="cam-header__ref">{{ ctx2.report_reference }}</div>
+      <div class="cam-header__page">Page 2 of 6</div>
+    </div>
+  </header>
+
+  <main class="cam-main">
+    <h1 class="cam-h1" style="font-size: 26px;">Fix before you apply</h1>
+    <p class="cam-lede">{{ ctx2.intro_line }}</p>
+
+    <section class="cam-priority-group">
+      <div class="cam-priority-group__head">
+        <span class="cam-pill cam-pill--must-fix">Must fix</span>
+        <span class="cam-priority-group__count">{{ ctx2.must_fix | length }} issue(s)</span>
+      </div>
+      {% if ctx2.must_fix %}
+      {% for f in ctx2.must_fix %}
+      <div class="cam-finding-row">
+        <div>
+          <div class="cam-finding-row__title">{{ f.title }}</div>
+          <div class="cam-finding-row__body">{{ f.explanation }} <strong>Do:</strong> {{ f.suggested_action }}</div>
+        </div>
+        <div class="cam-finding-row__ref">{{ f.ref }}</div>
+      </div>
+      {% endfor %}
+      {% else %}
+      <p class="cam-empty-note">No must-fix issues were found.</p>
+      {% endif %}
+    </section>
+
+    <section class="cam-priority-group" style="gap: 8px;">
+      <div class="cam-priority-group__head">
+        <span class="cam-pill cam-pill--should-fix">Should fix</span>
+        <span class="cam-priority-group__count">{{ ctx2.should_fix | length }} issue(s)</span>
+      </div>
+      {% if ctx2.should_fix %}
+      <div class="cam-grid-2">
+        {% for f in ctx2.should_fix %}
+        <div class="cam-finding-card">
+          <div class="cam-finding-card__head">
+            <div class="cam-finding-card__title">{{ f.title }}</div>
+            <div class="cam-finding-card__ref">{{ f.ref }}</div>
+          </div>
+          <div class="cam-finding-card__body">{{ f.explanation }}</div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="cam-empty-note">No should-fix issues were found.</p>
+      {% endif %}
+    </section>
+
+    <section class="cam-priority-group" style="gap: 8px;">
+      <div class="cam-priority-group__head">
+        <span class="cam-pill cam-pill--good-to-fix">Good to fix</span>
+        <span class="cam-priority-group__count">{{ ctx2.good_to_fix | length }} issue(s)</span>
+      </div>
+      {% if ctx2.good_to_fix %}
+      <div class="cam-grid-2">
+        {% for f in ctx2.good_to_fix %}
+        <div class="cam-finding-card">
+          <div class="cam-finding-card__head">
+            <div class="cam-finding-card__title">{{ f.title }}</div>
+            <div class="cam-finding-card__ref">{{ f.ref }}</div>
+          </div>
+          <div class="cam-finding-card__body">{{ f.explanation }}</div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="cam-empty-note">No good-to-fix issues were found.</p>
+      {% endif %}
+    </section>
+  </main>
+
+  <footer class="cam-footer">
+    <p class="cam-footer__disclaimer">Pre-submission AI assistance only; not a bank sanction, eligibility certification, or authenticated source verification.</p>
+    <div class="cam-footer__label">Page 2 of 6</div>
+  </footer>
+</section>

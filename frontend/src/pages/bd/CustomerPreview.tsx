@@ -4,6 +4,7 @@ import { useBdCustomer } from "@/api/bd";
 import { ApiError } from "@/api/client";
 import { useCustomerServices } from "@/api/services";
 import { useSession } from "@/auth/AuthContext";
+import { AnalysisReportCard } from "@/components/AnalysisReport";
 import { PaymentsTable, usePayments } from "@/components/PaymentsTable";
 import { Button } from "@/components/ui/Button";
 import { Icon } from "@/components/ui/Icon";
@@ -120,6 +121,19 @@ export default function CustomerPreview() {
         <div className="mt-3 overflow-hidden rounded-2xl border">
           <PaymentsTable query={payments} viewer="bd" />
         </div>
+
+        {customer.person_id && !!payments.data?.services.some((s) => s.document) && (
+          <>
+            <h3 className="mt-7 text-sm font-bold">Analysis reports</h3>
+            <div className="mt-3 space-y-3">
+              {payments.data.services
+                .filter((s) => s.document)
+                .map((s) => (
+                  <AnalysisReportCard key={s.code} bdId={session.userId} personId={customer.person_id!} service={s} />
+                ))}
+            </div>
+          </>
+        )}
       </Section>
     </Page>
   );

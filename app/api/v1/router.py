@@ -11,6 +11,12 @@ from app.api.v1 import (
     wallet,
 )
 
+# dpr_analysis.router is deliberately NOT included here: it is the
+# internal-token-gated preview API (see its own module docstring), kept off
+# the versioned public /api/v1 surface and mounted directly in app.main
+# instead -- a different URL namespace from everything a dashboard user can
+# reach, even though it is still the same process/port (true network
+# isolation is outside this repo's control; see PROGRESS.md milestone 5).
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(identity.router)
 api_router.include_router(otp.router)

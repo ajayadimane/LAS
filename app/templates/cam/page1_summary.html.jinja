@@ -1,0 +1,158 @@
+{#- Page 1: Executive summary. Ported from
+   cam-design-reference/Page 1 — Summary-html.zip. Every value below comes
+   from the `ctx` dict built by cam_render.build_page1_context() (snapshot
+   -> display values is Python, kept out of this template) -- see
+   PROGRESS.md milestone 4. Nothing here is a loan-approval recommendation
+   (Section 19.20): the readiness badge/headline/body describe DPR
+   readiness only, never bank sanction odds. #}
+<section class="cam-page">
+  <header class="cam-header">
+    <div class="cam-header__brand">
+      <div class="cam-header__logo">LOGO</div>
+      <div>
+        <div class="cam-header__product">Loan Advisory System</div>
+        <div class="cam-header__by">by Integra Micro</div>
+      </div>
+    </div>
+    <div class="cam-header__meta">
+      <div class="cam-header__ref">{{ ctx.report_reference }}</div>
+      <div class="cam-header__page">Version {{ ctx.report_version }}</div>
+    </div>
+  </header>
+
+  <main class="cam-main">
+    <section class="cam-section">
+      <div class="cam-eyebrow">LOAN READINESS REPORT</div>
+      <h1 class="cam-h1">{{ ctx.borrower_name or "Borrower name not yet confirmed" }}</h1>
+      <p class="cam-lede">{{ ctx.project_summary_line }}</p>
+      <div class="cam-metarow">
+        <div>
+          <div class="cam-metarow__label">Report date</div>
+          <div class="cam-metarow__value">{{ ctx.report_date }}</div>
+        </div>
+        <div>
+          <div class="cam-metarow__label">Scheme claimed</div>
+          <div class="cam-metarow__value">{{ ctx.scheme_claimed }}</div>
+        </div>
+        <div>
+          <div class="cam-metarow__label">Business Associate</div>
+          <div class="cam-metarow__value">{{ ctx.bd_name }}</div>
+        </div>
+        <div>
+          <div class="cam-metarow__label">Service request</div>
+          <div class="cam-metarow__value">{{ ctx.service_request_id }}</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="cam-callout" style="--callout-color: {{ ctx.readiness.color }}; --callout-tint: {{ ctx.readiness.tint }};">
+      {% if ctx.readiness.score is not none %}
+      <div style="display:flex;flex-direction:column;align-items:center;gap:6px;flex-shrink:0;">
+        <div style="position:relative;width:104px;height:104px;">
+          <svg width="104" height="104" viewBox="0 0 120 120" aria-hidden="true">
+            <circle cx="60" cy="60" r="50" fill="none" stroke="#D3DED8" stroke-width="12"></circle>
+            <circle cx="60" cy="60" r="50" fill="none" stroke="{{ ctx.readiness.color }}" stroke-width="12"
+                    stroke-linecap="round"
+                    stroke-dasharray="{{ ctx.readiness.score_arc }} 314"
+                    transform="rotate(-90 60 60)"></circle>
+          </svg>
+          <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;">
+            <div style="font-size:26px;font-weight:800;line-height:1;">{{ ctx.readiness.score }}</div>
+            <div style="font-size:11px;color:#5B6560;">of 100</div>
+          </div>
+        </div>
+        <div style="font-size:11px;font-weight:700;color:#3F4A45;">DPR quality score</div>
+      </div>
+      {% endif %}
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <div class="cam-callout__badge">{{ ctx.readiness.badge }}</div>
+        <h2 class="cam-callout__headline">{{ ctx.readiness.headline }}</h2>
+        <p class="cam-callout__body">{{ ctx.readiness.body }}</p>
+      </div>
+    </section>
+
+    {% if ctx.readiness.score_mode == "dimensions" and ctx.readiness.dimensions %}
+    <section class="cam-section">
+      <h3 class="cam-h3">DPR quality score breakdown</h3>
+      <div class="cam-grid-4">
+        {% for dim in ctx.readiness.dimensions %}
+        <div class="cam-stat">
+          <div class="cam-stat__label">{{ dim.label }}</div>
+          <div class="cam-stat__value">{{ dim.score }}<span style="font-size:13px;font-weight:600;color:var(--text-tertiary);">/25</span></div>
+        </div>
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
+
+    <section class="cam-section">
+      <h3 class="cam-h3">Your loan at a glance</h3>
+      <div class="cam-grid-2">
+        <div class="cam-stat">
+          <div class="cam-stat__label">Loan requested</div>
+          {% if ctx.loan.requested_amount %}
+          <div class="cam-stat__value">{{ ctx.loan.requested_amount }}</div>
+          <div class="cam-stat__sub">{{ ctx.loan.requested_sub }}</div>
+          {% else %}
+          <div class="cam-stat__value cam-missing">Requires verification</div>
+          {% endif %}
+        </div>
+        <div class="cam-stat">
+          <div class="cam-stat__label">Year-1 repayment</div>
+          {% if ctx.loan.year1_debt_service %}
+          <div class="cam-stat__value">{{ ctx.loan.year1_debt_service }}</div>
+          <div class="cam-stat__sub">{{ ctx.loan.year1_debt_service_sub }}</div>
+          {% else %}
+          <div class="cam-stat__value cam-missing">Not yet computable</div>
+          {% endif %}
+        </div>
+        <div class="cam-stat">
+          <div class="cam-stat__label">Your contribution</div>
+          {% if ctx.loan.promoter_amount %}
+          <div class="cam-stat__value">{{ ctx.loan.promoter_amount }}</div>
+          <div class="cam-stat__sub">{{ ctx.loan.promoter_sub }}</div>
+          {% else %}
+          <div class="cam-stat__value cam-missing">Requires verification</div>
+          {% endif %}
+        </div>
+        <div class="cam-stat cam-stat--accent">
+          <div class="cam-stat__label">{{ ctx.subsidy.label }}</div>
+          {% if ctx.subsidy.amount %}
+          <div class="cam-stat__value cam-stat__value--accent">{{ ctx.subsidy.amount }}</div>
+          <div class="cam-stat__sub">{{ ctx.subsidy.sub }}</div>
+          {% else %}
+          <div class="cam-missing-note">{{ ctx.subsidy.sub }}</div>
+          {% endif %}
+        </div>
+      </div>
+    </section>
+
+    <section class="cam-section">
+      <h3 class="cam-h3">What we checked</h3>
+      <div class="cam-grid-4">
+        {% for check in ctx.checks %}
+        <div class="cam-check" style="--check-color: {{ check.color }}; --check-tint: {{ check.tint }};">
+          <div class="cam-check__icon"></div>
+          <div class="cam-check__title">{{ check.title }}</div>
+          <div class="cam-check__status">{{ check.status }}</div>
+        </div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="cam-section">
+      <h3 class="cam-h3">Findings at a glance</h3>
+      <div class="cam-grid-4">
+        <div class="cam-stat"><div class="cam-stat__label">Verified calculation errors</div><div class="cam-stat__value">{{ ctx.finding_counts.verified_calculation_errors }}</div></div>
+        <div class="cam-stat"><div class="cam-stat__label">Potential feasibility risks</div><div class="cam-stat__value">{{ ctx.finding_counts.feasibility_risks }}</div></div>
+        <div class="cam-stat"><div class="cam-stat__label">Missing evidence</div><div class="cam-stat__value">{{ ctx.finding_counts.missing_evidence }}</div></div>
+        <div class="cam-stat"><div class="cam-stat__label">Outstanding clarifications</div><div class="cam-stat__value">{{ ctx.finding_counts.outstanding_clarifications }}</div></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="cam-footer">
+    <p class="cam-footer__disclaimer">Pre-submission AI assistance only; not a bank sanction, eligibility certification, or authenticated source verification.</p>
+    <div class="cam-footer__label">{{ ctx.report_reference }}</div>
+  </footer>
+</section>

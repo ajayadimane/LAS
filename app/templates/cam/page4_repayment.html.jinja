@@ -1,0 +1,106 @@
+{#- Page 4: Repayment. Ported from cam-design-reference/Page 3 —
+   Repayment-html.zip. The original design's five-point acreage bar chart
+   needed a realistic-harvest-window range that this pipeline does not
+   compute (see build_page4_context's docstring) -- rendered instead as a
+   table of the two real cost scenarios the engine actually produces, each
+   with its own DSCR and three break-even figures under that scenario's
+   own cost assumption (milestone 4c), never a fabricated chart. Each
+   trace's full formula/inputs will be reproduced in Annexure B once that
+   exists (milestone 7). The "AIF subvention" row in the original design
+   has no corresponding data in CAMSnapshot and is dropped, not invented. #}
+<section class="cam-page">
+  <header class="cam-header">
+    <div class="cam-header__brand">
+      <div class="cam-header__logo">LOGO</div>
+      <div>
+        <div class="cam-header__product">Loan Advisory System</div>
+        <div class="cam-header__by">{{ ctx4.borrower_name or "Borrower name not yet confirmed" }}</div>
+      </div>
+    </div>
+    <div class="cam-header__meta">
+      <div class="cam-header__ref">{{ ctx4.report_reference }}</div>
+      <div class="cam-header__page">Page 4 of 6</div>
+    </div>
+  </header>
+
+  <main class="cam-main">
+    <section class="cam-section">
+      <h1 class="cam-h1" style="font-size: 26px;">Can you repay the loan?</h1>
+      <p class="cam-lede">{{ ctx4.lede }}</p>
+
+      {% if ctx4.scenarios %}
+      <table class="cam-table">
+        <thead>
+          <tr>
+            <th>Scenario</th>
+            <th style="text-align:right;">DSCR (Year 1)</th>
+            <th style="text-align:right;">Break-even (accounting)</th>
+            <th style="text-align:right;">Break-even (cash)</th>
+            <th style="text-align:right;">Break-even (DSCR = 1.0)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for s in ctx4.scenarios %}
+          <tr>
+            <td>
+              <strong>{{ s.label }}</strong>
+              {% if s.is_hypothetical %}
+              <div class="cam-scenario-row__tag">Illustrative scenario, not a DPR fact</div>
+              {% endif %}
+            </td>
+            <td style="text-align:right;">{{ s.dscr or "Not yet computable" }}</td>
+            <td style="text-align:right;">{{ s.breakeven_accounting or "Not yet computable" }}</td>
+            <td style="text-align:right;">{{ s.breakeven_operating_cashflow or "Not yet computable" }}</td>
+            <td style="text-align:right;">{{ s.breakeven_debt_service_threshold or "Not yet computable" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="cam-empty-note">No repayment scenarios are available for this project yet.</p>
+      {% endif %}
+    </section>
+
+    {% if ctx4.dscr_cards %}
+    <section class="cam-section">
+      <h3 class="cam-h3">Why your DPR shows a different number</h3>
+      <div class="cam-grid-2">
+        {% for card in ctx4.dscr_cards %}
+        <div class="cam-dscr-card">
+          <div class="cam-dscr-card__label">{{ card.label }}</div>
+          <div class="cam-dscr-card__value">{{ card.value }}</div>
+          <div class="cam-dscr-card__note">{{ card.note }}</div>
+        </div>
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
+
+    <section class="cam-section">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;">
+        <h3 class="cam-h3">Year-1 repayment</h3>
+        <div style="font-size:12px;color:var(--text-tertiary);">Later years: per sanction</div>
+      </div>
+      {% if ctx4.year1 %}
+      <table class="cam-table">
+        <thead><tr><th>Year 1</th><th style="text-align:right;">Principal</th><th style="text-align:right;">Interest</th><th style="text-align:right;">Total repayment</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>As in your DPR</td>
+            <td style="text-align:right;">{{ ctx4.year1.principal }}</td>
+            <td style="text-align:right;">{{ ctx4.year1.interest }}</td>
+            <td style="text-align:right;"><strong>{{ ctx4.year1.total }}</strong></td>
+          </tr>
+        </tbody>
+      </table>
+      {% else %}
+      <p class="cam-empty-note">A Year-1 repayment schedule is not yet available for this project.</p>
+      {% endif %}
+    </section>
+  </main>
+
+  <footer class="cam-footer">
+    <p class="cam-footer__disclaimer">Pre-submission AI assistance only; not a bank sanction, eligibility certification, or authenticated source verification.</p>
+    <div class="cam-footer__label">Page 4 of 6</div>
+  </footer>
+</section>

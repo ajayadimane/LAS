@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{ title }}</title>
+<style>:root { --brand: {{ brand }}; --accent: {{ accent }}; }</style>
+<link rel="stylesheet" href="base.css">
+</head>
+<body>
+{% include "cam/page1_summary.html.jinja" %}
+{% include "cam/page2_fix_before_you_apply.html.jinja" %}
+{% include "cam/page3_project_cost.html.jinja" %}
+{% include "cam/page4_repayment.html.jinja" %}
+{% include "cam/page5_security.html.jinja" %}
+{% include "cam/page6_next_steps.html.jinja" %}
+</body>
+</html>
