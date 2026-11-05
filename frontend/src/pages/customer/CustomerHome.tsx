@@ -5,6 +5,7 @@ import { useCatalog, type CatalogService, type CustomerService, type PaymentMode
 import { useWalletBalance } from "@/api/wallet";
 import { useSession } from "@/auth/AuthContext";
 import { clearSession } from "@/auth/session";
+import { CustomerAnalysisReport } from "@/components/CustomerAnalysisReport";
 import { AppSidebar, type NavItem } from "@/components/layout/AppSidebar";
 import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
@@ -74,6 +75,7 @@ export default function CustomerHome() {
     const open = params.get("open");
     return open === "wallet" ? "account" : open === "profile" ? "profile" : null;
   });
+  const [reportingService, setReportingService] = useState<CustomerService | null>(null);
 
   const mine = state.data?.services.filter((s) => s.opted || s.requested) ?? [];
   const awaitingReport = mine.filter((s) => statusKey(s.status) === "DOCS_UPLOADED").length;
@@ -159,7 +161,7 @@ export default function CustomerHome() {
                     </Button>
                   </Message>
                 ) : (
-                  mine.map((s) => <ServiceRow key={s.code} service={s} />)
+                  mine.map((s) => <ServiceRow key={s.code} service={s} onViewReport={() => setReportingService(s)} />)
                 )}
               </tbody>
             </table>
@@ -191,6 +193,10 @@ export default function CustomerHome() {
         )}
         <p className="text-xs text-muted-foreground">To update these details, contact your Business Dealer.</p>
       </Dialog>
+      <Dialog open={reportingService !== null} onClose={() => setReportingService(null)}
+        title={reportingService ? `${reportingService.name}: analysis report` : "Analysis report"} large>
+        {reportingService && <CustomerAnalysisReport service={reportingService} />}
+      </Dialog>
       <Dialog open={dialog === "account"} onClose={() => setDialog(null)} title="Wallet">
         <p className="text-sm text-muted-foreground">Current balance <span className="font-bold text-foreground">{balance}</span></p>
         {wallet.data && wallet.data.locked_amount !== null && wallet.data.locked_amount > 0 && (
@@ -201,7 +207,7 @@ export default function CustomerHome() {
   );
 }
 
-function ServiceRow({ service: s }: { service: CustomerService }) {
+function ServiceRow({ service: s, onViewReport }: { service: CustomerService; onViewReport: () => void }) {
   const toast = useToast();
   const upload = useUploadMyDocument();
   const [opening, setOpening] = useState(false);
@@ -273,6 +279,11 @@ function ServiceRow({ service: s }: { service: CustomerService }) {
             <span className="text-xs text-muted-foreground">Waiting for your BD</span>
           ) : (
             <span className="text-muted-foreground">No action needed</span>
+          )}
+          {doc && (
+            <Button size="sm" variant="outline" className="rounded-lg" onClick={onViewReport}>
+              <Icon name="report" /> View report
+            </Button>
           )}
         </div>
         {upload.isError && <p className="mt-1 text-xs text-destructive">{upload.error.message}</p>}

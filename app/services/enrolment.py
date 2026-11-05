@@ -71,6 +71,7 @@ from app.services.service_fields import (
     same,
     summary,
 )
+from app.services.stub_wallet_client import StubWalletPaymentClient
 
 logger = get_logger(__name__)
 
@@ -111,6 +112,9 @@ class EnrolmentService:
         self._settings = settings
         self._bd = bd
         self._fields = CustomFieldService(client, settings)
+        self._stub_wallet = (
+            StubWalletPaymentClient() if settings.vendor_wallet_stub_enabled else None
+        )
 
     # -- catalogue ---------------------------------------------------------
 
@@ -234,6 +238,8 @@ class EnrolmentService:
         }
 
     async def _transfer(self, amount: int, ctx: VendorCallContext) -> VendorAck:
+        if self._stub_wallet is not None:
+            return await self._stub_wallet.transfer(amount)
         s = self._settings
         payload = {
             "programManagerId": s.vendor_program_manager_id,

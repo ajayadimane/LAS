@@ -3,7 +3,7 @@
 from functools import lru_cache
 from urllib.parse import urlsplit, urlunsplit
 
-from pydantic import BaseModel, Field, SecretStr, field_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -161,6 +161,14 @@ class Settings(BaseSettings):
     # hypothetical -- see PROGRESS.md milestone 5) must never stall the
     # worker process itself; it just becomes pdf_render_status='FAILED'.
     dpr_cam_pdf_render_timeout_seconds: float = Field(default=120.0, gt=0)
+    # Fakes the vendor's money-moving transfer call (PUT
+    # /transfer/systemAccountPayment) so dev/Playwright/local runs can click
+    # through the full pay-later flow without real vendor credentials or
+    # moving real money -- see app/services/stub_wallet_client.py. The
+    # validator below is the hard rail: this can never be true for an
+    # environment outside the explicitly allowed dev/test set, whatever a
+    # misconfigured .env says.
+    vendor_wallet_stub_enabled: bool = False
 
     @field_validator("dpr_agentic_liteparse_cli_path")
     @classmethod
@@ -340,6 +348,21 @@ class Settings(BaseSettings):
             netloc = parts.netloc.replace(host, host.rstrip("."), 1)
             parts = parts._replace(netloc=netloc)
         return urlunsplit(parts)
+
+    @model_validator(mode="after")
+    def _wallet_stub_only_outside_production(self) -> "Settings":
+        if self.vendor_wallet_stub_enabled and self.environment not in {
+            "local",
+            "dev",
+            "test",
+        }:
+            raise ValueError(
+                "vendor_wallet_stub_enabled is only allowed with "
+                f"environment in {{local, dev, test}}, not {self.environment!r} "
+                "-- it fakes a successful money transfer and must never run "
+                "against a real deployment."
+            )
+        return self
 
 
 @lru_cache

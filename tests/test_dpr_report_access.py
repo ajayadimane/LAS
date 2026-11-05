@@ -566,14 +566,52 @@ def test_report_annexures_endpoint_returns_computed_figures(dpr_client, dpr_pg, 
     }
 
 
-def test_bd_report_findings_versions_and_annexures_mirror_customer(
+def test_report_summary_endpoint_returns_readiness_and_counts(
     dpr_client, dpr_pg, vendor
 ):
     _paid_person(vendor)
     sha = hashlib.sha256(b"doc").hexdigest()
     ref = f"wallet-person-custom-field:{PID}:GEO_CHECK"
     _submit_completed_run(dpr_pg, source_reference=ref, sha=sha)
-    for suffix in ("findings", "versions", "annexures"):
+    response = dpr_client.get(
+        "/api/v1/customer/services/GEO_CHECK/report/summary", headers=ME
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body.keys()) == {
+        "version",
+        "readiness_status",
+        "must_fix_count",
+        "should_fix_count",
+        "good_to_fix_count",
+        "critical_findings_count",
+        "outstanding_clarifications_count",
+        "evidence_references_count",
+        "financial_overview",
+    }
+    assert body["readiness_status"] in {
+        "READY_FOR_SUBMISSION_REVIEW",
+        "CORRECTIONS_REQUIRED",
+        "EXPERT_REVIEW_REQUIRED",
+        "INSUFFICIENT_INFORMATION",
+    }
+    assert set(body["financial_overview"].keys()) == {
+        "project_cost_total",
+        "requested_loan",
+        "promoter_contribution",
+        "funding_gap",
+        "average_dscr",
+    }
+
+
+def test_bd_report_findings_versions_annexures_and_summary_mirror_customer(
+    dpr_client, dpr_pg, vendor
+):
+    _paid_person(vendor)
+    sha = hashlib.sha256(b"doc").hexdigest()
+    ref = f"wallet-person-custom-field:{PID}:GEO_CHECK"
+    _submit_completed_run(dpr_pg, source_reference=ref, sha=sha)
+    for suffix in ("findings", "versions", "annexures", "summary"):
         response = dpr_client.get(
             f"/api/v1/bd/customers/{PID}/services/GEO_CHECK/report/{suffix}",
             headers=BD_AUTH,
@@ -591,7 +629,7 @@ def test_bd_report_findings_versions_and_annexures_mirror_customer(
 # tests/test_dpr_release_policy.py's consent_satisfied=False case already
 # covers every one of them in a single place, not just the report route.
 
-_SUB_ROUTES = ["findings", "annexures", "versions"]
+_SUB_ROUTES = ["findings", "annexures", "versions", "summary"]
 
 
 def test_customer_sub_routes_locked_when_unpaid(dpr_client, dpr_pg, vendor):

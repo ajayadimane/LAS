@@ -119,6 +119,56 @@ export interface AnalysisReport {
   disclaimer: string;
 }
 
+/** Mirrors app/services/dpr_agentic/cam_snapshot.py's Money. */
+export interface Money {
+  amount: number;
+  currency: string;
+  unit: "absolute" | "lakh" | "crore";
+}
+
+/** Mirrors app/services/dpr_agentic/cam_snapshot.py's CalculationTrace. */
+export interface CalculationTrace {
+  formula: string;
+  inputs: Record<string, string>;
+  computed_value: number | null;
+  status: "COMPUTED" | "NOT_COMPUTABLE";
+  reason_not_computable: string | null;
+  calculation_version: string;
+}
+
+export type ReadinessStatus =
+  | "READY_FOR_SUBMISSION_REVIEW"
+  | "CORRECTIONS_REQUIRED"
+  | "EXPERT_REVIEW_REQUIRED"
+  | "INSUFFICIENT_INFORMATION";
+
+/** Section 17 dashboard status card -- mirrors report_http.resolve_summary(). */
+export interface ReportSummary {
+  version: number;
+  readiness_status: ReadinessStatus;
+  must_fix_count: number;
+  should_fix_count: number;
+  good_to_fix_count: number;
+  critical_findings_count: number;
+  outstanding_clarifications_count: number;
+  evidence_references_count: number;
+  financial_overview: {
+    project_cost_total: Money | null;
+    requested_loan: Money | null;
+    promoter_contribution: Money | null;
+    funding_gap: CalculationTrace | null;
+    average_dscr: CalculationTrace | null;
+  };
+}
+
+/** Mirrors report_http.resolve_annexures()'s dict shape. */
+export interface ReportAnnexures {
+  project_cost: unknown;
+  means_of_finance: unknown;
+  financial_ratios: unknown;
+  scenario_analysis: unknown[];
+}
+
 /** The service catalogue and fees, from the middleware's config. */
 export const useCatalog = () =>
   useQuery({
@@ -168,8 +218,17 @@ export const documentPath = (bdId: string, personId: string, code: string) =>
 export const reportPdfPath = (bdId: string, personId: string, code: string) =>
   `${customerPath(bdId, personId, `services/${encodeURIComponent(code)}/report`)}&format=pdf`;
 
+/** Where one service's Annexure B figures are served (project cost, means
+ * of finance, financial ratios, scenario analysis) -- the same gated
+ * report as useServiceReport, reshaped, never a separate render. */
+export const reportAnnexuresPath = (bdId: string, personId: string, code: string) =>
+  customerPath(bdId, personId, `services/${encodeURIComponent(code)}/report/annexures`);
+
 const reportKey = (bdId: string, personId: string, code: string) =>
   ["bd", bdId, "customers", personId, "services", code, "report"];
+
+const reportSummaryKey = (bdId: string, personId: string, code: string) =>
+  ["bd", bdId, "customers", personId, "services", code, "report-summary"];
 
 /**
  * Uploads one service's document and queues its DPR analysis in the same
@@ -207,6 +266,27 @@ export const useServiceReport = (bdId: string, personId: string, code: string, e
     enabled,
     retry: false,
     refetchInterval: (query) => (query.state.data ? false : query.state.error?.status === 403 ? 10_000 : false),
+  });
+
+/** Section 17 status card for one service's report: readiness, Must/Should/
+ * Good counts, financial overview. Same gate and polling behaviour as
+ * useServiceReport, served by the same backend call -- just a smaller body. */
+export const useServiceReportSummary = (bdId: string, personId: string, code: string, enabled: boolean) =>
+  useQuery<ReportSummary, ApiError>({
+    queryKey: reportSummaryKey(bdId, personId, code),
+    queryFn: () => api.get<ReportSummary>(customerPath(bdId, personId, `services/${encodeURIComponent(code)}/report/summary`)),
+    enabled,
+    retry: false,
+    refetchInterval: (query) => (query.state.data ? false : query.state.error?.status === 403 ? 10_000 : false),
+  });
+
+/** Annexure B figures, fetched only once the user opens that panel. */
+export const useServiceReportAnnexures = (bdId: string, personId: string, code: string, enabled: boolean) =>
+  useQuery<ReportAnnexures, ApiError>({
+    queryKey: [...reportKey(bdId, personId, code), "annexures"],
+    queryFn: () => api.get<ReportAnnexures>(reportAnnexuresPath(bdId, personId, code)),
+    enabled,
+    retry: false,
   });
 
 /** BD: authorize a customer's own request. Pay later needs bd_consent (standing guarantor) and moves money. */

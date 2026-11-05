@@ -41,6 +41,7 @@ from app.services.dpr_agentic.report_http import (
     resolve_findings,
     resolve_report,
     resolve_report_pdf,
+    resolve_summary,
     resolve_versions,
 )
 from app.services.dpr_agentic.schemas import AnalysisResult, Finding
@@ -525,6 +526,36 @@ async def get_report_annexures(
     same gated report as `.../report`."""
     engine = _dpr_engine(request, settings)
     return await resolve_annexures(
+        engine=engine,
+        person_id=person_id,
+        code=code,
+        broker_id=bd_id,
+        service=service,
+        ctx=ctx,
+        response=response,
+        version=version,
+        not_found=_NOT_FOUND,
+        unknown_service=_unknown_service,
+    )
+
+
+@router.get("/customers/{person_id}/services/{code}/report/summary")
+async def get_report_summary(
+    person_id: str,
+    code: str,
+    request: Request,
+    response: Response,
+    version: int | None = Query(default=None, ge=1),
+    bd_id: str = Depends(get_bd_id),
+    settings: Settings = Depends(get_app_settings),
+    service: EnrolmentService = Depends(get_enrolment_service),
+    ctx: VendorCallContext = Depends(get_authenticated_context),
+) -> dict:
+    """Dashboard status card (Section 17): readiness status, Must/Should/
+    Good finding counts, a short financial overview and an outstanding-
+    items count -- for the same gated report as `.../report`."""
+    engine = _dpr_engine(request, settings)
+    return await resolve_summary(
         engine=engine,
         person_id=person_id,
         code=code,

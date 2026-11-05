@@ -1999,3 +1999,223 @@ execution continued normally) rather than corrupting anything or hanging
 -- re-run with the guard added, it produced a real PDF. No code change
 needed; recorded here so a future ad hoc script (or a REPL/`python -c`
 invocation) doesn't rediscover this the hard way.
+
+## Milestone 6, completed for real: Section 17 dashboard, stub wallet client, Playwright click-through, upload-to-report timing (2026-11-05)
+
+The user flagged that the previous round's milestone-6 report was premature
+against Section 17. This round does the actual work and a real,
+tool-verified click-through.
+
+### Repo-wide test isolation -- status check (as asked)
+
+Already done and verified in the previous round ("Repo-wide test
+isolation, before milestone 6" above); nothing new needed here. Re-ran the
+full suite again this round on a fresh throwaway Postgres: same result,
+zero external calls, one pre-existing unrelated failure
+(`test_dpr_log_safety.py::test_process_one_sets_current_run_id_for_the_whole_call_chain`,
+see "Errors and fixes" below for its actual root cause, now identified).
+The five PROGRESS.md answers from that round, restated exactly as asked:
+
+1. **Page 4 per-scenario thresholds**: `dpr_as_written` (Rs.750/acre) ->
+   622 acres/yr accounting, 193 acres/yr cash, **483 acres/yr** debt-service
+   threshold; `corrected_costs` (Rs.900/acre) -> 726 / 226 / **563**
+   acres/yr. Shared Year-1 inputs: price/unit Rs.1,800/acre, depreciation
+   Rs.4.50L, interest on term loan Rs.2.03L, principal due Rs.3.21L, tax rate
+   11.71%.
+2. **13-issue destination list**: see "The 13-issue audit" section
+   earlier in this file. 6 of 13 map to F0001-F0006 (F0005 a confirmed
+   6-way merge of one issue); 5 are not modeled by any check in this
+   pipeline; 2 (#7 break-even cost, #13 running cost/acre) are computed
+   but have no dedicated Finding.
+3. **`(run_id, snapshot_sha256)` idempotency constraint**: migration 006,
+   `dpr_report_artifacts_run_snapshot_key`; `store_report()` checks for a
+   match before computing a version, returning the existing version
+   unchanged rather than appending.
+4. **Version scope across re-analysis**: versions are scoped to
+   `source_reference` (migration 006), not `run_id` -- a DPR correction
+   always gets a new `run_id` (confirmed by reading `jobs.submit()`'s
+   idempotency key directly) but continues the same version history.
+5. **Database-level immutability, including the `report_pdf` rule**: a
+   `BEFORE UPDATE OR DELETE` trigger rejects every `DELETE` and every
+   `UPDATE` except forward-only `render_status`/`pdf_render_status`
+   transitions; `report_pdf` may only be written once, in the same
+   statement that moves `pdf_render_status` off `PENDING`.
+
+**Internal-endpoint rate limiter: confirmed in-memory, per-process** (same
+answer as last round -- `dpr_analysis.py`'s `_rejections_by_ip` is a plain
+module-level dict; behind more than one worker process the real cap is
+the configured limit multiplied by the process count).
+
+### Section 17: dashboard status card, both sides (new this round)
+
+New backend endpoint `GET .../report/summary` (customer and BD routers,
+`report_http.resolve_summary()`), gated through the exact same
+`access_report()`/`_gate()` as every other report route -- no new
+authorization logic, just a smaller, dashboard-shaped projection of the
+same `build_snapshot_from_analysis()` reshape `resolve_annexures()` already
+uses. Returns: `readiness_status` (the same four-value enum the CAM PDF's
+Page 1 badge uses), `must_fix_count`/`should_fix_count`/`good_to_fix_count`
+(from each finding's existing `priority` field -- no new classification
+logic), `critical_findings_count`, `outstanding_clarifications_count`,
+`evidence_references_count`, and a `financial_overview` (project cost,
+requested loan, promoter contribution, funding gap, average DSCR -- each
+`None` rather than fabricated when the engine hasn't computed it, same
+"not available" discipline as everywhere else in this pipeline).
+
+Frontend: `ReportSummarySection.tsx` is a new **pure presentational**
+component (no hooks of its own) rendering the status pill, the
+Must/Should/Good tiles, the financial overview, the outstanding-items and
+evidence-reference counts, the PDF/annexures buttons, and three explicit
+states -- **locked** (403, same reasons list as before), **failed-render**
+(the PDF button's `DocumentPreview` surfaces `report_store`'s own "PDF for
+this report version is not available" message verbatim), and **error**
+(anything else, shown as-is). Both `AnalysisReportCard.tsx` (BD) and the
+new `CustomerAnalysisReport.tsx` (customer) fetch their own data with
+their own routes and pass it into this one shared component -- the
+dashboards share the card, not just the styling. Wired into the customer
+dashboard via a new "View report" button + dialog on `CustomerHome.tsx`'s
+service rows (there was no report UI there before this round; only the BD
+side had one). New hooks: `useServiceReportSummary`/`useServiceReportAnnexures`
+(services.ts, BD) and their `useMy*` mirrors (customer.ts).
+
+Backend tests: `test_report_summary_endpoint_returns_readiness_and_counts`,
+`summary` added to the existing `_SUB_ROUTES` locked/wrong-owner sweep (so
+it inherits every one of those checks for free), and to the
+findings/versions/annexures BD-mirrors-customer test.
+
+### Stub wallet payment client (new this round)
+
+`app/services/stub_wallet_client.py`: a `StubWalletPaymentClient` that
+fakes a successful pool-to-main transfer and never makes an HTTP call.
+Wired into `EnrolmentService._transfer()` behind a new
+`Settings.vendor_wallet_stub_enabled` flag, which a new
+`model_validator` refuses to be `True` unless `environment` is
+`local`/`dev`/`test` -- raises `ValidationError` otherwise, so it can
+never silently reach a real deployment's config. Tests:
+`tests/test_stub_wallet_client.py` -- the validator's refusal/acceptance,
+and a full pay-later flow proving the real vendor's
+`/transfer/systemAccountPayment` is never called while the custom-field
+writes are byte-identical to the real-vendor flow.
+
+### Playwright click-through (new this round, with real screenshots)
+
+Installed `playwright` as a pinned frontend devDependency (`1.49.1`) and
+its Chromium build. Built `scripts/playwright_server.py`: runs the real
+FastAPI app with the vendor faked by **respx** (the identical mocking
+mechanism the pytest suite already uses, not a new approach) and a
+throwaway Postgres, plus `vendor_wallet_stub_enabled=True`. Seeds three
+customers under one BD: paid with **two** report versions, a document
+uploaded but payment never verified (locked), and one whose PDF render was
+deliberately forced to fail (`_render_cam_pdf` monkeypatched to `None` for
+that one seed only -- never a real WeasyPrint hang). No real vendor
+credentials, no real Gemini call, no real money movement anywhere in this
+path.
+
+`frontend/scripts/playwright_click_through.mjs` drives a real Chromium
+against this server (fronted by a real Vite dev server) and captures five
+scenarios to `docs/review/frontend/`:
+
+- `01-customer-paid-report-summary.png` -- customer dashboard, "View
+  report" dialog, full Section 17 card (readiness, 0/0/0 Must/Should/Good,
+  financial overview, version 2).
+- `02-unpaid-customer-locked.png` -- BD's customer-preview page, inline
+  "Analysis reports" section, the explicit `PAYMENT_NOT_VERIFIED` locked
+  message with the document already uploaded (proving this is the payment
+  gate, not "nothing happened yet").
+- `03-bd-view-paid-customer.png` -- same card on the BD side, inline on
+  the page (no dialog needed there).
+- `04-failed-pdf-render.png` -- clicking "View / download PDF" opens the
+  dialog and shows "The PDF for this report version is not available."
+  verbatim, while the rest of the card (readiness, counts) still renders
+  normally from the JSON report, which never depended on the PDF.
+- `05-older-version-v1-report-json.png` -- `?version=1` served distinctly
+  from the latest (`v2`'s document_sha256 differs), proving the versioned
+  store actually serves history, not just the latest.
+
+One real bug was caught and fixed by this exercise, not simulated: the
+seed script initially omitted the vendor's top-level `personId` field (it
+only needed `mobileNumber` for the BD-list/person-lookup tests this
+pattern was copied from), which left `BdCustomer.person_id` null on the
+BD's customer-preview page and silently stuck `useCustomerServices` at
+`enabled: false` forever -- "Loading payments..." with no network error
+to see, a genuinely confusing failure mode caught only because something
+was actually being clicked and screenshotted, not just asserted against
+in a unit test.
+
+**What this click-through is and isn't**: it is a real Chromium, a real
+Vite dev server, and a real FastAPI app with a real Postgres behind it --
+not a simulation. It is not a test of the real vendor sandbox or a real
+Gemini call; those remain gated by the standing live-vendor permission
+(sandbox reads/writes) and the separate real-billing concern (Gemini),
+respectively, neither touched by this exercise.
+
+### Upload-to-report latency (new this round, measured)
+
+`scripts/dpr_worker.py`'s `process_one()` already logged its own
+processing time (`dpr_run_completed duration_ms=...`), but that excludes
+however long a run sits `QUEUED` before a worker claims it -- not what the
+user actually experiences between uploading a document and the report
+being ready. Added a second log line, `dpr_upload_to_report_ms`, computed
+from `dpr_analysis_runs.created_at` (set at `submit()` time, the same
+request that stores the uploaded document) to the moment the run is
+marked `COMPLETED` -- by which point the report, PDF included, is already
+stored. `jobs.get_run()` now also returns `created_at`.
+
+**Measured, synthetically** (`tests/test_dpr_upload_to_report_timing.py`,
+a `_FastGemini` stub returning instantly, real Postgres, real subprocess
+WeasyPrint render, logged value read directly off a real run):
+**`dpr_upload_to_report_ms=11292`** (~11.3s) of pure infrastructure
+overhead on this machine -- almost entirely the WeasyPrint subprocess
+(font subsetting in particular; `dpr_run_completed`'s own figure was
+11286ms of that), not the DB round trips, which are negligible by
+comparison. This number will vary with the machine and is not a
+production SLA. It is **not** a real-world latency estimate -- it
+deliberately excludes the one dominant real cost, actual Gemini
+inference across 10 orchestrator roles plus one extraction call, which on
+past real (non-test) runs has taken single-digit minutes. Measuring that
+honestly needs a real, billed Gemini call against a real document, which
+-- like moving real money -- is something this file's standing
+instructions ask to be asked about first, every time, rather than run
+silently as a side effect of an unrelated task. Not done here; offered as
+a next step if wanted.
+
+### Errors and fixes (this round)
+
+- **`test_process_one_sets_current_run_id_for_the_whole_call_chain`'s
+  actual root cause, now identified** (previously just flagged as "one
+  pre-existing unrelated failure" across several rounds): the test
+  constructs `settings` as a bare `SimpleNamespace` missing
+  `cam_engine_enabled`/`dpr_cam_pdf_render_timeout_seconds`, and
+  `process_one()` evaluates `settings.cam_engine_enabled` as a keyword
+  argument to `run_claimed_analysis()` before any analysis runs --
+  `AttributeError`, caught by `process_one`'s own `except Exception`,
+  logged as `dpr_run_failed`, never raised. The sibling test
+  `test_worker_never_logs_page_text_or_llm_output` uses the identical
+  `SimpleNamespace` shape and still passes, because its assertion (no
+  canary text in logs) holds trivially whether or not anything actually
+  ran. This round's new timing test
+  (`test_dpr_upload_to_report_timing.py`) avoids the trap by constructing
+  a real `Settings()` instead. Not fixed in the pre-existing test itself
+  (out of scope for this round's ask), but the actual cause is now on
+  record rather than "known flaky."
+- **Seed script database collision**: running an ad hoc seeding/debug
+  script against the *same* throwaway Postgres the full pytest suite was
+  still using concurrently produced a real
+  `store_report: exceeded 5 attempts racing concurrent writers` failure --
+  a genuine concurrency symptom, not a bug, caused by both processes
+  writing report versions under the same hardcoded test `source_reference`
+  at once. Fixed by always using a dedicated throwaway Postgres container
+  per concurrent activity in this round, never sharing one across an
+  active pytest run and an ad hoc script.
+- **Seed data missing the vendor's `personId` field**: see the Playwright
+  section above.
+
+### Status: Section 17 and the Playwright click-through are complete
+
+Backend: `ruff check`/`ruff format --check` clean; full suite green
+(same one pre-existing, now-explained failure). Frontend: `npm run
+typecheck` and `npm run build` clean. Playwright: five real screenshots in
+`docs/review/frontend/`, one real bug found and fixed along the way.
+Next: milestone 7 (the full Annexure B / CAM Annexures document --
+`/report/annexures` today returns the computed figures as JSON, not yet a
+rendered Annexure B document in its own right).

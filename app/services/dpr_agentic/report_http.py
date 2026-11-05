@@ -208,6 +208,96 @@ async def resolve_annexures(
     }
 
 
+async def resolve_summary(
+    *,
+    engine,
+    person_id: str,
+    code: str,
+    broker_id: str | None,
+    service: EnrolmentService,
+    ctx: VendorCallContext,
+    response: Response,
+    version: int | None,
+    not_found: HTTPException,
+    unknown_service: Callable[[str], HTTPException],
+) -> dict:
+    """Section 17's dashboard summary: readiness status, Must/Should/Good
+    finding counts, a short financial overview and an outstanding-items
+    count -- for a status card that doesn't need the full report or
+    annexures payload. Same gate, same snapshot reshape as
+    resolve_annexures(); adds nothing that isn't already in the stored
+    AnalysisResult.
+    """
+    report = await resolve_report(
+        engine=engine,
+        person_id=person_id,
+        code=code,
+        broker_id=broker_id,
+        service=service,
+        ctx=ctx,
+        response=response,
+        version=version,
+        not_found=not_found,
+        unknown_service=unknown_service,
+    )
+    ref = source_reference(person_id, code)
+    resolved_version = version
+    if resolved_version is None:
+        versions = list_report_versions(engine, ref)
+        resolved_version = versions[-1] if versions else 0
+    snapshot = build_snapshot_from_analysis(
+        report,
+        report_id=ref,
+        report_version=resolved_version,
+        analysis_run_id=report.wallet_document_id,
+    )
+    priority_counts = {"must_fix": 0, "should_fix": 0, "good_to_fix": 0}
+    evidence_references_count = 0
+    for f in snapshot.findings:
+        if f.priority.value in priority_counts:
+            priority_counts[f.priority.value] += 1
+        evidence_references_count += len(f.evidence) + len(f.source_pages)
+    ra = snapshot.readiness_assessment
+    ratios = snapshot.financial_ratios
+    return {
+        "version": resolved_version,
+        "readiness_status": ra.status.value,
+        "must_fix_count": priority_counts["must_fix"],
+        "should_fix_count": priority_counts["should_fix"],
+        "good_to_fix_count": priority_counts["good_to_fix"],
+        "critical_findings_count": ra.critical_findings_count,
+        "outstanding_clarifications_count": ra.outstanding_clarifications_count,
+        "evidence_references_count": evidence_references_count,
+        "financial_overview": {
+            "project_cost_total": (
+                snapshot.project_cost.dpr_reported_total.model_dump(mode="json")
+                if snapshot.project_cost.dpr_reported_total
+                else None
+            ),
+            "requested_loan": (
+                snapshot.means_of_finance.requested_loan.model_dump(mode="json")
+                if snapshot.means_of_finance.requested_loan
+                else None
+            ),
+            "promoter_contribution": (
+                snapshot.means_of_finance.promoter_contribution.model_dump(mode="json")
+                if snapshot.means_of_finance.promoter_contribution
+                else None
+            ),
+            "funding_gap": (
+                snapshot.means_of_finance.funding_gap.model_dump(mode="json")
+                if snapshot.means_of_finance.funding_gap
+                else None
+            ),
+            "average_dscr": (
+                ratios.average_dscr.model_dump(mode="json")
+                if ratios.average_dscr
+                else None
+            ),
+        },
+    }
+
+
 async def resolve_versions(
     *,
     engine,

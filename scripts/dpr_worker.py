@@ -22,6 +22,7 @@ import argparse
 import asyncio
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -200,6 +201,7 @@ async def process_one(
         return rid
 
     started = time.monotonic()
+    run_created_at = (get_run(engine, run_id) or {}).get("created_at")
     run_id_token = CURRENT_RUN_ID.set(run_id)
     try:
         await run_claimed_analysis(
@@ -217,6 +219,22 @@ async def process_one(
             run_id,
             int((time.monotonic() - started) * 1000),
         )
+        # Section 17/the user's own request: not just this worker's own
+        # processing time, but the full upload -> report-ready latency a
+        # customer actually experiences, including however long the run sat
+        # QUEUED before this worker claimed it. created_at is set at
+        # submit() time, i.e. the same request that stores the uploaded
+        # document (document_queue.upload_and_queue_analysis); the report
+        # (PDF included) is already stored by the time this line runs.
+        if run_created_at is not None:
+            upload_to_report_ms = int(
+                (datetime.now(timezone.utc) - run_created_at).total_seconds() * 1000
+            )
+            logger.info(
+                "dpr_upload_to_report_ms run_id=%s duration_ms=%d",
+                run_id,
+                upload_to_report_ms,
+            )
     except Exception as exc:  # noqa: BLE001 - run_claimed_analysis already
         # recorded this as a FAILED run; log it here only for operator
         # visibility, never re-raise (one bad document must not kill the loop).
