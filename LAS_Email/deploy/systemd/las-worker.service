@@ -1,0 +1,27 @@
+# Celery workers: mail pipeline, service processing, billing, jobs.
+[Unit]
+After=network-online.target postgresql.service redis-server.service
+Wants=network-online.target
+
+[Service]
+User=las
+Group=las
+WorkingDirectory=/opt/las-email
+EnvironmentFile=/opt/las-email/.env
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/srv/las /opt/las-email/var
+# Starting points, not measured limits — tune to this server's actual CPU/RAM. Sized higher than
+# the other units: --concurrency 4 means up to 4 OCR/LiteParse/WeasyPrint jobs running at once.
+MemoryMax=4G
+CPUQuota=400%
+TasksMax=1024
+LimitNOFILE=65536
+ExecStart=/opt/las-email/.venv/bin/celery -A las.worker.celery_app worker -l info -Q las --concurrency 4
+TimeoutStopSec=300
+
+[Install]
+WantedBy=multi-user.target
