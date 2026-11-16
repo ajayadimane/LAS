@@ -374,3 +374,22 @@ table.cam-table th { font-size: 11px; color: var(--text-tertiary); font-weight: 
   font-size: 13px; color: var(--text-secondary);
   text-align: right; flex-shrink: 0; width: 180px;
 }
+
+/* Production CAM: the summary includes a fourth "findings" block that was
+   not in the original visual reference. Compact its spacing to retain one
+   A4 executive-summary page instead of splitting it over two sheets. */
+.cam-page:first-child .cam-header { padding-top: 6mm; padding-bottom: 4mm; }
+.cam-page:first-child .cam-main { padding-top: 4mm; }
+.cam-page:first-child .cam-main > * + * { margin-top: 9px; }
+.cam-page:first-child .cam-section { gap: 6px; }
+.cam-page:first-child .cam-h1 { font-size: 29px; }
+.cam-page:first-child .cam-lede { font-size: 13px; line-height: 1.35; }
+.cam-page:first-child .cam-metarow { padding-top: 8px; gap: 9px; }
+.cam-page:first-child .cam-callout { padding: 11px 16px; }
+.cam-page:first-child .cam-callout__headline { font-size: 18px; }
+.cam-page:first-child .cam-callout__body { font-size: 12px; line-height: 1.35; }
+.cam-page:first-child .cam-stat { padding: 9px 12px; }
+.cam-page:first-child .cam-stat__value { font-size: 19px; }
+.cam-page:first-child .cam-check { padding: 8px; gap: 3px; }
+.cam-page:first-child .cam-check__icon { display: none; }
+.cam-page:first-child .cam-footer { margin-top: 10px; padding-top: 7px; padding-bottom: 5mm; }

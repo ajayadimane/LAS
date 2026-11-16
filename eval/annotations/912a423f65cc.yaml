@@ -1,0 +1,79 @@
+document_sha256: 912a423f65cc1e4b462db011ef961245dd5d1b5d7ed81f594f7d9e4a08201f85
+label: approved
+reviewed: false
+expected:
+  cost_of_project_stated_total: 30.0
+  means_of_finance_stated_total: 30.0
+  standard_interest_rate_pct: 9.0
+  term_loan_amount: 22.5
+  loan_tenor_years: 7.0
+  fund_flow_sources_total: 102.65
+  fund_flow_applications_total: 62.36
+  years:
+    1:
+      revenue: 21.6
+      operating_expenses: 15.3
+      net_profit: 3.77
+      depreciation: 4.5
+      interest_on_term_loan: 2.03
+      principal_repayment: 3.21
+      interest_repayment: 2.03
+      stated_dscr: 1.58
+    2:
+      revenue: 22.68
+      operating_expenses: 15.9
+      net_profit: 4.51
+      depreciation: 4.5
+      interest_on_term_loan: 1.74
+      principal_repayment: 3.21
+      interest_repayment: 1.74
+      stated_dscr: 1.82
+    3:
+      revenue: 23.82
+      operating_expenses: 16.53
+      net_profit: 5.29
+      depreciation: 4.5
+      interest_on_term_loan: 1.45
+      principal_repayment: 3.21
+      interest_repayment: 1.45
+      stated_dscr: 2.1
+    4:
+      revenue: 25.01
+      operating_expenses: 17.22
+      net_profit: 6.05
+      depreciation: 4.5
+      interest_on_term_loan: 1.16
+      principal_repayment: 3.21
+      interest_repayment: 1.16
+      stated_dscr: 2.41
+    5:
+      revenue: 26.26
+      operating_expenses: 17.92
+      net_profit: 6.86
+      depreciation: 4.5
+      interest_on_term_loan: 0.87
+      principal_repayment: 3.21
+      interest_repayment: 0.87
+      stated_dscr: 2.78
+    6:
+      revenue: 27.57
+      operating_expenses: 18.68
+      net_profit: 7.67
+      depreciation: 4.5
+      interest_on_term_loan: 0.58
+      principal_repayment: 3.21
+      interest_repayment: 0.58
+      stated_dscr: 3.21
+    7:
+      revenue: 28.95
+      operating_expenses: 17.99
+      net_profit: 10.0
+      depreciation: 3.0
+      interest_on_term_loan: 0.29
+      principal_repayment: 3.24
+      interest_repayment: 0.29
+      stated_dscr: 3.68
+must_find: []
+must_not_find: []
+candidate_must_find_titles:
+- Missing Vendor Pro-Forma Invoice / Equipment Quotation

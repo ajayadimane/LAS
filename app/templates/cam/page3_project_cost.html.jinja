@@ -54,7 +54,7 @@
       <span class="cam-badge {{ 'cam-badge--good-to-fix' if ctx3.cost_check.kind == 'ok' else 'cam-badge--should-fix' }}">{{ ctx3.cost_check.label }}</span>
       {% endif %}
       {% else %}
-      <p class="cam-empty-note">No itemized cost breakdown is available for this project yet.</p>
+      <p class="cam-empty-note">{% if ctx3.cost_total %}DPR-reported project cost: <strong>{{ ctx3.cost_total }}</strong>. The itemized cost table needs extraction or verification.{% else %}No itemized cost breakdown is available for this project yet; project cost still requires verification.{% endif %}</p>
       {% endif %}
     </section>
 
@@ -85,8 +85,9 @@
       <p class="cam-empty-note">Funding split is not yet available for this project.</p>
       {% endif %}
       <div class="cam-tile" style="margin-top:6px;">
-        <div class="cam-tile__label">Capital subsidy</div>
+        <div class="cam-tile__label">Capital subsidy (verification status)</div>
         <div class="cam-tile__value">{{ ctx3.subsidy_label }}</div>
+        {% if ctx3.claimed_scheme %}<div class="cam-tile__label">Scheme mentioned in DPR (not eligibility confirmation): {{ ctx3.claimed_scheme }}</div>{% endif %}
       </div>
     </section>
 
@@ -109,7 +110,13 @@
         </tbody>
       </table>
       {% else %}
-      <p class="cam-empty-note">No DPR-vs-recomputed corrections are available for this project yet.</p>
+      <p class="cam-empty-note">No DPR-vs-recomputed corrections are available for this project yet. Numerical extraction is incomplete or no differences were verified.</p>
+      {% endif %}
+      {% if ctx3.action_corrections %}
+      <h4 class="cam-h4">Other corrections requiring attention</h4>
+      {% for item in ctx3.action_corrections %}
+      <p class="cam-empty-note"><strong>{{ item.title }}</strong> — {{ item.action | truncate(135, True) }} {% if item.ref %}({{ item.ref }}){% endif %}</p>
+      {% endfor %}
       {% endif %}
     </section>
   </main>

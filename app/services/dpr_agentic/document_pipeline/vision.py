@@ -42,6 +42,8 @@ def render_pages_to_images(
     images = []
     with pymupdf.open(stream=data, filetype="pdf") as doc:
         if pages is not None:
+            if len(pages) > max_pages:
+                raise ValueError("Too many pages require Gemini vision recovery")
             targets = [p - 1 for p in pages if 1 <= p <= doc.page_count]
         else:
             targets = list(range(min(doc.page_count, max_pages)))
@@ -51,7 +53,7 @@ def render_pages_to_images(
     return images
 
 
-async def extract_pages_via_vision(gemini, images: list[bytes]) -> list[dict]:
+async def extract_pages_via_vision(gemini, images: list[bytes], *, page_numbers: list[int] | None = None) -> list[dict]:
     """One Gemini call per image, not batched, to bound each request's size.
 
     Any page's OCR failure fails the whole call: partial text would mean
@@ -62,9 +64,11 @@ async def extract_pages_via_vision(gemini, images: list[bytes]) -> list[dict]:
     role_token = CURRENT_ROLE.set("vision_ocr")
     try:
         pages = []
+        if page_numbers is not None and len(page_numbers) != len(images):
+            raise ValueError("Target page numbers do not match rendered images")
         for i, image in enumerate(images, start=1):
             text = await gemini.ocr_page(image)
-            pages.append({"page": i, "text": text})
+            pages.append({"page": page_numbers[i - 1] if page_numbers else i, "text": text})
         return pages
     finally:
         CURRENT_ROLE.reset(role_token)

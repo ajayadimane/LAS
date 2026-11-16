@@ -36,6 +36,8 @@ async def run_claimed_analysis(
     lease_seconds: int = 900,
     heartbeat_interval: float | None = None,
     cam_engine_enabled: bool = False,
+    grounding_enabled: bool = False,
+    grounding_cache=None,
 ) -> bool:
     token = claim(engine, run_id, lease_seconds=lease_seconds)
     if token is None:
@@ -55,6 +57,8 @@ async def run_claimed_analysis(
             checkpointer=checkpointer,
             thread_id=run_id,
             cam_engine_enabled=cam_engine_enabled,
+            grounding_enabled=grounding_enabled,
+            grounding_cache=grounding_cache,
         )
         ref = await store_result(run_id, result)
         if not ref:

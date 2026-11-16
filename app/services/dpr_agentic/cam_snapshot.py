@@ -24,7 +24,10 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-CAM_SNAPSHOT_SCHEMA_VERSION = "1.0.0"
+# 2.0.0: the management-approved five-page "DPR Pre-submission Review"
+# layout (cam_render_v2.py) and the fields it prints. 1.x snapshots keep
+# the original six-page layout, so an issued report never changes.
+CAM_SNAPSHOT_SCHEMA_VERSION = "2.0.0"
 
 Currency = Literal["INR"]
 
@@ -101,7 +104,11 @@ class ProjectProfile(BaseModel):
     business_subsector: str | None = None
     project_location: str | None = None
     project_purpose: str | None = None
+    scheme_claimed: str | None = None
     machinery_equipment: list[str] = Field(default_factory=list)
+    # The bank the customer applies to: the BankName service detail, else
+    # the DPR's own statement.
+    lending_bank: str | None = None
 
 
 class DocumentReference(BaseModel):
@@ -279,6 +286,10 @@ class VerifiedFinding(BaseModel):
         "open", "borrower_confirmed", "corrected", "rejected"
     ] = "open"
     requires_borrower_confirmation: bool = False
+    # Short "why it matters" line and target value for the action plan
+    # (page 3 of the 2.x layout). None: the renderer falls back by category.
+    why_it_matters: str | None = None
+    should_be: str | None = None
 
 
 class CorrectionProposal(BaseModel):
@@ -314,8 +325,35 @@ class PolicyStatement(BaseModel):
     text: str
     status: PolicyStatementStatus
     source_url: str | None = None
+    # The site the statement came from (e.g. "sbi.co.in"); source_url is
+    # Google's grounding redirect, which does not show it.
+    source_domain: str | None = None
     effective_date: datetime | None = None
     retrieval_date: datetime | None = None
+
+
+DOCUMENTS_NOT_VERIFIED = (
+    "KYC: identity and address proof, PAN",
+    "Land or premises records",
+    "Credit bureau report",
+)
+
+
+class DocumentVerificationNotice(BaseModel):
+    """What this analysis does not verify, and who does: the borrower's
+    documents are checked by the regulated entity under one of our services,
+    which collects them and charges for it. Frozen into the snapshot with
+    the fee at the time, so a later fee change never rewrites an issued
+    report."""
+
+    provider: str
+    service_name: str
+    service_fee_inr: Decimal | None = None
+    documents: list[str] = Field(default_factory=lambda: list(DOCUMENTS_NOT_VERIFIED))
+    # The vendor quotation is validated by our own service, not the
+    # provider (IFPL does not cover it).
+    quotation_service_name: str | None = None
+    quotation_service_fee_inr: Decimal | None = None
 
 
 class PolicyAssessment(BaseModel):
@@ -355,12 +393,110 @@ class ReadinessDimensionScore(BaseModel):
 
 class ReadinessAssessment(BaseModel):
     status: ReadinessStatus
-    score_mode: Literal["status", "dimensions"] = "status"
+    # "checks": total_score is the share of checks passed (checks_passed of
+    # checks_total), the 2.x cover's readiness circle.
+    score_mode: Literal["status", "dimensions", "checks"] = "status"
     total_score: int | None = Field(default=None, ge=0, le=100)
+    checks_passed: int | None = None
+    checks_total: int | None = None
     dimension_scores: list[ReadinessDimensionScore] = Field(default_factory=list)
     critical_findings_count: int = 0
     outstanding_clarifications_count: int = 0
     subsidy_benefits: list[SubsidyBenefit] = Field(default_factory=list)
+
+
+class ReviewMeasure(BaseModel):
+    """One row of "Your figures, recomputed" (2.x page 4)."""
+
+    measure: str
+    dpr_value: str | None = None
+    recomputed: str | None = None
+    baseline: str
+    status: Literal["meets", "below", "pending"] = "pending"
+
+
+class AssumptionRow(BaseModel):
+    """One row of "Assumptions to revise" (2.x page 4): the DPR's figure,
+    the reference it was compared with, and the figure we suggest."""
+
+    assumption: str
+    dpr_value: str | None = None
+    reference: str | None = None
+    suggested: str | None = None
+    flagged: bool = False
+
+
+class DocumentStatus(BaseModel):
+    """One row of "Documents to prepare" (2.x page 5)."""
+
+    document: str
+    status: Literal["available", "missing", "update", "to_confirm"] = "to_confirm"
+    action: str | None = None
+
+
+class SchemeColumn(BaseModel):
+    """One scheme's column in "Are you applying under the right scheme?"
+    Display strings; None prints as "—"."""
+
+    name: str
+    # Never "eligible": a rules table cannot certify that (the bank does).
+    eligible: Literal["likely", "partly", "no", "not_assessed"] = "not_assessed"
+    cost_ceiling: str | None = None
+    contribution: str | None = None
+    capital_subsidy: str | None = None
+    interest_subvention: str | None = None
+    credit_guarantee: str | None = None
+    tenure_moratorium: str | None = None
+    combinable: str | None = None
+    total_benefit: str | None = None
+
+
+class SchemeGap(BaseModel):
+    criterion: str
+    requires: str
+    dpr_shows: str
+    action: str
+
+
+class SchemeReview(BaseModel):
+    chosen: SchemeColumn | None = None
+    recommended: SchemeColumn | None = None
+    alternative: SchemeColumn | None = None
+    verdict: Literal["correct", "better_available", "not_eligible", "not_assessed"] = (
+        "not_assessed"
+    )
+    recommendation: str = ""
+    gaps: list[SchemeGap] = Field(default_factory=list)
+
+
+class StressTest(BaseModel):
+    """"How the bank will stress-test this" (2.x page 4)."""
+
+    price_fall_pct: int = 10
+    average_dscr: Decimal | None = None
+    minimum_dscr: Decimal | None = None
+    minimum_year: str | None = None
+    most_sensitive: str | None = None
+
+
+class KycVerification(BaseModel):
+    """Credit and KYC results from the regulated entity (IFPL, Value
+    Addition service), received through its API. Statuses only -- never a
+    PAN or Aadhaar number."""
+
+    provider: str = "IFPL"
+    consent_date: datetime | None = None
+    credit_score: int | None = None
+    credit_band: Literal["good", "fair", "poor"] | None = None
+    overdues: str | None = None
+    write_offs: str | None = None
+    pan: Literal["verified", "mismatch"] | None = None
+    aadhaar: Literal["verified", "mismatch"] | None = None
+    address: Literal["verified", "mismatch"] | None = None
+    name_dpr_kyc: Literal["match", "differs"] | None = None
+    name_kyc_land: Literal["match", "differs"] | None = None
+    location_dpr_land: Literal["match", "differs"] | None = None
+    before_you_apply: list[str] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------------
@@ -393,6 +529,19 @@ class CAMSnapshot(BaseModel):
     policy_assessment: PolicyAssessment
 
     readiness_assessment: ReadinessAssessment
+    # None on reports made before this existed; the renderer then shows the
+    # notice without a fee.
+    document_verification: DocumentVerificationNotice | None = None
+    # 2.x layout. The printed reference "PSR/<year>/<row number>", fixed when
+    # the report is stored; None for 1.x reports and unsaved previews.
+    report_reference: str | None = None
+    financial_review: list[ReviewMeasure] = Field(default_factory=list)
+    assumption_review: list[AssumptionRow] = Field(default_factory=list)
+    document_checklist: list[DocumentStatus] = Field(default_factory=list)
+    kyc_verification: KycVerification | None = None
+    scheme_review: SchemeReview | None = None
+    stress_test: StressTest | None = None
+    re_review_by: datetime | None = None
     report_limitations: list[str] = Field(default_factory=list)
     evidence_registry: list[EvidenceReference] = Field(default_factory=list)
 

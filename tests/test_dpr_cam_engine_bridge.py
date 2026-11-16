@@ -126,12 +126,18 @@ def test_bridge_flags_the_fund_flow_gap():
     assert outputs.fund_flow_gap.computed_value == Decimal("40.29")
     gap_findings = [f for f in findings if "fund flow" in f.title.lower()]
     assert len(gap_findings) == 1
-    assert gap_findings[0].priority == "must_fix"
+    # The reference CAM template rates this exact gap "Good to fix: Add
+    # closing cash" (it is a presentation defect, and the bank approved
+    # this DPR); it used to be must-fix via the generic percentage rule.
+    assert gap_findings[0].priority == "good_to_fix"
+    assert "closing cash" in gap_findings[0].explanation
     # Sources/applications is a two-sided reconciliation, not a single
-    # "DPR stated this, it should be that" figure -- must not be rendered
-    # as one (would misleadingly imply applications is the "correct" sources).
-    assert gap_findings[0].dpr_stated_value is None
+    # "DPR stated this, it should be that" figure -- never rendered as one
+    # (that would imply applications is the "correct" sources): both sides
+    # are shown, and "should be" names the fix, not a figure.
     assert gap_findings[0].recomputed_display_value is None
+    assert gap_findings[0].dpr_stated_value == "Sources 102.65, applications 62.36"
+    assert gap_findings[0].should_be == "Add the closing cash so both sides match"
 
 
 def test_bridge_maps_project_cost_and_means_of_finance():
@@ -237,6 +243,33 @@ def test_bridge_degrades_gracefully_with_partial_inputs():
     assert outputs.fund_flow_gap.computed_value == Decimal("2.00")
     assert outputs.dscr_pat_dep_interest is None
     assert len(findings) == 1
+
+
+def test_bridge_flags_a_sub_lakh_fund_flow_gap():
+    """0.60 lakh = Rs 60,000. The fund-flow check used a 1-lakh tolerance,
+    which silently hid gaps this size; it now uses MONEY_TOLERANCE."""
+    fin = ProjectFinancials(
+        fund_flow_sources_total=ExtractedValue(value=32.80, page=1, status="extracted"),
+        fund_flow_applications_total=ExtractedValue(
+            value=32.20, page=1, status="extracted"
+        ),
+    )
+    outputs, findings = run_harvester_engine(fin)
+    assert outputs.fund_flow_gap.computed_value == Decimal("0.60")
+    assert [f.title for f in findings] == [
+        "Fund flow sources do not match applications"
+    ]
+
+
+def test_bridge_ignores_a_rounding_level_fund_flow_gap():
+    fin = ProjectFinancials(
+        fund_flow_sources_total=ExtractedValue(value=32.80, page=1, status="extracted"),
+        fund_flow_applications_total=ExtractedValue(
+            value=32.795, page=1, status="extracted"
+        ),
+    )
+    _, findings = run_harvester_engine(fin)
+    assert findings == []
 
 
 def test_a_zero_value_moratorium_and_zero_rate_are_not_treated_as_missing():

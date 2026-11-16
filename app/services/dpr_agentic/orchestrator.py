@@ -3,10 +3,17 @@ durable job runner."""
 
 from dataclasses import asdict
 
+from app.core.logging import get_logger
+from types import SimpleNamespace
+import re
+
 from .financial_calc import findings_from_calculations, run_all_checks
 from .finding_consolidation import consolidate
+from .context_router import select_context, financial_extraction_context, page_sections, FINANCIAL
 from .gemini import CURRENT_ROLE, GeminiAgentError
 from .schemas import AgentOutput, AnalysisInput, AnalysisResult, Finding
+
+logger = get_logger(__name__)
 
 FINANCIAL_EXTRACTION_PROMPT = (
     "You are a financial data extraction specialist. Copy ONLY numeric figures "
@@ -22,6 +29,10 @@ FINANCIAL_EXTRACTION_PROMPT = (
     "both into that year's profit_before_tax and tax_paid. Leave a field "
     "null if the document does not state it. No narrative, no commentary, "
     "no opinion -- figures only.\n\n"
+    "For each projected year, also extract the explicitly stated annual "
+    "gross revenue (revenue) and total operating expenses (operating_expenses), "
+    "in the DPR's lakh-rupee units if those are the document's own units. "
+    "Do not confuse annual turnover with aggregate five-year turnover. "
     "For every field that is an {value, page, status} object: set 'page' to "
     "the page number the figure appears on, and 'status' to 'extracted' if "
     "you found a value or 'missing' if the document does not state it -- "
@@ -56,6 +67,12 @@ PROMPTS = {
         "pages (a common sign of a reused template from a different "
         "customer's document), and whether a vendor quotation or pro-forma "
         "invoice is attached with its total matching the stated project cost. "
+        "Populate document_facts with borrower_name, project_name, business_sector, "
+        "business_subsector, project_location, project_purpose, scheme_claimed, "
+        "bank_name (the bank the DPR is addressed to) "
+        "ONLY when explicitly present in the DPR. Each fact MUST carry an exact "
+        "source page and a literal quote containing the claimed value. "
+        "Do not infer identity from a phone number; do not invent bank eligibility. "
         "Never invent missing values. Quote verbatim source text with its "
         "page number. Return concise evidence-backed findings, questions and "
         "summary."
@@ -86,7 +103,14 @@ PROMPTS = {
         "technical capacity, utilization, seasonality, input-output "
         "conversion and business-specific operational assumptions. "
         "Separate evidence-backed inconsistencies from unverified "
-        "benchmarks."
+        "benchmarks. 'calculated_facts' holds code-computed operating "
+        "checks (volume against capacity, year-1 utilisation, revenue "
+        "against volume x price, price against variable cost, operating "
+        "days); each already becomes its own finding when it fires, so do "
+        "not raise those again or redo their arithmetic. Your job is what "
+        "code cannot judge: whether the stated inputs themselves (capacity "
+        "per day, operating days, price, per-unit cost, ramp-up) are "
+        "realistic for this sector and location."
     ),
     "research": (
         "You are a market research analyst. No live search tool is "
@@ -112,13 +136,27 @@ PROMPTS = {
         "from assumptions requiring verification."
     ),
     "verifier": (
-        "You are an independent DPR findings verifier. 'calculated_facts' "
-        "entries are already code-verified; do not re-litigate their "
-        "arithmetic, only whether prior agents' narrative conclusions "
-        "follow from them. Challenge unsupported statements, circular "
-        "reasoning, missing citations and arithmetic assertions made "
-        "outside calculated_facts. Only report findings with source "
-        "context; unresolved matters must remain questions."
+        "You are the independent DPR findings verifier and the final judge of "
+        "which findings reach the customer. 'candidate_findings' lists every "
+        "finding raised so far, each with a finding_id. Return one verdict per "
+        "candidate that needs action (a candidate you omit is kept):\n"
+        "- merge: it describes the SAME underlying issue as another "
+        "candidate, even if worded or categorised differently; set "
+        "duplicate_of to the clearest one. Merge aggressively: the customer "
+        "should see each real issue once.\n"
+        "- reject: the source excerpts do not support it, it misreads the "
+        "document, it contradicts 'calculated_facts', or it is generic advice "
+        "not specific to this DPR.\n"
+        "- downgrade: real but overstated; set new_severity lower. "
+        "'critical' is only for issues that would plainly stop a bank from "
+        "processing the loan.\n"
+        "- needs_clarification: plausible but only the borrower can confirm.\n"
+        "- keep: well supported as stated.\n"
+        "Give a short reason for each verdict. Findings with provenance "
+        "'calculated' are code-verified arithmetic: never reject or downgrade "
+        "them. Add a new finding only for a clear, material omission, with a "
+        "verbatim quote and its page. Unresolved matters must remain "
+        "questions."
     ),
     "correction": (
         "You are the DPR correction advisor. Propose corrections as "
@@ -137,8 +175,73 @@ PROMPTS = {
 }
 
 
+# Roles whose failure (after GeminiAgentClient's own retries) must not cost
+# the customer the whole report: the run continues with an explicit
+# "unavailable" output for that role. Every other role (document, finance,
+# risk, verifier) is required -- without it the report would be misleading,
+# so its failure still fails the run.
+OPTIONAL_ROLES = frozenset({"planner", "sector", "correction", "research", "policy"})
+
+
+def role_unavailable_output(role: str) -> AgentOutput:
+    return AgentOutput(
+        summary=f"The {role} review could not be completed for this run.",
+        unresolved_questions=[
+            f"ROLE_UNAVAILABLE: {role} -- re-run the analysis to include it."
+        ],
+    )
+
+
+async def generate_role(llm, role: str, context: dict) -> AgentOutput:
+    """One role's Gemini call, degrading an optional role's failure to
+    role_unavailable_output() instead of raising. Callers still run
+    verify_evidence() on the result."""
+    from .checklists import CHECKLIST_INSTRUCTION, apply_checklist, checklist_for
+
+    prompt = PROMPTS[role]
+    if checklist := checklist_for(role):
+        # Fixed questions, so every run covers the same topics with the
+        # same titles and ratings (checklists.py).
+        prompt += CHECKLIST_INSTRUCTION
+        context = {**context, "checklist": checklist}
+    token = CURRENT_ROLE.set(role)
+    try:
+        return apply_checklist(role, await llm.generate(prompt, context))
+    except GeminiAgentError:
+        if role not in OPTIONAL_ROLES:
+            raise
+        logger.warning("dpr_role_unavailable role=%s", role)
+        return role_unavailable_output(role)
+    finally:
+        CURRENT_ROLE.reset(token)
+
+
+async def judge_role(llm, context: dict) -> AgentOutput:
+    """The verifier's call. A client with judge() returns verdicts on the
+    candidates; an older client or test double without it falls back to
+    generate(), which yields no verdicts (every candidate is kept). The
+    verifier is a required role: a failure fails the run."""
+    token = CURRENT_ROLE.set("verifier")
+    try:
+        if hasattr(llm, "judge"):
+            return await llm.judge(PROMPTS["verifier"], context)
+        return await llm.generate(PROMPTS["verifier"], context)
+    finally:
+        CURRENT_ROLE.reset(token)
+
+
 def verify_evidence(result: AgentOutput, pages: dict[int, str]) -> AgentOutput:
     """Mark citation as source-verified only if its quote occurs on claimed page."""
+    def normalized(value: str) -> str:
+        return " ".join(re.findall(r"\w+", value.casefold()))
+
+    for fact in result.document_facts:
+        source = normalized(pages.get(fact.page, ""))
+        quote = normalized(fact.quote)
+        value = normalized(fact.value)
+        # A substantive value must appear inside an actual same-page source
+        # passage. Punctuation/spacing differences from LiteParse are ignored.
+        fact.verified = bool(value and quote and quote in source and value in quote)
     for f in result.findings:
         if f.provenance == "calculated":
             # "calculated" must only ever be set by financial_calc.py's own
@@ -160,102 +263,209 @@ def verify_evidence(result: AgentOutput, pages: dict[int, str]) -> AgentOutput:
 
 async def extract_calculated_facts(
     llm, context: dict, *, cam_engine_enabled: bool = False
-) -> tuple[list[dict], list[Finding], list[str], dict | None]:
-    """Independently recomputes financial figures from the document's own
-    stated numbers (financial_calc.py; no LLM involved in the arithmetic
-    itself). Degrades gracefully: an extraction failure never aborts the
-    rest of the analysis, it just means no calculated_facts this run.
+) -> tuple[list[dict], list[Finding], list[str], dict | None, dict | None, dict | None]:
+    """Extract only source-grounded financial fields and independently check them.
 
-    `cam_engine_enabled` (Settings.cam_engine_enabled, default False --
-    milestone 2b) additionally runs cam_engine_bridge.run_harvester_engine()
-    over the same extracted financials, merging in any mismatch findings it
-    finds and returning its structured outputs as the fourth element. False
-    (the default) makes this call identical to before the engine existed.
+    Production Gemini clients use smaller domain schemas. Existing injected
+    LLM adapters retain the legacy single-extract interface for compatibility.
+    Missing finance is reported as incomplete, never as a successful check.
     """
-    role_token = CURRENT_ROLE.set("financial_extraction")
-    try:
-        financials = await llm.extract(FINANCIAL_EXTRACTION_PROMPT, {"dpr": context})
-    except GeminiAgentError:
-        return (
-            [],
-            [],
-            [
-                "Automated financial figure extraction failed; verify costs, "
-                "means of finance and DSCR manually."
-            ],
-            None,
-        )
-    finally:
-        CURRENT_ROLE.reset(role_token)
-    results = run_all_checks(financials)
-    findings = findings_from_calculations(results)
-    engine_outputs_dict = None
-    if cam_engine_enabled:
-        from .cam_engine_bridge import run_harvester_engine
+    from .financial_schema import (
+        aggregate_repayment_instalments,
+        financial_extraction_completeness,
+        merge_missing_financials,
+        normalize_year_numbers,
+    )
+    from .financial_extraction import extract_financial_sections
 
-        engine_outputs, engine_findings = run_harvester_engine(financials)
-        findings = findings + engine_findings
-        engine_outputs_dict = engine_outputs.model_dump(mode="json")
-    return [asdict(r) for r in results], findings, [], engine_outputs_dict
+    pages = [SimpleNamespace(page=p["page"], text=p["text"]) for p in context["pages"]]
+    questions: list[str] = []
+    audit_record: dict | None = None
+    if hasattr(llm, "extract_group"):
+        financials, audit = await extract_financial_sections(
+            llm, pages, context.get("project_context", {})
+        )
+        audit_record = {
+            "attempted": list(audit.attempted),
+            "failed": list(audit.failed),
+            "empty": list(audit.empty),
+            "absent_in_source": list(audit.absent_in_source),
+            "recovered": list(audit.recovered),
+        }
+        if audit.failed:
+            questions.append("FINANCIAL_EXTRACTION_FAILED: " + ", ".join(audit.failed))
+        if audit.empty:
+            questions.append("FINANCIAL_EXTRACTION_EMPTY_RESPONSE: " + ", ".join(audit.empty))
+        if audit.absent_in_source:
+            questions.append("FINANCIAL_SOURCE_SECTION_NOT_IDENTIFIED: " + ", ".join(audit.absent_in_source))
+    else:
+        # Test doubles and older custom Gemini clients continue to work.
+        token = CURRENT_ROLE.set("financial_extraction")
+        try:
+            initial = financial_extraction_context(SimpleNamespace(
+                pages=pages, project_context=context.get("project_context", {})
+            ))
+            financials = await llm.extract(FINANCIAL_EXTRACTION_PROMPT, {"dpr": initial})
+        except GeminiAgentError:
+            financials = None
+        finally:
+            CURRENT_ROLE.reset(token)
+        if financials is None:
+            return [], [], ["FINANCIAL_EXTRACTION_INCOMPLETE: Extraction failed."], None, None, None
+        completeness = financial_extraction_completeness(financials)
+        if completeness["missing_sections"]:
+            discovered = {name for p in pages for name in page_sections(p.text)}
+            recover_sections = {
+                "project_cost": {"project_cost", "vendor_quotation"},
+                "means_of_finance": {"means_of_finance"},
+                "repayment_schedule": {"repayment_schedule", "dscr"},
+                "profit_and_loss": {"profit_and_loss", "cash_flow"},
+            }
+            selected = set().union(*(recover_sections[m] for m in completeness["missing_sections"])) & discovered
+            if selected:
+                token = CURRENT_ROLE.set("financial_extraction_recovery")
+                try:
+                    specific = financial_extraction_context(SimpleNamespace(
+                        pages=pages, project_context=context.get("project_context", {})
+                    ), sections=selected, page_limit=6)
+                    additional = await llm.extract(FINANCIAL_EXTRACTION_PROMPT +
+                        " Extract only missing explicitly stated figures from these pages.",
+                        {"dpr": specific})
+                    financials = merge_missing_financials(financials, additional)
+                except GeminiAgentError:
+                    questions.append("FINANCIAL_EXTRACTION_FAILED: targeted recovery")
+                finally:
+                    CURRENT_ROLE.reset(token)
+
+    # Both idempotent (the grouped path already applied them per domain):
+    # calendar years -> 1..N, and per-instalment schedules -> yearly rows.
+    financials = aggregate_repayment_instalments(normalize_year_numbers(financials))
+    completeness = financial_extraction_completeness(financials)
+    if not completeness["has_financial_data"]:
+        questions.append(
+            "FINANCIAL_EXTRACTION_INCOMPLETE: No usable financial values were extracted. "
+            "The CAM financial assessment has not been completed."
+        )
+    else:
+        questions.extend(
+            "FINANCIAL_SECTION_INCOMPLETE: " + section
+            for section in completeness["missing_sections"]
+        )
+
+    logger.info(
+        "dpr_financial_extraction_result missing_sections=%s has_financial_data=%s "
+        "project_cost_components=%s means_of_finance_components=%s repayment_rows=%s "
+        "projection_years=%s",
+        completeness["missing_sections"], completeness["has_financial_data"],
+        len(financials.cost_of_project_components), len(financials.means_of_finance_components),
+        len(financials.repayment_table), len(financials.years),
+    )
+    calculations = run_all_checks(financials)
+    findings = findings_from_calculations(calculations)
+    engine_outputs = None
+    acreage_checked = acreage_flagged = False
+    if cam_engine_enabled and completeness["has_financial_data"]:
+        from .cam_engine_bridge import run_harvester_engine
+        engine, engine_findings = run_harvester_engine(financials)
+        findings.extend(engine_findings)
+        engine_outputs = engine.model_dump(mode="json")
+        feasible = engine.feasible_acres_per_year
+        acreage_checked = feasible is not None and feasible.status == "COMPUTED"
+        acreage_flagged = any(
+            "acres_per_year_feasibility" in (f.priority_rule or "")
+            for f in engine_findings
+        )
+    # Sector-neutral operating checks (M3); always on, pure code.
+    from .unit_economics import run_unit_economics
+    ue_results, ue_findings = run_unit_economics(
+        financials, acreage_checked=acreage_checked
+    )
+    calculations.extend(ue_results)
+    findings.extend(ue_findings)
+    # Benchmarks from the fixed table for the DPR's machine class; pure code.
+    from .benchmarks import run_benchmark_checks
+    bm_results, bm_findings, bm_record = run_benchmark_checks(
+        financials, pages, acreage_flagged=acreage_flagged
+    )
+    calculations.extend(bm_results)
+    findings.extend(bm_findings)
+    financials.benchmark_used = bm_record
+    if audit_record is not None:
+        audit_record["missing_sections"] = list(completeness["missing_sections"])
+    return ([asdict(x) for x in calculations], findings, questions,
+            engine_outputs, financials.model_dump(mode="json"), audit_record)
+
+
+
+def no_usable_financial_extraction(raw: dict | None) -> bool:
+    """Guard against 65k-token analysis on `{}` financial extraction."""
+    from .financial_schema import ProjectFinancials, financial_extraction_completeness
+    if not raw:
+        return True
+    return not financial_extraction_completeness(
+        ProjectFinancials.model_validate(raw)
+    )["has_financial_data"]
+
+
+async def partial_analysis_without_financials(
+    payload: AnalysisInput,
+    llm,
+    questions: list[str],
+    extraction_audit: dict | None = None,
+) -> AnalysisResult:
+    """Document/sector evidence is still useful; financial conclusions aren't.
+
+    Without any usable numbers, running Finance/Risk/Verifier/Correction on
+    model-authored prose is both expensive and misleading. Produce an explicitly
+    incomplete borrower report, retaining independently supported non-financial
+    source findings. Do not claim lending readiness or invent financial values.
+    """
+    logger.warning("dpr_financial_early_stop no_usable_financial_data=true; "
+                   "running document/sector evidence review only")
+    pages = {p.page: p.text for p in payload.pages}
+    outputs: dict[str, AgentOutput] = {}
+    for role in ("document", "sector"):
+        prior = {k: v.model_dump(mode="json") for k, v in outputs.items()}
+        output = await generate_role(
+            llm, role, select_context(role, payload, prior, [])
+        )
+        outputs[role] = verify_evidence(output, pages)
+    findings = consolidate([f for out in outputs.values() for f in out.findings])
+    extra = [q for out in outputs.values() for q in out.unresolved_questions]
+    return AnalysisResult(
+        service_request_id=payload.service_request_id,
+        wallet_document_id=payload.wallet_document_id,
+        document_sha256=payload.document_sha256,
+        status="completed",  # pipeline finished; CAM readiness is INSUFFICIENT_INFORMATION
+        agent_outputs=outputs,
+        findings=findings,
+        unresolved_questions=list(dict.fromkeys(
+            list(questions) + [
+                "FINANCIAL_EXTRACTION_INCOMPLETE: Financial agents were not run "
+                "because no reliable numerical input was extracted."
+            ] + extra
+        )),
+        cam_engine_outputs=None,
+        extracted_financials=None,
+        extraction_audit=extraction_audit,
+        gemini_model=getattr(llm, "model", None),
+    )
 
 
 async def analyze(
     payload: AnalysisInput, llm, *, cam_engine_enabled: bool = False
 ) -> AnalysisResult:
-    pages = {page.page: page.text for page in payload.pages}
-    if len(pages) != len(payload.pages):
-        raise ValueError("Duplicate page numbers are not allowed")
-    # Max token-size bound: reject truncation rather than silently drop
-    # vital appendices.
-    if sum(len(s) for s in pages.values()) > 180_000:
-        raise ValueError(
-            "Document exceeds analysis context limit; must be segmented "
-            "with a retrieval adapter"
-        )
-    context = {
-        "project_context": payload.project_context,
-        "pages": [{"page": k, "text": v} for k, v in pages.items()],
-    }
+    """The single analysis entry point for callers outside the worker (the
+    internal /internal/dpr-agentic endpoint, scripts and tests).
 
-    (
-        calculated_facts,
-        calculated_findings,
-        extraction_questions,
-        cam_engine_outputs,
-    ) = await extract_calculated_facts(
-        llm, context, cam_engine_enabled=cam_engine_enabled
-    )
+    Delegates to parallel_graph.analyze_parallel(), the pipeline the worker
+    runs, so every caller gets identical behaviour. This used to be a
+    separate sequential loop over PROMPTS that diverged from the worker's
+    graph (e.g. it made real LLM calls for the research/policy/report roles,
+    which the graph deliberately does not).
+    """
+    from .parallel_graph import analyze_parallel  # avoid an import cycle
 
-    outputs: dict[str, AgentOutput] = {}
-    for name in PROMPTS:
-        # All agents use Gemini with separate roles, and previous
-        # structured outputs.
-        prior = {k: v.model_dump(mode="json") for k, v in outputs.items()}
-        output = await llm.generate(
-            PROMPTS[name],
-            {
-                "dpr": context,
-                "previous_agent_outputs": prior,
-                "calculated_facts": calculated_facts,
-            },
-        )
-        outputs[name] = verify_evidence(output, pages)
-    # Preserve all findings with provenance; do not downgrade unknown
-    # evidence to verified.
-    findings: list[Finding] = list(calculated_findings)
-    questions: list[str] = list(extraction_questions)
-    for output in outputs.values():
-        findings.extend(output.findings)
-        questions.extend(output.unresolved_questions)
-    findings = consolidate(findings)
-    return AnalysisResult(
-        service_request_id=payload.service_request_id,
-        wallet_document_id=payload.wallet_document_id,
-        document_sha256=payload.document_sha256,
-        status="completed",
-        agent_outputs=outputs,
-        findings=findings,
-        unresolved_questions=list(dict.fromkeys(questions)),
-        cam_engine_outputs=cam_engine_outputs,
-        gemini_model=getattr(llm, "model", None),
+    return await analyze_parallel(
+        payload, llm, cam_engine_enabled=cam_engine_enabled
     )

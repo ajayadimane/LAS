@@ -1,0 +1,217 @@
+{#- DPR Pre-submission Review (2.x CAM layout). Every value is computed in
+   cam_render_v2.py; this file only loops and substitutes. Autoescape is
+   on; nothing here uses |safe. #}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{ title }}</title>
+<style>:root { --accent: {{ accent }}; }</style>
+<link rel="stylesheet" href="cam_v2/v2.css">
+</head>
+<body>
+{%- macro leaf() -%}
+<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="{{ accent }}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21c0-9 6-15 15-16-1 9-7 15-15 16z"></path><path d="M5 21l8-8"></path></svg>
+{%- endmacro %}
+
+<div class="hdr"><div class="brand">{{ leaf() }}<span>{{ product }}</span></div><div class="sub">DPR Pre-submission Review</div></div>
+<div class="ftr">Review ref {{ reference }} · Prepared for {{ prepared_for }}</div>
+
+{# ---------------- Cover ---------------- #}
+<section class="cover">
+  <div class="cover-top">
+    <div class="brand">{{ leaf() }}<span>{{ product }}</span></div>
+    <span class="sub">Review ref <b>{{ reference }}</b></span>
+  </div>
+  <div class="kicker">{{ cover.kicker }}</div>
+  <h1>Is your DPR ready for the bank?</h1>
+  <p class="lede">We checked your Detailed Project Report against {{ cover.bank }} baselines and scheme rules. This report lists what to correct before you apply.</p>
+
+  <div class="facts">
+    <div class="cell l"><div class="lbl">Prepared for</div><div class="val">{{ cover.prepared_for }}</div></div>
+    <div class="cell"><div class="lbl">Project</div><div class="val">{{ cover.project }}</div></div>
+    <div class="cell l"><div class="lbl">Scheme applied for</div><div class="val">{{ cover.scheme }}</div></div>
+    <div class="cell"><div class="lbl">Loan requested</div><div class="val">{{ cover.loan }}</div></div>
+    <div class="cell l last"><div class="lbl">DPR reviewed</div><div class="val">{{ cover.dpr_reviewed }}</div></div>
+    <div class="cell last"><div class="lbl">Review date</div><div class="val">{{ cover.review_date }}</div></div>
+  </div>
+
+  <div class="ready">
+    <div class="circle{{ ' on' if cover.readiness.score != '—' else '' }}"><b>{{ cover.readiness.score }}</b><span>readiness</span></div>
+    <div style="flex:1;min-width:0">
+      <div class="lbl" style="font-weight:600;color:#334155">Bank-readiness</div>
+      <div class="opts">
+        {% for o in cover.readiness.options %}<span class="opt{{ ' sel' if o.selected else '' }}"><span class="dot"></span>{{ o.label }}</span>{% endfor %}
+      </div>
+      {% if cover.readiness.note %}<div class="sub" style="margin-top:6px">{{ cover.readiness.note }}</div>{% endif %}
+      <div class="fitline">
+        <span style="font-weight:600;color:#334155">Scheme fit</span>
+        <span class="chip {{ cover.scheme_chip }}">{{ cover.scheme_verdict }}</span>
+        {% if cover.best_fit %}<span class="ph">Best fit: {{ cover.best_fit }} — see page 2</span>{% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="tiles">
+    <div class="tile t-must"><div class="h">Must fix</div><div class="big">{{ cover.counts.must_fix }}</div><div class="s">Bank is likely to return the DPR</div></div>
+    <div class="tile t-should"><div class="h">Should fix</div><div class="big">{{ cover.counts.should_fix }}</div><div class="s">Bank is likely to raise a query</div></div>
+    <div class="tile t-imp"><div class="h">Can improve</div><div class="big">{{ cover.counts.good_to_fix }}</div><div class="s">Makes the proposal stronger</div></div>
+  </div>
+
+  <div class="next">
+    <h3>What happens next</h3>
+    <div class="steps">
+      <div class="st"><span class="sn">1</span><b>Read this review</b><span>Start with the Must fix items on page 3</span></div>
+      <div class="st"><span class="sn">2</span><b>Correct your DPR</b><span>Update figures and collect missing documents</span></div>
+      <div class="st"><span class="sn">3</span><b>Re-review</b><span>We recheck the corrected DPR</span></div>
+      <div class="st"><span class="sn navy">4</span><b>Bank-ready report</b><span>Submit it with your DPR to the bank</span></div>
+    </div>
+  </div>
+</section>
+
+{# ---------------- 1. Scheme fit ---------------- #}
+<section class="section">
+  <div class="sh"><div class="bd">1</div><div><h2>Are you applying under the right scheme?</h2><div class="sub">Your project compared against the schemes it qualifies for, using current scheme guidelines.</div></div></div>
+  {% if scheme.columns %}
+  <table>
+    <thead><tr><th style="width:24%">Feature</th>
+      {% for c in scheme.columns %}<th class="{{ 'rec' if c.rec else '' }}">{{ c.role }}<br><span class="{{ 'rec-name' if c.rec else 'ph' }}" style="font-weight:500">{{ c.name }}</span></th>{% endfor %}
+    </tr></thead>
+    <tbody>
+      {% for r in scheme.rows %}
+      <tr><td>{{ r.label }}</td>
+        {% for cell in r.cells %}<td class="{{ 'rec' if cell.rec else '' }}">{% if cell.chip %}<span class="chip {{ {'Likely':'likely','Partly':'partly','No':'no'}.get(cell.value, 'pend') }}">{{ cell.value }}</span>{% else %}{{ cell.value }}{% endif %}</td>{% endfor %}
+      </tr>
+      {% endfor %}
+      <tr style="font-weight:700"><td>Estimated total benefit to you</td>
+        {% for b in scheme.benefit %}<td class="{{ 'rec' if b.rec else '' }}"{% if b.rec %} style="color:#14613B"{% endif %}>{{ b.value }}</td>{% endfor %}
+      </tr>
+    </tbody>
+  </table>
+  {% endif %}
+  <div class="box green"><div class="t">Our recommendation</div><div class="b">{{ scheme.recommendation }}</div></div>
+
+  <div class="h3">Eligibility gaps under the {{ 'recommended' if scheme.columns and scheme.columns[1].name != '—' else 'chosen' }} scheme</div>
+  <table>
+    <thead><tr><th style="width:24%">Criterion</th><th style="width:24%">Scheme requires</th><th style="width:22%">Your DPR shows</th><th>What to do</th></tr></thead>
+    <tbody>
+      {% for g in scheme.gaps %}
+      <tr><td>{{ g.criterion }}</td><td>{{ g.requires }}</td><td>{{ g.dpr_shows }}</td><td>{{ g.action }}</td></tr>
+      {% else %}
+      <tr><td colspan="4" class="ph">No gap found against the rules we check.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="fine">Eligibility is confirmed by your bank and the scheme authority; this review checks the published scheme rules only.</div>
+</section>
+
+{# ---------------- 2. Action plan ---------------- #}
+<section class="section">
+  <div class="sh"><div class="bd">2</div><div><h2>What to fix in your DPR</h2><div class="sub">Work through Must fix first. Tick each item as you correct it; we recheck all of them at re-review.</div></div></div>
+  <div class="legend">
+    <span><span class="chip must">Must fix</span> bank is likely to return the DPR</span>
+    <span><span class="chip should">Should fix</span> bank is likely to query</span>
+    <span><span class="chip imp">Can improve</span> strengthens the proposal</span>
+  </div>
+  <table class="plan">
+    <thead><tr><th style="width:28px"></th><th style="width:26px">#</th><th>Issue and why it matters</th><th style="width:46px">DPR page</th><th style="width:118px">Your DPR</th><th style="width:118px">Should be</th><th style="width:96px">Priority</th></tr></thead>
+    <tbody>
+      {% for r in plan.rows %}
+      <tr><td><span class="cb"></span></td><td>{{ r.n }}</td><td>{{ r.title }}<span class="why">{{ r.why }}</span></td><td>{{ r.pages }}</td><td>{{ r.dpr }}</td><td>{{ r.should_be }}</td><td><span class="chip {{ r.chip }}">{{ r.priority }}</span></td></tr>
+      {% else %}
+      <tr><td colspan="7" class="ph">Nothing to fix was found.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+{# ---------------- 3. Financial corrections ---------------- #}
+<section class="section">
+  <div class="sh"><div class="bd">3</div><div><h2>Your figures, recomputed</h2><div class="sub">We recalculated every figure from your own projections and compared it with the bank's baseline.</div></div></div>
+  <table class="tight">
+    <thead><tr><th>Measure</th><th class="n" style="width:92px">In your DPR</th><th class="n cor" style="width:100px">Recomputed</th><th style="width:130px">Bank baseline</th><th style="width:104px">Status</th></tr></thead>
+    <tbody>
+      {% for m in fin.measures %}
+      <tr><td>{{ m.measure }}</td><td class="n">{{ m.dpr }}</td><td class="n cor">{{ m.recomputed }}</td><td>{{ m.baseline }}</td><td><span class="chip {{ m.chip }}">{{ m.status }}</span></td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="h3">Assumptions to revise</div>
+  <table class="tight">
+    <thead><tr><th style="width:118px">Assumption</th><th style="width:130px">Your DPR</th><th>Reference</th><th style="width:130px">Suggested</th></tr></thead>
+    <tbody>
+      {% for a in fin.assumptions %}
+      <tr><td>{{ a.assumption }}</td><td>{{ a.dpr }}</td><td>{{ a.reference }}</td><td{% if a.flagged %} class="cor"{% endif %}>{{ a.suggested }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="box amber"><div class="t">How the bank will stress-test this</div><div class="b">{{ fin.stress }}</div></div>
+</section>
+
+{# ---------------- 4-5. Verification and documents ---------------- #}
+<section class="section">
+  <div class="sh"><div class="bd">4</div><div><h2>Credit and KYC verification</h2><div class="sub">{{ ver.subtitle }}</div></div></div>
+  {% if ver.cards %}
+  <div class="cards">
+    <div class="card">
+      <div class="row"><span class="lbl">Credit score (CIBIL)</span></div>
+      <div class="big">{{ ver.cards.score }}</div>
+      <div class="row"><span class="ph">Band</span><span>{{ ver.cards.band }}</span></div>
+      <div class="row"><span class="ph">Overdues · write-offs</span><span>{{ ver.cards.overdues }}</span></div>
+    </div>
+    <div class="card">
+      <div class="lbl">KYC</div>
+      {% for label, st in ver.cards.kyc %}<div class="row"><span>{{ label }}</span><span class="chip {{ st|lower }}">{{ st }}</span></div>{% endfor %}
+    </div>
+    <div class="card">
+      <div class="lbl">Details match across documents</div>
+      {% for label, st in ver.cards.matches %}<div class="row"><span>{{ label }}</span><span class="chip {{ st|lower }}">{{ st }}</span></div>{% endfor %}
+    </div>
+  </div>
+  {% if ver.cards.before_you_apply %}<div class="note"><b>Before you apply:</b> {{ ver.cards.before_you_apply }}</div>{% endif %}
+  {% else %}
+  <div class="cards">
+    <div class="card"><div class="row"><span class="lbl">Credit score (CIBIL)</span><span class="chip pend">Pending</span></div><div class="big">—</div></div>
+    <div class="card"><div class="row"><span class="lbl">KYC</span><span class="chip pend">Pending</span></div><div class="row"><span>PAN · Aadhaar · Address</span><span class="ph">—</span></div></div>
+    <div class="card"><div class="lbl">Details match across documents</div><div class="row"><span>Name and location</span><span class="chip pend">Pending</span></div></div>
+  </div>
+  <div class="note">{{ ver.pending }}</div>
+  {% endif %}
+  <div class="note">{{ ver.documents_note }}{% if ver.quotation %} {{ ver.quotation }}{% endif %}</div>
+
+  <div class="section cont">
+    <div class="sh"><div class="bd">5</div><div><h2>Documents to prepare</h2><div class="sub">What the bank will ask for, and what is still missing.</div></div></div>
+    <table>
+      <thead><tr><th>Document</th><th style="width:110px">Status</th><th style="width:40%">Action</th></tr></thead>
+      <tbody>
+        {% for d in ver.documents %}
+        <tr><td>{{ d.document }}</td><td><span class="chip {{ d.chip }}">{{ d.status }}</span></td><td>{{ d.action }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="box soft" style="margin-top:16px"><div class="lbl" style="font-weight:600;color:#334155">Re-review</div><div style="font-size:12px">Send the corrected DPR by <b>{{ ver.re_review_by }}</b>. Once every Must fix item is cleared, we issue your bank-ready report.</div></div>
+    <div class="fine">This review is advisory and based on the DPR you shared. It does not guarantee loan sanction; the final decision rests with the bank.</div>
+  </div>
+</section>
+
+{# ---------------- Appendix: annexures A-G ---------------- #}
+<section class="section">
+  <div class="sh"><div class="bd">A</div><div><h2>Appendix: annexures</h2><div class="sub">The detail behind this review.</div></div></div>
+  {% for a in appendix %}
+  <div class="annex">
+    <h3>Annexure {{ a.letter }} · {{ a.title }}</h3>
+    {% if a.empty %}<div class="ph" style="font-size:12px">{{ a.empty }}</div>{% endif %}
+    {% for t in a.tables %}{% if t.rows %}
+    {% if t.caption %}<div class="cap">{{ t.caption }}</div>{% endif %}
+    <table>
+      <thead><tr>{% for h in t.head %}<th>{{ h }}</th>{% endfor %}</tr></thead>
+      <tbody>{% for row in t.rows %}<tr>{% for c in row %}<td{% if c is string and 'http' in c %} class="url"{% endif %}>{{ c }}</td>{% endfor %}</tr>{% endfor %}</tbody>
+    </table>
+    {% endif %}{% endfor %}
+  </div>
+  {% endfor %}
+</section>
+</body>
+</html>

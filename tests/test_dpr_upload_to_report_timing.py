@@ -62,6 +62,7 @@ def test_a_completed_run_logs_the_full_upload_to_report_latency(dpr_pg, caplog):
         doc_class="DPR",
         confidence=0.99,
         needs_vision=False,
+        low_text_pages=[],
         pages=[{"page": 1, "text": "Project cost is 80 lakh and loan is 60 lakh."}],
     )
 

@@ -2489,3 +2489,1286 @@ and the one approved real Gemini run completed end to end with results
 reported above -- including one real migration bug and one real PDF-
 timeout-at-scale finding that only a real run against real data and a
 real document could have surfaced.
+
+## Production hardening, M1: analysis correctness fixes (2026-11-12)
+
+Plan: `/home/islam/.claude/plans/plan-the-recommended-changes-humble-bee.md`
+(milestones M0-M6). M1 was done first because it needs no real DPRs or
+live Gemini calls; M0 (the evaluation harness) is next.
+
+### Baseline: 9 stale DPR tests fixed first
+
+Before any change, 9 DPR tests were failing: they had fallen behind the
+uncommitted engine work in the tree, and none was a behaviour bug.
+- `conftest._fail_on_real_gemini_client` did not accept the new
+  `thinking_level` / `max_output_tokens` arguments.
+- Fakes returning empty financials now take the early-stop path, so they
+  return a minimal `cost_of_project_stated_total`.
+- The usage-log assertion now checks only its own keys.
+
+The 2 `test_stub_wallet_client` failures are unrelated and still open.
+
+### Fixes
+
+1. **Tolerance in the wrong unit.** `financial_calc.TOLERANCE` was 1.0,
+   labelled "rupees", but every amount is in lakhs, so cost and funding
+   gaps up to Rs 1,00,000 passed as matches. It is now 0.01 lakh
+   (Rs 1,000).
+   - The fund-flow check used the 1-lakh `MATERIAL_GAP_TOLERANCE`, so it
+     now uses `MONEY_TOLERANCE`.
+   - The acreage check has its own `ACREAGE_TOLERANCE`, in acres.
+2. **DSCR falls back to `repayment_table`.** When `years[]` lacks
+   principal or interest, `dscr_per_year()` uses the schedule's extracted
+   cells, each figure independently and never a guess.
+3. **Fund-flow totals are now extracted.** They were only in the retired
+   monolithic schema, so `_fund_flow_finding` never ran in production. They
+   are now in the `cost_funding` group schema and prompt (9 keys, 1,738
+   characters; the size guard test now allows up to 10 keys).
+   - **Still open, in M3:** `harvester_assumptions` is likewise never
+     extracted, so the fuel, crew, acreage and scenario outputs are still
+     empty on real runs.
+4. **Extraction audit.**
+   - The audit's `empty` list now names only groups still incomplete after
+     their retry, where it used to also name recovered groups.
+   - New `AnalysisResult.extraction_audit` (default `None`) holds the
+     structured record.
+   - Deviation from the plan: `FINANCIAL_EXTRACTION_EMPTY_RESPONSE` was
+     *not* added to the readiness prefixes. Missing sections already raise
+     `FINANCIAL_SECTION_INCOMPLETE`, so adding it would double-count.
+5. **Extraction runs in two concurrent phases.** All first attempts run at
+   once, then retries at once. Retry selection is in fixed `GROUPS` order
+   (deterministic), and latency is at most 2 Gemini round trips instead of
+   up to 6.
+6. **Gemini resilience.**
+   - `_post_with_retries` retries 429, 5xx, timeouts and connection errors
+     (3 attempts, randomised exponential backoff capped at 20 s). 4xx
+     errors are not retried.
+   - `_structured` retries a truncated or schema-invalid response once.
+   - Exhausted transport attempts raise `GeminiTransportError`, which is
+     never retried at the content level.
+   - Optional roles (`OPTIONAL_ROLES`: planner, sector, correction,
+     research, policy) degrade to a `ROLE_UNAVAILABLE: <role>` output.
+     Document, finance, risk and verifier still fail the run.
+7. **One pipeline.** `orchestrator.analyze()` now delegates to
+   `parallel_graph.analyze_parallel()`, so the internal endpoint, scripts
+   and tests run exactly what the worker runs.
+8. **Dedup bug found while regenerating the Tikamgarh fixture.**
+   `compute_dedup_key` matched topic needles anywhere in title plus
+   explanation, which caused two problems:
+   - The calculated acreage finding and its narrative restatement got
+     different keys, so the report showed the issue twice.
+   - Unrelated findings that mentioned "operating days" in passing would
+     over-merge.
+
+   A topic now also needs one of its needle words in the title.
+   - The fixture was regenerated: 6 findings, with acreage merged from 5
+     copies (4 narrative plus the calculated one).
+   - The other fixture diffs (dedup key format, `financial_projections`)
+     come from the uncommitted work already in the tree.
+
+New tests: `test_dpr_financial_extraction_phases.py`,
+`test_dpr_gemini_retries.py`, `test_dpr_role_degradation.py`, plus cases in
+`test_dpr_financial_calc.py`, `test_dpr_cam_engine_bridge.py` and
+`test_dpr_finding_consolidation.py`.
+
+Full suite: 699 passed, 103 skipped (Postgres), 2 failed (the
+pre-existing stub-wallet tests).
+
+## Production hardening, M0: evaluation harness (2026-11-12)
+
+The data is the real DPR set at `../DPRData`: 9 in `Approved DPR /` and 6 in
+`RejectedDPR/`. Five of the rejected harvester DPRs share one 21-page
+template. The data is read in place and never copied into the repo.
+
+### What was built
+
+- **`document_input.prepare_document()`**: the worker's parse, vision-OCR
+  and classify step, moved out of `scripts/dpr_worker.py` so the harness
+  measures exactly what production runs.
+  - The worker passes in its own module-level `inspect_document`,
+    `render_pages_to_images` and `extract_pages_via_vision`, so tests that
+    patch those names still work.
+  - The exception names (`NeedsVisionFallback`, etc.) are unchanged.
+- **`evaluation.py`**: offline scoring. It covers:
+  - per-field extraction accuracy (0.5% or 0.01-lakh tolerance)
+  - must-find recall and must-not-find violations
+  - run-to-run stability (finding-key and must-fix Jaccard, identical
+    figures)
+  - tokens, INR and latency per role, using indicative prices that can be
+    overridden
+  - agreement with the bank's label (a rejected DPR should have at least
+    one must-fix)
+  - first-draft annotations
+- **`gemini_cassette.py`**: HTTP-level record/replay keyed by the sha256 of
+  the model plus the canonical request body. A replay miss is a hard
+  `CassetteMiss`.
+- **`scripts/dpr_eval.py`**: the runner. Without `--yes` it only lists
+  documents and the estimated cost. Modes are `--record`, `--replay`,
+  `--repeat N`, `--model`, `--only` and `--draft-annotations`.
+- **Privacy:** reports and annotations name documents by sha256 prefix
+  only. `eval/results/`, `eval/cassettes/` and `eval/manifest.local.json`
+  are gitignored; cassettes hold DPR text.
+
+### Offline parse check of all 15 DPRs (no Gemini calls)
+
+- **9 parse fully** and classify as DPR (0.97).
+- **5 have 1-2 weak pages**, which go to Gemini vision.
+- **The scanned approved DPR (`00437a63adb1`, 26 pages) yields no text from
+  LiteParse:** Tesseract is not installed on this host, so local OCR
+  silently produces nothing and all 26 pages would go to Gemini vision.
+  Install `tesseract-ocr` (plus `tesseract-ocr-hin` for Hindi) wherever the
+  worker runs.
+
+### Worker tests now actually run
+
+Running the suite against a throwaway Postgres (the `docker run` line in
+`tests/conftest.py`) un-skipped 104 tests. Seven of them were broken by
+uncommitted work and nobody had seen it:
+- Parse stand-ins lacked `low_text_pages`.
+- Vision tests staged `b"dummy"`, which the new page-cap check can't open as
+  a PDF; they now stage a real one-page PDF.
+- The run-id test expected the old 10 LLM calls.
+
+All seven are fixed. Full suite: 813 passed, 2 failed (the pre-existing
+stub-wallet tests).
+
+### Not yet done (needs the user)
+
+- **First live run.** It needs approval for paid Gemini calls: about INR 15
+  per run, measured per run in the report.
+- **Annotation review** by a credit person, after `--draft-annotations`.
+
+### First live evaluation: 4 DPRs, 3 runs (2026-11-12)
+
+The runs covered approved `912a423f65cc` and `0b335886014b`, and rejected
+`d19f63b7d0ab` and `e3aae76bbdce`, all on `gemini-3.8-flash`.
+- **Cost:** about INR 9-19 per DPR (indicative prices); the three runs cost
+  about INR 115 in total.
+- **Latency:** 125-215 s per DPR (the earlier Tikamgarh run took 367 s).
+
+**Fixed from these runs:**
+1. **Fund-flow priority.** An unbalanced fund-flow statement is now
+   good-to-fix. The bank's reference CAM template (page 2) rates this exact
+   case "Good to fix: Add closing cash", while M1's newly enabled check had
+   made it must-fix on a DPR the bank approved. The golden test was updated,
+   and the page-6 tests now expect 4 must-fix (fuel, crew, acreage,
+   quotation).
+2. **Year numbering.** One call labelled the P&L by calendar year
+   (2026-2033) while another used 1-8, so DSCR and the merge failed. The
+   prompts now require 1..N, and `normalize_year_numbers()` renumbers each
+   extraction domain before merging.
+3. **Monthly repayment schedules.** One DPR prints an 84-row monthly
+   schedule in rupees. Asking for yearly lakh totals made Gemini spend
+   3.9k, and then 7.8k, tokens thinking and still truncate.
+   - Gemini now transcribes the rows as printed (`repayment_instalments`
+     plus `repayment_amount_unit`).
+   - `aggregate_repayment_instalments()` sums them in code: positive
+     principal only, interest = instalments - principal, no row for a
+     moratorium year.
+4. **Truncation.** Truncated calls are billed but went unlogged; they now
+   count toward usage and cost. A retry after `MAX_TOKENS` doubles the
+   output cap (`GeminiTruncatedError`).
+5. **DSCR interest fallback.** DSCR uses the P&L's interest on the term loan
+   when no separate interest-repaid figure was extracted. Recomputed on the
+   stored Tikamgarh extraction: 2.31x against the DPR's stated 2.02x.
+
+**Open:**
+- **`d19f63b7d0ab`'s repayment extraction still truncates** when asked only
+  to transcribe the monthly rows. Next option: parse that table in code
+  from the page text.
+- **The 4,096-token role caps are too tight on Gemini 3**, because thinking
+  shares the budget: 5 first-attempt truncations in run 3 (sector, risk,
+  operating). Raising them invalidates the recordings.
+- **One issue restated as several critical findings** (2-3x, with invented
+  categories): needs M2 (verifier as judge, category enum).
+- **28-30 unresolved questions per DPR**, mostly from the planner.
+- **Large run-to-run variance.** Tikamgarh went from 0 to 3 must-fix
+  between runs; measure with `--repeat`.
+- **Replay only covers changes that leave Gemini requests unchanged.** A
+  calculation change alters `calculated_facts` in the agents' context.
+- **Draft annotations** for the 4 DPRs are in `eval/annotations/` and are
+  unreviewed.
+
+## Production hardening: Gemini 3 caps, schedule parser, M2 verifier (2026-11-12)
+
+### Changes
+
+1. **Gemini 3 output caps.** Thinking tokens count against
+   `maxOutputTokens`. The role caps now size the visible answer, plus a
+   per-level thinking allowance: LOW +4,096, MEDIUM +8,192, HIGH +16,384.
+   The ceiling is 32,768, and a truncation retry still doubles the cap.
+   - Note: `.env` sets `DPR_AGENTIC_THINKING_LEVEL=medium`, which overrides
+     the per-role levels (extraction roles were designed for LOW). Removing
+     it is recommended.
+2. **`schedule_parser.py`** reads per-instalment repayment schedules in
+   code.
+   - Rows are trusted only when closing = opening - principal and
+     instalment = interest + principal (to within Rs 1), and the table is
+     accepted only if at least 95% of rows pass.
+   - On the 15 real DPRs it reads all 5 rejected harvester schedules (84
+     rows each); the yearly totals match the DPR's own "Total in Rs." lines.
+     It returns nothing for the other 10.
+   - When it succeeds, Gemini is told not to transcribe the table.
+3. **The verifier is now the judge (M2).**
+   - A `candidates` code node consolidates and ids every analyst finding
+     plus the calculated ones.
+   - The verifier returns `verdicts` (keep / reject / merge / downgrade /
+     needs_clarification).
+   - `finding_judge.apply_verdicts()` enforces the guardrails: calculated
+     findings are never rejected or downgraded, unknown or self merges are
+     ignored, silence means keep, and severity can only be lowered.
+   - Rejected findings go to `AnalysisResult.rejected_findings` with a
+     `rejection_reason`.
+   - Correction's findings no longer reach the customer list.
+   - Planner agenda questions are not customer questions.
+   - `FINDING_CATEGORIES` is now an enforced enum in the agent schema.
+4. **Consolidation.** A narrative finding whose title is near-identical
+   (word Jaccard of at least 0.75) to a calculated finding merges into it
+   across categories.
+5. **P&L completeness.** The operating-financials group needs net profit
+   and depreciation, and `profit_and_loss` is now a reported missing
+   section. The prompt forbids summing lines or copying PAT into PBT.
+   - Seen live: one run returned revenue only, and another reported opex
+     11.3, a self-computed sum, where the page prints "TOTAL OPERATING COST
+     15.30".
+6. **Evaluation metric.** Stability is now measured as *topic agreement*
+   (greedy title-word matching at 0.4), with exact keys kept as a strict
+   lower bound.
+
+### Live repeat run: 4 DPRs x 2, before items 4-6 (INR 114)
+
+- **No extraction failures in 8 runs**, against one failed DPR in every
+  earlier run. 2 truncations, both recovered by the retry.
+- **Fewer findings and questions:** 9-23 findings per run (was 24-36), with
+  the verifier merging 3-7 per run, and 21-24 questions (was 28-30).
+- **Both rejected DPRs now get at least one must-fix;** before, only 1 of 2
+  did.
+- **Missing quotation** appears as must-fix in every run of every DPR. This
+  matches the reference template's must-fix #5.
+- **Run-to-run agreement is still low.** Topic agreement is 0.15-0.47 for
+  all findings and 0.0-1.0 for must-fix, and severity drifts (Tikamgarh had
+  5 high findings in one run and 0 in the other).
+- **Extracted figures** were identical in only 50-100% of fields; items 5
+  above address the causes found.
+- **Cost is about INR 12-17 per run** (verifier context plus larger caps).
+
+Items 4-6 are not yet measured live.
+
+### Live re-measurement and verifier-restatement fix (2026-11-12)
+
+`DPR_AGENTIC_THINKING_LEVEL=medium` commented out in `.env` (per-role
+levels now apply: extraction LOW). Then `dpr_eval.py --repeat 2` on the same
+4 DPRs (`eval/results/20261112T121146Z`, gitignored):
+
+| | Previous run | This run |
+|---|---|---|
+| Total cost (8 runs) | INR 114 | INR 75 (~INR 9.4/run) |
+| Output tokens per doc (2 runs) | 58-79k | 37-47k |
+| Mean latency | 194 s | 128 s |
+| Extraction failed/empty/missing sections | 0 | 0 |
+| Figures identical across runs | 0.5-1.0 | 1.0 on 3 docs, 0.91 on d19 |
+| Topic agreement (all) | 0.15-0.47 | 0.24-0.60 |
+| Must-fix topic agreement | 0-1.0 | 0-1.0 (d19's 0.0 is a metric miss: both runs' must-fix is the vendor quotation, worded differently) |
+
+Rejected DPRs flagged with a must-fix: 2/2. Missing vendor quotation is
+must-fix in all 8 runs.
+
+Duplicates still reached the report (same issue twice per run): the
+verifier, asked only for new issues, restated kept candidates in its own
+`findings`, under a topic key, with no page, or reworded. Fixes:
+- `finding_judge.absorb_restatements`: a verifier-new finding in the same
+  category, compatible page, title similarity >= 0.5 (stop words removed,
+  light stemming: `finding_consolidation.title_words`) folds into the kept one.
+- `consolidate`: same category + compatible page (one may be None) + same
+  issue topic or the same normalised title merges, whatever the keys.
+Re-applied offline to the stored 8 runs: findings 8->7, 8->7, 17->16,
+20->19, 8->8, 9->7, 17->15, 17->16; no distinct must-fix lost (e3aa r1's
+doubled vendor-quotation must-fix merged).
+
+### Stability step 1 + M3 unit economics (2026-11-12, offline)
+
+**Vision OCR reuse** (`ocr_cache.py`, migration `011_dpr_ocr_cache.sql`).
+Gemini reads a scanned page slightly differently each call; the text is now
+kept per (document sha256, page, OCR model) and reused when the same file
+is analysed again. Worker: Postgres, Fernet-encrypted with the staging key,
+`DPR_OCR_CACHE_TTL_DAYS` (default 30; 0 = never stored), purged on each
+poll. **This keeps document text after a run ends** (staged bytes are still
+deleted at terminal state) -- a retention decision to confirm. Eval:
+`eval/ocr_cache/` (gitignored). A cache error never fails OCR.
+Note: a fully scanned DPR longer than `DPR_AGENTIC_VISION_MAX_PAGES` (20)
+is refused when LiteParse OCR (Tesseract) is unavailable -- the scanned
+26-page DPR in the eval set hits exactly this.
+
+**d19 figures differed between runs** (principal row read in run 1, not run
+2), and **its DSCR was never computed in either**:
+- DSCR add-back interest falls back to the interest serviced when the P&L
+  interest line was not extracted (`financial_calc.dscr_per_year`).
+- The repayment group is complete only with principal; otherwise one retry
+  with `REPAYMENT_RETRY_HINT` (no retry when the code-read schedule
+  supplies it).
+- Moratorium years (principal 0) get no DSCR (was 6.69 vs a printed 0.00).
+- **Policy change, per the bank's reference CAM template** ("Non-standard
+  repayment formula: Year 1 is 1.97x, not 1.58x" = should-fix): one finding
+  "Stated DSCR does not follow the standard formula" (`dscr_stated_differs`,
+  should-fix; high severity when the stated DSCR is ABOVE the standard one),
+  naming the formula the DPR used when one reproduces it (principal-only
+  denominator / no interest add-back). Per-year DSCR findings stay info.
+  Offline on the stored runs: 912a 1.97 vs 1.58 and 0b33 -> should-fix
+  (no interest add-back); d19 run 1 -> high, principal-only (stated 3.28,
+  standard 2.27); e3aa matches, no finding.
+
+**M3: unit economics** (`unit_economics.py`). Two optional extraction
+groups (attempted only when their pages exist, never retried, never
+reported missing): `unit_economics` (unit, capacity/day or /year, operating
+days, price and variable cost per unit in rupees, per-year utilisation or
+units sold) and `harvester` (only when the DPR names a harvester; fills
+`harvester_assumptions`, so cam_engine_bridge's fuel / crew / acreage checks
+finally get inputs -- they were never extracted by the grouped pipeline).
+Every unit-economics figure must appear on its cited page or is dropped
+(`verify_unit_economics_pages`). Checks, all calculated findings:
+
+| Check | Priority |
+|---|---|
+| units_exceed_capacity (skipped when the harvester acreage check ran) | impact rule (>=5% -> must-fix) |
+| year1_full_utilisation (>=90%; template must-fix #4, was "Not modeled") | must-fix |
+| revenue_rebuild (units x price vs stated, >2%) | must-fix if stated is >=5% above, else should-fix |
+| negative_contribution (price <= variable cost) | must-fix |
+| operating_days_idle (<=90 days; template should-fix #9, was "Not modeled") | should-fix |
+
+Thresholds are named constants in `unit_economics.py` -- for credit review.
+The sector agent now sees these checks and is told to judge the inputs'
+realism instead of re-deriving them. The CAM's operational assumptions
+(Annexure D) are filled from the extraction. Offline: 14 of 15 eval DPRs
+have pages for the unit-economics group, 11 are harvester DPRs. Expected
+cost +INR 1-2 per DPR (two Flash calls). Not yet measured live.
+Tests: 874 passed with Postgres (2 pre-existing stub-wallet failures).
+
+### Stability step 3: fixed per-role checklists (2026-11-12, offline)
+
+`checklists.py`: document (4 items), finance (7), sector (5) and risk (4)
+answer a fixed list (`checks`: issue / ok / not_applicable / cannot_tell,
+with evidence). Code turns each "issue" into a finding whose title,
+category, severity and priority come from the item (`Finding.check_id`);
+free-form findings are capped at 3 per role (most severe kept). Items cover
+the reference template's judgement issues (#5 quotation, #6 one machine
+without breakdown cover -> must-fix, #7 break-even basis, #8 single booking
+channel, #12/#13 running costs incl. off-season upkeep) plus defects seen in
+the eval set (interest missing from P&L, statements disagreeing, working
+capital, unsanctioned subsidy as funding). Arithmetic stays in code.
+Guards: the verifier may reject a checklist finding (evidence) but not
+downgrade it; consolidation prefers a checklist finding over a free-form
+restatement and keeps its severity. Evaluation: new stability measures
+`checklist_answer_agreement` and `checklist_flagged_jaccard` (report column
+"Checklist (answers / flagged)"). Item ratings are for credit review.
+Tests: 882 passed with Postgres (2 pre-existing stub-wallet failures).
+Not yet measured live.
+
+### Live run with checklists, and fixes (2026-11-12)
+
+`dpr_eval.py --repeat 2`, same 4 DPRs (`eval/results/20261112T132005Z`):
+INR 131 (~16/run, up from ~9.4), latency 233 s. Topic agreement rose to
+0.37-0.76 (was 0.24-0.60), must-fix topic agreement 0.67-1.0, figures
+identical 0.89-1.0. But: rejected e3aa had no must-fix in either run, and
+912a / e3aa r1 had no quotation must-fix. Causes and fixes:
+
+- **The verifier merged checklist findings into free-form duplicates**, so
+  the must-fix quotation and one-machine items took the free-form one's
+  title and should/good-to-fix rating. `finding_judge._anchor_rank`: on a
+  merge, calculated beats checklist beats free-form; two calculations or
+  two checklist items never merge; a checklist finding's severity is never
+  changed by an absorbed duplicate.
+- **"cannot_tell" on the quotation item** (912a both runs, e3aa r1): the
+  agent is given every page mentioning a quotation, so for a presence item
+  (`ChecklistItem.absence`) cannot_tell now means missing; the prompt says
+  so too.
+- **Free-form findings are capped at should-fix** (`priority_for_narrative`).
+  Must-fix now comes only from code checks and checklist items -- which
+  together cover all six of the reference template's must-fix items.
+  Free-form "missing document"/"critical" must-fixes were the ones that
+  differed between runs.
+- **DOC_MISSING_PAGES removed**: the verifier rejected it in 5 of 8 runs
+  (the document agent sees only some pages, so "missing" was an artefact).
+- **Non-checklist roles invented their own `checks`** (the field was in
+  every role's schema): `CHECKLIST_OUTPUT_SCHEMA` is used only when the
+  context carries a checklist; the stability metric counts only real items.
+  Re-scored on this run: checklist answer agreement 0.79-0.90.
+
+**Correction to the d19 DSCR entry above.** d19's "TL Installment 4.13" is
+the full yearly instalment (principal + interest; it equals the monthly
+schedule's instalment total), not principal. The DPR's 3.28 = 13.54 / 4.13
+is correct; the "principal-only, standard 2.27" finding came from the
+model copying the instalment row into principal_repayment. Fixes:
+`YearFinancials.total_instalment` (prompt: a whole-instalment row never goes
+in principal); DSCR on an instalment = (PAT + dep + interest) / instalment;
+and `yearly_rows.py` reads the DSCR-statement rows (instalment, principal,
+interest on TL, stated DSCR) in code when LiteParse gives "label v1..vN"
+lines on a DSCR/repayment page -- code-read rows replace the model's, and a
+model principal equal to the instalment row is cleared. Offline on the 4
+DPRs with the stored runs: DSCR identical across runs on 3, within 0.01 on
+0b33; 912a still 1.97 vs 1.58 (should-fix, as the template); d19 no false
+finding. The principal-only detection remains for DPRs that really divide
+by principal alone.
+Tests: 892 passed with Postgres (2 pre-existing stub-wallet failures).
+
+### Live run after the checklist fixes (2026-11-13)
+
+`eval/results/20261113T054406Z`, same 4 DPRs x 2: INR 129 (~16/run),
+latency 218 s, 0 extraction failures. Both rejected DPRs flagged with
+must-fix in every run. Must-fix lists identical between runs on 912a, 0b33
+and d19 (must-fix topic agreement 1.0); e3aa 0.667. Topic agreement
+0.64-0.81 (was 0.24-0.60 before the checklist work); checklist answer
+agreement 0.68-0.95; figures identical 1.0 on three DPRs, 0.91 on d19.
+Missing quotation must-fix in all 8 runs; one-machine must-fix in 5 of 6
+runs of the DPRs where it applies.
+
+Fixed after the run (offline, tested):
+- e3aa r2 answered RISK_SINGLE_ASSET "cannot_tell -- no DPR source pages
+  were provided": the risk agent got only other agents' summaries. It now
+  gets up to 6 operations/cost/quotation pages (3,500 chars each).
+- d19 r1: the model derived principal (instalment - interest) itself; when
+  code reads an instalment row and no principal row, model principals are
+  cleared (yearly_rows.apply_yearly_rows).
+- Template must-fix #4 (full capacity from year 1) was missed on 912a/0b33:
+  they print 1200 acres, Rs 1800/acre and year-1 revenue 21.6 lakh but no
+  utilisation row. unit_economics now implies year-1 volume = revenue /
+  price (utilisation only, never the revenue rebuild). Replayed on the
+  stored runs: fires in both runs of 912a and 0b33, not on d19/e3aa.
+
+Still open: acreage/fuel/crew checks cannot run on these DPRs -- they do not
+print acres/day, days/season or litres/acre (the reference CAM judged them
+against external benchmarks: M5 research). Fund-flow totals extracted in
+one d19 run only. Cost ~INR 16/run: checklist answers carry explanations
+for every item, not only issues.
+
+### Confirmation run and cost cut (2026-11-13)
+
+Before the run: the new extraction groups lacked per-role entries, so they
+ran at MEDIUM thinking, uncapped (~7k output tokens per call); now LOW and
+4096 (`gemini._ROLE_THINKING_LEVEL/_ROLE_OUTPUT_CAP`). Checklist answers
+carry explanation/evidence only for "issue". Sector/risk visible cap 6144
+(a truncated sector answer had been re-asked in full at double the cap).
+
+`eval/results/20261113T062253Z`, same 4 DPRs x 2: **INR 111 (~14/run, was
+16)**; the two extraction groups now 14-870 output tokens per DPR (was
+~24k); mean latency 195 s; 0 extraction failures. Both rejected DPRs
+flagged in every run; must-fix lists identical between runs on 0b33, d19,
+e3aa (quotation + one-machine on all; 0b33 also full capacity from year 1);
+checklist answer agreement 0.79-1.0; figures identical 0.91-1.0; topic
+agreement 0.64-0.74.
+
+912a differed: (1) no "full capacity from year 1" in either run -- the
+model filed the DPR's 1200 planned acres under capacity in the previous run,
+nowhere in run 1 and as units sold in run 2. `full_capacity_per_year` now
+falls back to the harvester group's acres per year (read in every run) and
+then to the largest printed per-year volume; with no generic unit economics,
+one is built from the harvester rate and running cost per acre. Replayed on
+the stored 16 runs of the last two rounds: fires in all 8 runs of 912a/0b33,
+none of d19/e3aa. (2) RISK_SINGLE_ASSET "ok" in one run, "issue" in the
+other: rephrased as a presence check (does the DPR show breakdown cover --
+insurance and a service contract or back-up?), marked `absence`, so
+"cannot_tell" means not shown.
+
+### M5: Policy and Research agents with Google Search grounding (2026-11-13, offline)
+
+`grounding.py`. Research and policy no longer return the fixed "not
+verified" stub when `DPR_AGENTIC_GROUNDING_ENABLED` (default true): each runs
+(1) `GeminiAgentClient.grounded_search` -- Gemini with the `google_search`
+tool, plain text plus `groundingMetadata` -- then (2) `structure`, which
+turns the answer into statements citing numbered *supported* segments.
+Code keeps a statement only if it cites a segment Google attributes to a web
+source; drops eligibility/approval/sanction wording; tiers each source by
+domain (official: *.gov.in, *.nic.in, RBI, NABARD, SIDBI, public-sector
+banks' sites; else secondary).
+
+**Privacy:** the search brief is built by code (`build_search_brief`) from
+bank, scheme claimed, sector/subsector, **state only** (never village,
+district or address), a loan band and the DPR's operating figures; borrower-
+name words are stripped from every free-text field. Checked offline on the 4
+eval DPRs' stored facts: no borrower-name word in any brief.
+
+**Bank name:** the DPR Analysis service detail `BankName`, now staged with
+the upload (`dpr_upload_staging.project_context_ciphertext`, Fernet, migration
+012) and passed as `AnalysisInput.project_context` (it was always empty);
+else the new document fact `bank_name`.
+
+**Outputs:** `AnalysisResult.external_evidence`. Official policy statements
+-> Annexure F `PolicyAssessment.statements` (status "bank confirmation
+pending", source URL, retrieval date) plus a `POLICY_CONFIRMATION:` question
+each (max 4); non-official ones -> unverified policy areas. Research
+statements -> Annexure D "Market evidence". Benchmarks (metric + range)
+let code check the DPR: annual acreage vs benchmark acres/day x operating
+days (template #1, which these DPRs cannot be checked for internally) and
+rate per unit vs the market range -- should-fix at most, sources named.
+
+Cache: `dpr_grounding_cache` (migration 012) / `eval/grounding_cache/`, key =
+hash of the brief without the DPR's own figures, TTL
+`DPR_GROUNDING_CACHE_TTL_DAYS` (7); purged by the worker poll. A failed
+search degrades the role (`ROLE_UNAVAILABLE`); a client without
+`grounded_search` runs without grounding. Search queries are logged per call
+and priced in the evaluation (USD 0.014/query, indicative).
+
+Not yet measured live. Note: Google's grounding source URLs are redirect
+links (vertexaisearch...), the domain is in the title; they may expire.
+Tests: 911 passed with Postgres (2 pre-existing stub-wallet failures).
+
+### First live run with grounding (2026-11-13)
+
+`eval/results/20261113T072743Z`, same 4 DPRs x 2: **must-fix lists
+identical between runs on all 4 DPRs** (must-fix topic agreement 1.0), both
+rejected flagged every run; 912a now has quotation, one-machine and full
+capacity from year 1 in both runs. Topic agreement 0.67-0.88, checklist
+answers 0.84-0.90. Policy search returned 18-26 statements per DPR, 2-16
+from official sources (e.g. AIF 3% interest subvention up to Rs 2 crore --
+dac.gov.in, pib.gov.in); scribd/apnikheti etc. correctly tiered secondary.
+Cost INR 228 (~28/run) -- too high, because:
+- **research structuring looped to its output cap** on 912a/0b33 (8-16k
+  tokens from a 1.5k-token prompt, retried at double): research
+  unavailable there, so no benchmark check ran. Fixed: at most 15
+  statements (`maxItems` + prompt); on a structuring failure the supported
+  sentences themselves are kept as statements (sources intact, no metrics).
+- **the cache missed between runs**: the brief changed with the document
+  agent's wording (scheme "AGRI INFRA" vs "Agriculture Infrastructure Fund
+  AIF"; sector present in one run). Fixed: schemes and banks mapped to
+  canonical names in code (unrecognised schemes are omitted, not sent as
+  free text); a harvester DPR's sector/subsector come from the extraction.
+  Offline on this run's facts: r1 and r2 briefs now identical on all 4 DPRs.
+- `.bank.in` (RBI's bank domain) added to official sources.
+
+### Second grounded run, and the one-call redesign (2026-11-13)
+
+`eval/results/20261113T081823Z`: must-fix lists identical between runs on all
+4 DPRs again; the cache worked (all 8 second-run searches were hits, so the
+evidence was identical between runs); INR 174 (~22/run). But the
+structuring call still looped to its cap on research (~24.5k output tokens
+per DPR despite maxItems 15); the fallback kept the sentences, so no
+benchmark figures, and once produced junk ("capacity 0.0").
+
+Redesign (offline): **no structuring call**. Statements are the sentences
+Google attributes to a source (markdown table rows flattened to plain
+text), official first, max 15. Research ends its answer with
+`BENCHMARK: metric = low-high unit` lines; code keeps one only if both
+figures appear in a source-attributed sentence, whose sources it carries.
+One Gemini call per agent instead of two. `.ac.in` / `.res.in`
+(agricultural universities, ICAR) count as official. `GROUNDING_VERSION` is
+part of the cache key, so results cached under an older design are never
+reused.
+
+Checked offline on the real recorded research answers from this run: the
+sourced sentences carry the template's benchmarks (8-15 acres/day, 20-30
+days/season, 2 seasons, 500-900 acres/year from tnau.ac.in); with BENCHMARK
+lines in that form, 912a gets "The DPR plans 1200 acres a year. Published
+benchmarks give at most 15 acres a day over about 60 operating days, i.e.
+about 900 acres a year" -- the reference template's must-fix #1, here
+should-fix because it rests on external evidence. Not yet measured live
+(the old answers have no BENCHMARK lines).
+
+### Live run with one-call grounding (2026-11-13)
+
+`eval/results/20261113T085125Z`, same 4 DPRs x 2: **INR 159 (~20/run)**,
+latency 201 s. BENCHMARK lines work: sourced benchmarks on all 4 DPRs (912a:
+8-15 acres/day, 35-50 days/season, 2 seasons, Rs 1600-2400/acre), cached
+identically for run 2 (8/8 cache hits); 13-21 official statements per DPR
+(policy 12-15 of 15 official). Must-fix lists identical between runs on all
+4 DPRs; topic agreement 0.73-0.78 (best so far); checklist answers
+0.79-0.95; figures identical 0.90-1.0.
+
+The acreage check did not fire: it compared with the top of every range
+(15 x 100 = 1500 acres). Now it compares with the typical (mid-range)
+figure and states both; on this run's evidence 912a -- the bank's
+reference DPR -- gets "plans 1200 acres a year ... typically 11.5 acres a
+day over about 85 operating days, i.e. about 978 acres a year (1500 at the
+top of the published ranges)", the template's must-fix #1 (should-fix
+here: external evidence). 0b33, same 1200-acre plan, was not flagged: its
+research brief (with bank, scheme, state) found wider ranges. Research now
+searches with its own brief -- sector, subsector, state, operating figures
+only (`RESEARCH_KEYS`) -- so DPRs for the same machine and state share one
+benchmark set; `GROUNDING_VERSION` 3.
+
+### Full 15-DPR run (2026-11-13)
+
+`eval/results/20261113T095759Z`, all 15 DPRs once: **15/15 completed**, INR
+289 (~19/DPR), mean 217 s (the scanned DPR 454 s: `.env` allows 100 vision
+pages, so all 26 pages went to Gemini OCR). **6/6 rejected DPRs have
+must-fix items** (quotation + one machine on all six). Every approved DPR
+also has 1-3 must-fix items (one machine on 13 of 15 harvester DPRs; full
+capacity from year 1 on 5) -- consistent with the reference CAM, which
+lists six must-fix items for a DPR the bank approved; must-fix here means
+"fix before you apply", not "will be rejected".
+
+Bugs found and fixed (offline):
+- **False must-fix "DSCR YEAR 1: 0.0" (ed8d)**: `yearly_rows` read a DSCR-page
+  row printed in rupees (4,06,680) as lakh. Money rows with a value >= 5000
+  are now converted from rupees. The same DPR printed a "Total instalment"
+  row equal to its "Principal" row: an instalment row equal to principal is
+  now treated as principal (else the DSCR leaves out interest). Checked on
+  ed8d's pages: DSCR year 1 now from principal 4.07 lakh plus interest.
+- **"Insufficient information" on two approved DPRs (9136, 4e9c)**: the
+  repayment call hit MAX_TOKENS transcribing a long monthly schedule the
+  code parser does not recognise (3 of 15 DPRs). Repayment visible cap
+  4096 -> 8192.
+- **Benchmark findings** now carry `check_id` BENCHMARK_ACREAGE /
+  BENCHMARK_RATE: anchored like checklist items (seen live: the verifier
+  downgraded 912a's to good-to-fix).
+- The research summary now names what research actually searched for.
+
+**Limitation, not fixed: benchmark consistency across DPRs.** The acreage
+check fired on 912a and c0aa (1200 acres) but not on 0b33 or 9136 (also
+1200) nor on 3e1c / e778 (1600). Two cached benchmark sets were in play,
+decided by whether the brief had a state: with "Madhya Pradesh", 15-25
+acres/day and 60-90 days (typically ~1500 acres/year); without, 8-14
+acres/day and 60-120 days (~990). The searches found different machine
+classes. The check is only as consistent as one search result; the fix is
+a credit-reviewed benchmark table per sector (and the machine type
+extracted), used before search.
+Tests: 922 passed with Postgres (2 pre-existing stub-wallet failures).
+
+## Benchmark table by machine class (2026-11-13)
+
+**Problem (15-DPR run):** the acreage benchmark came from web search, and
+each DPR's cached search returned a different machine class (15-25 acres/day
+for large self-propelled machines, 8-14 for tractor-mounted) and season
+lengths from 40 to 300 days. The same 1200-acre plan for the same 14-ft
+machine was flagged on two DPRs and not on two others.
+
+**Change:**
+- `benchmarks.py` (new):
+  - `detect_harvester_machine` reads the machine from the DPR text by regex:
+    self-propelled (also "PROPELIED", an Ashok Leyland engine, or 90 HP and
+    above), tractor-mounted (only if nothing says self-propelled), cutter
+    bar in feet, engine HP. No LLM.
+  - `HARVESTER_BENCHMARKS` holds one entry per class
+    (self_propelled_large, self_propelled_small, tractor_mounted), each
+    with a status (draft or approved), basis, reviewed_by and reviewed_on.
+    An unknown class uses the largest (most lenient) entry.
+  - `run_benchmark_checks` checks planned acres/year against
+    typical = mid acres/day x mid days/year, plus acres/day and rate/acre
+    against the top of the range (10% tolerance).
+  - Findings are should_fix, provenance "calculated", with check_ids
+    BENCHMARK_ACREAGE, BENCHMARK_ACRES_PER_DAY and BENCHMARK_RATE, so the
+    verifier can neither reject nor downgrade them.
+- Wiring and output:
+  - The checks run in `extract_calculated_facts`, after unit economics,
+    whether or not grounding is on.
+  - The acreage finding is skipped only when the engine's own-figures
+    acreage check *flagged* the plan. Seen live: 20 acres/day x 80 days =
+    1600 agrees with itself, so only the benchmark can question it.
+  - The record goes to `ProjectFinancials.benchmark_used`, which is set by
+    code and never in a Gemini schema. Annexure D shows the machine and the
+    benchmark used, labelled draft or approved.
+- `grounding.benchmark_findings`:
+  - It no longer produces findings for harvester DPRs. Search figures stay
+    as "Market evidence" in Annexure D.
+  - It keeps only the rate check for sectors the table does not cover.
+
+**Replay (offline: the 15 DPRs' pages + last run's financials):**
+- Every harvester DPR's class was read: 13 self-propelled 14-ft or 100 HP
+  and above ("large"), one 7-ft ("small"). The 2 non-harvester DPRs get no
+  class.
+- 1600-acre plans (3e1c, e778) are flagged. All four 1200-acre 14-ft plans
+  pass. The 7-ft DPR (1100 acres against a typical 600) is flagged.
+- The 5 Rewa DPRs have no planned acreage extracted, so they are not checked.
+
+**Draft figures (pending credit review):**
+
+| Class | Acres/day | Days/year | Rate per acre (Rs) |
+|---|---|---|---|
+| Large | 12-20 | 60-90 | 1400-2200 |
+| Small | 6-10 | 60-90 | 1200-2000 |
+| Tractor-mounted | 5-8 | 60-90 | 1000-1800 |
+
+The small-class figures are scaled from the large class by cutter width;
+they are the weakest. No per-state season lengths yet.
+
+Tests: new tests/test_dpr_benchmarks.py; test_dpr_grounding updated.
+
+Follow-up (same day): the draft figures' provenance is now written out per
+figure in `benchmarks.py`: DPR claims (by sha prefix), the search domains,
+and which parts are judgement. The small-class figures and the
+tractor-mounted rate have no source. Each entry's `basis` states this
+briefly, with no DPR references. Annexure D shows it as "Benchmark basis".
+
+Benchmarks approved for use (2026-11-13, user): all three entries are
+status "approved", reviewed_by "LAS project team (provisional, pending
+credit review)". Findings and Annexure D now say "approved 2026-11-13".
+The basis text still states the figures' real provenance. Values are to be
+replaced when credit reviews them.
+
+## Polyhouse benchmarks and the balance-sheet check (2026-11-13)
+
+Analysed the approved polyhouse DPR (ed8d: NVPH, 4000 m2, Dutch rose, MP).
+Its operating figures fit the benchmarks (structure Rs 900/m2, year-1 yield
+about 160 stems/m2, Rs 6 a stem). Its projected balance sheet does not
+balance in any year (gap 29.65 lakh), which nothing caught.
+
+**Polyhouse extraction:**
+- New optional group "polyhouse" (financial_extraction.py, gemini.py),
+  `PolyhouseAssumptions`. It runs only when the pages say polyhouse,
+  greenhouse, shade net or NVPH.
+- Fields: structure type, crop, produce unit, area m2, structure cost, plants,
+  yield per m2 or per plant, units a year, price per unit.
+- Every figure must appear on its cited page (`verify_polyhouse_pages`). The
+  structure cost may be printed in rupees.
+- The context router tags polyhouse and sq.mt pages as operations, and
+  "sales price" as revenue assumptions.
+
+**Polyhouse benchmarks (benchmarks.py):**
+- Structure cost norm per m2:
+  - NVPH Rs 844-950: NHB, Assam, MP SLBC and West Bengal schedules.
+  - Unstated type Rs 844-1650: parliamentary answer; lenient.
+- Dutch rose: 100-200 stems/m2/year and Rs 3-8 a stem. These come from
+  guides, IIHR, a university trial and one market study, not an official
+  dataset.
+- Provisionally approved like the harvester figures; sources are in the code
+  comment and the `basis`.
+- Checks, all should-fix and anchored:
+  - BENCHMARK_STRUCTURE_COST.
+  - BENCHMARK_YIELD: yield as printed, else per plant x plants, else units /
+    area, else implied from year-1 revenue / price.
+  - BENCHMARK_RATE: per-piece prices only.
+  - A crop without a norm gets only the structure check.
+- `benchmark_used["annexure"]` now holds Annexure D lines for every sector;
+  cam_adapter copies them.
+- Search benchmarks no longer produce findings for polyhouse DPRs either.
+
+**Balance sheet (all sectors):**
+- yearly_rows.py reads the "Total assets" / "Total liabilities" rows on
+  balance-sheet pages, in code, converting rupees to lakh.
+- financial_calc.balance_sheet_balances produces one finding, "Projected
+  balance sheet does not balance", listing the years and the largest gap.
+  The generic 5% rule makes it must-fix.
+- Across the 15 DPRs: 4 have readable totals. 3 balance; ed8d does not.
+
+Not yet verified live: the polyhouse group's Gemini extraction on ed8d (one
+paid run, about Rs 20).
+
+Tests: test_dpr_benchmarks, test_dpr_yearly_rows, test_dpr_financial_calc
+and test_dpr_unit_economics extended. Result: 942 passed with Postgres, plus
+the 2 pre-existing stub-wallet failures.
+
+Live check (2026-11-13, run 20261113T120448Z, ed8d only, Rs 26.87, 207 s):
+- The polyhouse group extracted exactly the hand-read figures: NVPH,
+  Dutch Rose, Bunch, 4000 m2 (p4), structure 36 lakh (p23), Rs 6 (p30). Its
+  page checks passed.
+- Benchmarks: all within range; Annexure D lines present.
+- The balance-sheet must-fix fired: 57.27 vs 86.92 lakh in year 1.
+- DSCR year 1 is now 5.03 (it was a false 0.0 before the yearly_rows fix).
+- 4 must-fix in all: means of finance (17.5+35+52.5 = 105 against a 70-lakh
+  cost; the subsidy is counted on top), balance sheet, DOC_QUOTATION and
+  RISK_SINGLE_ASSET.
+- Note: RISK_SINGLE_ASSET is worded for machinery ("breakdown cover"); for a
+  polyhouse the analogous risk is structure or crop loss. Its wording should
+  become sector-neutral.
+
+RISK_SINGLE_ASSET reworded to be sector-neutral (2026-11-13, user): "cover
+against its loss", meaning insurance of the asset (and of the crop or
+livestock) and a maintenance, service or back-up arrangement. Title: "Income
+depends on one asset without cover against its loss". The check_id,
+must-fix rating and absence rule are unchanged. No paid run.
+
+## Dairy and cold-storage benchmarks (2026-11-13)
+
+No dairy or cold-storage DPR is in the evaluation set. The figures come from
+public sources only, with per-figure provenance in the benchmarks.py
+comments. They are provisionally approved, like the others.
+
+**Extraction:**
+- New optional groups "dairy" (`DairyAssumptions`) and "cold_storage"
+  (`ColdStorageAssumptions`). They are triggered by sector words
+  (`_SECTOR_TERMS`): none of the 15 evaluation DPRs triggers them.
+- Page verification is generalised: `verify_sector_pages` covers polyhouse,
+  dairy and cold storage.
+
+**Dairy (by breed):**
+- The breed is read from the extracted animal type, else the breed named
+  most often in the pages. If no breed is found, the crossbred-cow entry is
+  used (lenient), and Annexure D says so.
+
+| Breed | Yield (litres/day) | Price (Rs/litre) |
+|---|---|---|
+| Crossbred cow | 7-12 | 30-45 |
+| Buffalo | 6-9 | 45-65 |
+| Indigenous cow | 3-5 | 30-45 |
+
+- Checks:
+  - yield/day;
+  - lactation days, at most 305;
+  - annual milk per animal, at most high yield x 305;
+  - price.
+
+**Cold storage (by type):**
+- Cost per MT:
+  - Type 1 (single temperature zone): Rs 8,000-9,600.
+  - Type 2 (multi-chamber/PEB): Rs 10,000-12,000. Also used when the type is
+    not stated (lenient).
+  - The tops of both ranges are the reported 2025 MIDH revision, unverified.
+- Capacity: at most chamber volume / 3.4 m3 per MT (NHB norm).
+- Potato rent: Rs 225-380 a quintal a season. It is checked only for potato
+  on a seasonal basis.
+
+**Other changes:**
+- `run_benchmark_checks` runs every sector a DPR belongs to and merges the
+  Annexure D lines.
+- `covered_by_table` decides when search benchmarks stay evidence-only.
+
+Tests: 948 passed with Postgres, plus the 2 pre-existing stub-wallet failures.
+Nothing is verified live: there is no DPR for either sector.
+
+Live check on public model projects (2026-11-13, run 20261113T122536Z,
+Rs 37.19; plus two single-call dairy probes, under Rs 1 each):
+- NABARD's 10-buffalo dairy model (agritech.tnau.ac.in) and Bihar's cold
+  storage Type II, 2,000 MT model project (horticulture.bihar.gov.in), kept
+  in the scratchpad only.
+- Both groups ran and the reports completed.
+- Cold storage read correctly: Type II, 2,000 MT, 468 lakh. Rent is printed
+  per MT per day, so it is correctly not compared with the potato range.
+- Dairy read the breed, animals and yield. It returned lactation days (270)
+  and milk price (Rs 26) empty although both are printed on page 5. Naming
+  the typical labels in the prompt fixed it: the probe read 270, 26 and feed
+  Rs 93/day.
+- Benchmark changes from this check:
+  - Buffalo yield range widened to 6-10. At 6-9 it flagged NABARD's own
+    10 litres/day.
+  - The cost-norm findings (cold storage and polyhouse) are reworded around
+    the subsidy cap: "... above the subsidy cost norm". The norm is what
+    subsidy is computed on, not the market cost; the Bihar model itself is
+    at Rs 23,400/MT against a norm of Rs 10,000.
+  - The 3.4 m3/MT capacity norm is confirmed by the Bihar model's chamber
+    sizes (3.46 m3/MT).
+
+## CAM: documents not verified, verification by IFPL (2026-11-13, user)
+
+The DPR analysis never verifies that documents are genuine. The CAM now
+says so, and names who does.
+- **Settings:** `document_verification_provider` ("IFPL") and
+  `document_verification_service_code` ("VALUE_ADDITION").
+- **Snapshot:** `CAMSnapshot.document_verification`
+  (`DocumentVerificationNotice`) records provider, service name, fee and
+  documents. The documents are: KYC (identity and address proof, PAN); land
+  or premises records; credit bureau report.
+  - It is frozen per report version, so a later fee change does not rewrite
+    an issued report.
+  - The fee comes from the service catalogue (Value Addition, Rs 500 today).
+  - Old snapshots (None) show the notice without a fee.
+- **Page 6:** an always-present "Documents not verified by this report"
+  notice. IFPL, our regulated partner, verifies and collects the documents
+  under the Value Addition service, with the service charge.
+- **Elsewhere:** also in report_limitations and Annexure G.
+- **Layout:** set in small type, page 6 still fits one physical page.
+  Pre-existing: on the polyhouse DPR, CAM pages 1 and 3 overflow onto extra
+  physical pages (8 PDF pages for a 6-page report), unrelated to this change.
+- Follow-up (user): IFPL does not cover the vendor quotation. The notice
+  now also says the quotation is validated under our Doc Verification
+  service (`quotation_verification_service_code`; fee from the catalogue,
+  Rs 500, frozen in the snapshot). The wording was tightened so page 6
+  still fits one page (checked visually on the polyhouse report).
+
+## Repayment capacity, proof of revenue, scheme fit (2026-11-13, user)
+
+**DSCR norm (financial_calc.py):**
+- `dscr_average` = total cash available / total debt service over the
+  repayment years, via `dscr_parts`: the same inputs and skips as
+  `dscr_per_year`.
+- Compared with DSCR_NORM_AVERAGE = 1.25. No RBI figure exists; this is the
+  common Indian-bank minimum per public sources, cited in the code.
+- Below 1.0 is must-fix; below 1.25 is should-fix.
+
+**Stress test, all sectors:**
+- `dscr_stress`: the lowest yearly DSCR with the price 10% and 20% lower,
+  every cost unchanged and no tax saving (conservative).
+- Below 1.0 at 10% is should-fix; at 20% is good-to-fix. Only the smallest
+  failing fall is reported.
+
+**Proof of revenue:** new sector checklist item SEC_DEMAND_EVIDENCE
+(should-fix, presence): buyer or union agreements, bookings, letters of
+intent, or past sales.
+
+**Scheme fit (schemes.py, new):**
+- A scheme rules table: PMEGP, PMFME, SMAM CHC, AIF, MIDH/NHB, CGTMSE,
+  NABARD refinance. Sources are in the docstring; provisionally approved.
+- Uses the lenient end of each rule; the category and area are rarely
+  stated.
+- Run in parallel_graph's candidates node, which has the document agent's
+  scheme_claimed and the financials.
+- Checks:
+  - subsidy in the means of finance vs the most any claimed scheme gives;
+  - subsidy under a scheme that gives none;
+  - the project-cost cap;
+  - the minimum own contribution;
+  - the AIF subvention rate (3%) and loan cap (Rs 2 crore).
+- Findings are should-fix with SCHEME_* check_ids.
+- Records go to `AnalysisResult.scheme_checks`; Annexure F lists the rules
+  applied and the most each scheme can give.
+- Fixed before shipping: "Applicant margin money" (the borrower's 25% share)
+  was read as subsidy and flagged on 3 AIF DPRs. Only subsidy, grant or
+  back-ended lines now count as subsidy.
+
+**Offline replay on the 15 DPRs (stored results, no paid calls):**
+- Average DSCR is 2.7-7.3 everywhere, so the norm does not fire.
+- The stress test fails only for e3aa (20% fall, year 7, good-to-fix).
+- No scheme findings: mostly AIF without a subsidy line.
+
+Side note: running eval on another --data-dir overwrites
+eval/manifest.local.json. It was rebuilt from DPRData (15 DPRs, 6 rejected).
+
+Tests: test_dpr_schemes.py (new), financial_calc and checklists extended.
+Result: 962 passed with Postgres, plus the 2 pre-existing stub-wallet
+failures.
+
+## New CAM layout, phase 1 (2026-11-13, management-approved design)
+
+The design is in /NewCAMdesign: the C1-C5 HTML boards and the 5-page
+template PDF. The user's decisions:
+- product "LAS DPR Analyzer";
+- reference from the DB row;
+- readiness = share of checks passed;
+- "Reviewed by" removed;
+- IFPL credit/KYC through an API, in either order;
+- re-review in 7 days;
+- annexures as appendix pages.
+
+**Layout:**
+- cam_render_v2.py and templates/cam_v2/ (report.html.jinja, v2.css) build
+  the cover, sections 1-5 and appendix A-G as flowing paged media.
+  - Header and footer are running elements; "Page N of M" uses counter(pages).
+  - The action-plan table continues across pages and repeats its headings.
+  - Inter is bundled (cam/fonts/Inter-400..800.ttf, OFL licence alongside).
+- `CAM_SNAPSHOT_SCHEMA_VERSION` is "2.0.0". `cam_render.uses_v2_layout`
+  picks the layout, so 1.x snapshots (issued reports) keep the six-page
+  layout. Their tests are pinned to it with an autouse fixture.
+
+**New snapshot fields (all optional):**
+- report_reference, financial_review, document_checklist,
+  kyc_verification, scheme_review, stress_test, re_review_by;
+- readiness checks_passed / checks_total, with score_mode "checks";
+- ProjectProfile.lending_bank (BankName service detail, else the DPR);
+- VerifiedFinding.why_it_matters / should_be.
+
+**cam_review.py builds them:**
+- the readiness score: check families plus checklist ok/issue;
+- the page-4 measures from AnalysisResult.calculations: cost,
+  contribution, subsidy vs scheme maximum, average and minimum DSCR. The
+  rest are pending until phase 2;
+- documents from the checklist answers;
+- the scheme column and gaps (schemes.py now records gaps per rule);
+- the stress box (10% price fall, lowest DSCR).
+
+**AnalysisResult:**
+- `calculations` (every code check) and `service_details` (bank and
+  project name) are now stored with each run.
+
+**Reference:**
+- store_report reserves nextval of the dpr_report_artifacts.id sequence
+  before building the snapshot and inserts with that id.
+- It prints "PSR/<year>/<id:06d>", tested against the real row.
+
+**KYC:** page 4 shows "Pending: verified by IFPL under our Value Addition
+service (Rs 500)" until KycVerification is filled (phase 5, IFPL API).
+
+Checked visually on ed8d (polyhouse, 27 findings, 14 pages: 7 report + 7
+appendix) and 912a (harvester, AIF).
+
+Tests: test_dpr_cam_render_v2.py (15). Result: 977 passed with Postgres,
+plus the 2 pre-existing stub-wallet failures.
+
+Next: phase 2 (IRR, payback, D:E, FACR, stated ratios, assumptions table,
+stress average and sensitivity), phase 3 (scheme comparison), phase 4 (why
+it matters / should be, documents checklist), phase 5 (IFPL API).
+
+## New CAM layout, phase 2 (2026-11-13): page 3, "Your figures, recomputed"
+
+**Bank ratios in code (financial_ratios.py, new; no LLM):**
+- project IRR: -cost, then net profit + depreciation + interest, no
+  terminal value, so conservative;
+- payback: cash accruals against cost, interpolated within the year;
+- debt:equity: loan / (cost - loan);
+- fixed asset coverage: the lowest (fixed assets - depreciation) / (loan -
+  principal repaid), from the start; working capital and preliminary
+  expenses excluded;
+- cash break-even (% capacity): needs the variable cost per unit. With
+  no year-wise volume it uses the volume revenue / price implies; with no
+  PBT line, tax counts as a cost (the cautious side);
+- average DSCR with the price 10% lower;
+- headroom: how far price can fall, or costs rise, before the average
+  DSCR reaches 1.10. The smaller one is the most sensitive assumption.
+- They are in run_all_checks, so agents see them, but they are listed in
+  `financial_calc.MEASURE_CHECKS`: never a finding, and not counted in
+  the readiness score. A DPR's IRR or break-even often differs from ours
+  by method, not error.
+
+**The DPR's own ratios:**
+- new optional extraction group "stated_ratios" (StatedRatios): IRR,
+  average DSCR, break-even and its basis, D:E, FACR, payback, price and
+  cost escalation, depreciation method and rate;
+- page-verified like the sector groups;
+- runs when a page has a ratio, assumption or DSCR heading (new
+  context_router sections "ratios" and "assumptions"; "irr" alone would
+  match "irrigation"). These sections are kept out of FINANCIAL, so the
+  agents' contexts are unchanged;
+- LOW thinking, 2048-token cap: about one small call per DPR.
+
+**cam_review on page 3:**
+- the five rows that were pending (IRR vs the loan rate, cash break-even
+  ≤ 65%, D:E, FACR ≥ 1.25, payback < tenure) now print;
+- the D:E limit is 3:1, or what the scheme's minimum own share allows
+  (10% own share means 9:1);
+- the DPR's average DSCR is the printed one when the DPR states it.
+
+**Assumptions to revise (new snapshot field `assumption_review`):**
+- price and yield against the sector benchmark table. benchmarks.py
+  records now carry `reference` ranges; a figure above the top is
+  flagged and the top suggested;
+- utilisation against a 60/70/80 ramp-up (provisional LAS reference);
+- cost escalation against price escalation (RBI 4% target as reference);
+- the interest rate (confirm with the branch);
+- depreciation against Income Tax 15% WDV, using the implied year-1 rate
+  when none is printed.
+
+**Stress box:** average and lowest DSCR at -10% price, plus the most
+sensitive assumption.
+
+**Appendix:**
+- Annexure F prints the source domain next to Google's redirect link
+  (new PolicyStatement.source_domain);
+- only URL cells wrap anywhere.
+- Page-3 tables use a fixed layout, so the two tables and the stress box
+  fit on one page.
+
+**Checked offline on the 15 stored results** (a preview script recomputes
+the new checks):
+- IRR 15-70%; D:E 1.2-4.0;
+- FACR: 0.93 in year 6 on 912a and c0aa (straight-line book value below
+  the outstanding loan);
+- cash break-even only on 912a (18.3%), since the others print no
+  variable cost per unit. Their DPR column fills from stated_ratios on
+  the next paid run.
+
+Tests: test_dpr_financial_ratios.py (16). Full suite with Postgres: 1181
+passed, plus the 2 pre-existing stub-wallet failures.
+
+Next:
+- phase 3, scheme comparison;
+- phase 4, why it matters / should be, documents;
+- phase 5, IFPL API;
+- phase 6, a paid run on the 15 DPRs (fills the stated ratios) and a
+  visual review.
+
+## New CAM layout, phase 3 (2026-11-13): page 1, scheme comparison
+
+**schemes.py additions (sources searched 2026-11-13, in the module
+docstring):**
+- `SchemeRule` gains:
+  - `sectors`: AIF covers harvester, polyhouse and cold storage; SMAM
+    covers harvester; MIDH covers polyhouse and cold storage; AHIDF
+    covers dairy processing only;
+  - `tenure_moratorium`;
+  - `combines_with`: AIF with PMEGP, SMAM and MIDH;
+  - `cautious_pct` / `cautious_cap_lakh`.
+- New rule AHIDF: 3% subvention for 8 years, 10% own share, a 25%
+  guarantee for MSMEs; covers dairy and meat processing, not milch
+  animals.
+- `project_sector(fin)`: harvester, polyhouse, cold_storage or
+  dairy_farm, from the sector groups. None for any other project, or one
+  that looks like two sectors.
+- `subvention_value()`: the subvention rate on the loan outstanding each
+  year (the DPR's own principal, else equal principal after the
+  moratorium).
+- `max_subsidy(..., cautious=True)` and `scheme_options()`: every
+  covering scheme, alone and in allowed pairs, ranked by estimated
+  benefit.
+- **Two ends of each rule.** Checks of a DPR's claim keep the LENIENT end;
+  recommendations use the CAUTIOUS end, so we never promise the best
+  case:
+  - SMAM: one self-propelled combine, 40% at most Rs 6.4 lakh (the CHC
+    cap is Rs 100 lakh);
+  - MIDH: 35% (general areas), polyhouse structure only;
+  - PMEGP: 15%.
+- MIDH polyhouse, checking a claim: 50% of the whole project cost, since
+  planting material and cultivation also get assistance. A structure-only
+  maximum falsely flagged ed8d (an approved DPR, 35 lakh = 50% of 70).
+- New finding `SCHEME_ACTIVITY_<KEY>` (should-fix) and gap "Eligible
+  activity" when the claimed scheme does not cover the sector (e.g. AIF
+  for a dairy farm).
+
+**cam_review.scheme_review:**
+- Columns: chosen, recommended (best option) and alternative, each with
+  - eligibility: likely / partly / no;
+  - ceiling, own share, subsidy (cautious, with "up to" the lenient
+    rate);
+  - subvention (≈ value), guarantee, tenure, combinable schemes;
+  - estimated total benefit.
+- Verdict:
+  - not_eligible: the claimed scheme does not cover the sector;
+  - correct: the chosen option is the best, or within max(0.5 lakh, 5%)
+    of it;
+  - better_available: otherwise;
+  - not_assessed: a sector the table does not compare.
+- Recommendation text: "Keep X and add Y" or "Switch to Y", with both
+  benefit figures and "confirm with your bank".
+- Dairy farms: DEDS ended in 2020-21 and AHIDF does not cover them.
+- Gaps under the recommended option: the scheme to add, the claimed
+  scheme's gaps it keeps, and each added scheme's cost ceiling and own
+  share.
+- The cover's scheme-fit chip is coloured by verdict.
+
+**Offline on the stored DPRs:**
+- 10 AIF-only harvester DPRs: "Keep AIF and add SMAM", ~₹9 lakh against
+  ~₹2.7 lakh;
+- 0b33, which already claims AIF + SMAM: correct;
+- ed8d: keep MIDH, add AIF;
+- 64e1 (no scheme named): MIDH + AIF;
+- no false activity findings.
+
+Tests: test_dpr_schemes.py (+8). Full suite with Postgres: 1001 passed,
+plus the 2 stub-wallet failures. The phase-2 entry's "1181" was a
+miscount from the log's progress lines.
+
+Next:
+- phase 4: why it matters / should be, documents;
+- phase 5: IFPL API;
+- phase 6: a paid run and a visual review.
+
+## New CAM layout, phase 4 (2026-11-13): action plan text, documents
+
+**Every finding now carries the action plan's columns:**
+- **Fields.** `Finding.why_it_matters` and `should_be` are new;
+  `dpr_stated_value` already existed. cam_adapter maps all three into
+  VerifiedFinding. The category fallback stays only for old results.
+- **Checklist findings:**
+  - fixed text per item (checklists.WHY_AND_SHOULD_BE, 20 items; a test
+    keeps it complete);
+  - "Your DPR" is the evidence quote cut to 10 words, or "Not in the
+    DPR" for an absent attachment.
+- **Code findings:**
+  - financial_calc `_finalize` fills why (WHY_BY_CHECK) and both values
+    from the CalculationResult, e.g. "Average DSCR 1.12" → "≥ 1.25",
+    "Assets x, liabilities y" → "Assets = liabilities";
+  - benchmarks: each failing check pairs with its finding in order,
+    guarded by a count check: "12 ₹/unit" → "≤ 8 ₹/unit";
+  - schemes: `gap()` copies "requires" and "DPR shows" onto the finding
+    just made;
+  - unit_economics and cam_engine_bridge add a why per check.
+- **Free-form agent findings:** three optional schema fields
+  (why_it_matters ≤ 12 words; dpr_stated_value and should_be ≤ 8 words,
+  only from the pages, never invented), asked for in
+  CHECKLIST_INSTRUCTION.
+
+**Documents table:**
+- 5 new document-role checklist items marked `report_only`. They never
+  make a finding, since a DPR that doesn't mention a Udyam number isn't
+  defective by that alone:
+  - DOC_REGISTRATION, DOC_PAST_FINANCIALS, DOC_APPROVALS,
+    DOC_SCHEME_REGISTRATION, DOC_CERTIFICATES;
+  - the matching rows read ok → available, issue → missing,
+    not_applicable → "to confirm" with a note;
+  - KYC stays with IFPL.
+- The document agent's context gains `document_mentions`: lines naming
+  registrations, ITRs, licences, NOCs, certificates and portal numbers,
+  from any page (up to 20 pages).
+
+**Layout:**
+- The action-plan table uses a fixed layout, so the issue column is no
+  longer squeezed: 912a went from 14 to 12 pages.
+- Cost: slightly longer prompts and output (5 questions, 3 short
+  fields).
+
+Not done: a DPR-date fact (the cover shows the review date). It is
+optional.
+
+Tests: test_dpr_action_plan_text.py (8). Full suite with Postgres: 1009
+passed, plus the 2 stub-wallet failures.
+
+Next:
+- phase 5: the IFPL API (needs its details);
+- phase 6: a paid run on the 15 DPRs (~₹300) and a visual review. That
+  run is the first to exercise phases 2-4 end to end: the stated ratios,
+  the new fields and the document answers.
+
+**Phase 5 (IFPL credit/KYC API), decided 2026-11-13:** we will FETCH
+(pull) the results from IFPL; IFPL does not push. Implementation waits
+until the user's team has discussed it with IFPL (identifier, response
+shape, auth, URLs). Until then page 4 shows "Pending: verified by IFPL"
+and `KycVerification` stays empty.
+
+## Single-DPR live test of phases 2-4 (2026-11-13, 912a, ₹15.52)
+
+The user asked for 1 DPR first; the 15-DPR run (started, stopped after a
+few calls, ~₹5) comes later.
+
+**Run:** 200 s; extraction accuracy 100%. The stated_ratios call read
+IRR 24.8, average DSCR 2.51, break-even 51.8 ("target capacity"), and
+SLM at 15%.
+
+**Fixed from what it showed:**
+- **Duplicates.** The verifier re-added 4 checklist items under new
+  titles (demand, single asset, promoter, sensitivity). The stored runs
+  had 34 such duplicates across 11 of 15 reports.
+  - checklists.TOPIC_TERMS: a title pattern per item;
+  - finding_judge.absorb_restatements and consolidate() fold a free-form
+    finding on a checklist item's topic into it (order-independent;
+    evidence kept in the explanation).
+- **Informational findings** (severity info, e.g. 7 "DSCR YEAR n") no
+  longer fill the action plan or the cover counts; they stay in the
+  appendix register. 912a: "Can improve" 15 → 5, 12 → 11 pages.
+- **Readiness** no longer counts the report-only document questions
+  (912a: 67% of 33 → 70% of 30).
+- **Missing figures filled:**
+  - "Full capacity from year 1": "100% in year 1" → "About 60% in year 1,
+    rising";
+  - fund flow: "Sources x, applications y" → "Add the closing cash so both
+    sides match". Its test now checks this two-sided text; still no
+    single "correct" figure.
+- **Display:**
+  - the DPR's break-even prints its basis: "51.8 (target capacity)";
+  - benchmark source labels are shortened.
+
+Tests +3; full suite with Postgres: 1012 passed, plus the 2 stub-wallet
+failures.
+
+Preview: the scratchpad's live_912a.pdf, rendered from the run with the
+fixes re-applied.
+
+## Paid run, all 15 DPRs (2026-11-14, results 20261113T190526Z, ₹285.61)
+
+**Run totals:**
+- 15/15 completed; mean latency 219 s; ₹14.8-24 per DPR, ed8d ₹36.87.
+- Every rejected DPR has a must-fix (6/6).
+- Mean extraction accuracy on the annotated DPRs: 88%.
+
+**Checked across all 15:**
+- every action-plan item has "Your DPR" / "Should be";
+- all 8 document questions answered;
+- no checklist duplicates left;
+- 11-13 pages each.
+
+**Scheme verdicts:**
+- 0b33: correct;
+- 4e9c and e3aa: not assessed (scheme names not in the table);
+- the other 12: better scheme available (harvesters: add SMAM to AIF;
+  ed8d: add AIF to NHB).
+
+**The DPR's own ratios vs ours:** e778 and 3e1c print IRR 26.5% / 27.2%
+while their own projections (net profit 5.5 → 43.6 lakh on a 31 lakh
+project) give ~70%. e778's printed "payback 84 months" is the bank's
+loan tenure. These are real inconsistencies, shown side by side.
+
+**Approved DPRs still show 1-4 must-fix:** all from the bank reference
+template's own must-fix items (quotation, one asset without cover, full
+capacity from year 1) plus ed8d's balance sheet and means of finance.
+Unchanged from earlier runs. Whether an approved DPR should read "Needs
+major revision" is the user's call.
+
+**Fixed after the run:**
+- Agents restating a code finding (5 of 15 reports, e.g. "Means of
+  Finance summation error..." next to "Means Of Finance Total does not
+  reconcile"): finding_consolidation.CALCULATED_TOPICS folds them into the
+  code finding.
+- Reconciliation totals no longer say "Should be: 105". ed8d's back-ended
+  NHB subsidy is listed as extra funding, so its items add to 105 against
+  a correct 70. They now print "Total 70; items add to 105" → "Items that
+  add up to the total", and funding vs cost likewise.
+- Phase 4's WHY_BY_CHECK keys were wrong: the checks are named
+  cost_of_project_total and means_of_finance_total.
+- scripts/dpr_eval.py: `--only` no longer shrinks eval/manifest.local.json
+  to the DPRs it ran; it writes every DPR found.
+
+Tests: 1013 passed, plus the 2 stub-wallet failures.

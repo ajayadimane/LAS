@@ -5,3 +5,11 @@ venv/
 .env
 .pytest_cache/
 .ruff_cache/
+
+# DPR evaluation harness (scripts/dpr_eval.py): real customer data.
+# Annotations (eval/annotations/, keyed by sha256 prefix) are committed.
+eval/results/
+eval/cassettes/
+eval/manifest.local.json
+eval/ocr_cache/
+eval/grounding_cache/

@@ -32,12 +32,16 @@ import httpx  # noqa: E402
 from app.core.config import Settings, get_settings  # noqa: E402
 from app.core.logging import configure_logging, get_logger  # noqa: E402
 from app.services.dpr_agentic.branch_status import mark_report_completed  # noqa: E402
-from app.services.dpr_agentic.document_pipeline.classify import classify_by_rules  # noqa: E402
+from app.services.dpr_agentic.document_input import (  # noqa: E402,F401
+    ClassificationNotReady,
+    ClassificationReviewRequired,
+    NeedsVisionFallback,
+    prepare_document,
+)
 from app.services.dpr_agentic.document_pipeline.liteparse_client import (  # noqa: E402
     LiteParseClient,
 )
 from app.services.dpr_agentic.document_pipeline.pipeline import (  # noqa: E402
-    DocumentProcessingError,
     inspect_document,
 )
 from app.services.dpr_agentic.document_pipeline.vision import (  # noqa: E402
@@ -49,6 +53,10 @@ from app.services.dpr_agentic.gemini import (  # noqa: E402
     CURRENT_RUN_USAGE,
     GeminiAgentClient,
 )
+from app.services.dpr_agentic.grounding import (  # noqa: E402
+    PostgresGroundingCache,
+    purge_expired_grounding_cache,
+)
 from app.services.dpr_agentic.jobs import (  # noqa: E402
     engine_for,
     fail_stuck_run,
@@ -58,10 +66,15 @@ from app.services.dpr_agentic.jobs import (  # noqa: E402
     record_token_usage,
 )
 from app.services.dpr_agentic.migrate import apply_migrations  # noqa: E402
+from app.services.dpr_agentic.ocr_cache import (  # noqa: E402
+    PostgresOcrCache,
+    purge_expired_ocr_cache,
+)
 from app.services.dpr_agentic.report_store import store_report  # noqa: E402
 from app.services.dpr_agentic.schemas import AnalysisInput, SourcePage  # noqa: E402
 from app.services.dpr_agentic.upload_staging import (  # noqa: E402
     delete_staged_upload,
+    load_staged_project_context,
     load_staged_upload,
 )
 from app.services.dpr_agentic.worker import run_claimed_analysis  # noqa: E402
@@ -70,19 +83,6 @@ logger = get_logger(__name__)
 
 POLL_SECONDS = 10
 LEASE_SECONDS = 1800  # generous: a 10-role pipeline over a real DPR is slow.
-
-
-class ClassificationNotReady(Exception):
-    """The staged document isn't a confidently-classified, text-bearing DPR."""
-
-
-class NeedsVisionFallback(ClassificationNotReady):
-    """No usable extracted text, and vision OCR is off, failed, or still
-    didn't produce a confident DPR classification."""
-
-
-class ClassificationReviewRequired(ClassificationNotReady):
-    pass
 
 
 def build_dedicated_gemini_client(
@@ -97,6 +97,9 @@ def build_dedicated_gemini_client(
         http,
         settings.dpr_agentic_gemini_api_key.get_secret_value(),
         settings.dpr_agentic_gemini_model,
+        thinking_budget=settings.dpr_agentic_thinking_budget,
+        thinking_level=settings.dpr_agentic_thinking_level,
+        max_output_tokens=settings.dpr_agentic_max_output_tokens,
     )
     return http, client
 
@@ -116,84 +119,34 @@ async def process_one(
             raise RuntimeError(
                 "Staged upload missing (already consumed or never staged)"
             )
-        try:
-            parsed = inspect_document(
-                staged.data,
-                staged.name,
-                liteparse=liteparse,
-                page_min_chars=settings.dpr_agentic_liteparse_page_min_chars,
-            )
-        except DocumentProcessingError as exc:
-            raise ClassificationReviewRequired(str(exc)) from exc
-
-        pages, doc_class, confidence = parsed.pages, parsed.doc_class, parsed.confidence
-        if parsed.needs_vision:
-            if not settings.dpr_agentic_vision_enabled:
-                raise NeedsVisionFallback(
-                    "no usable extracted text; vision is disabled"
-                )
-            if parsed.low_text_pages is None:
-                # LiteParse itself was unavailable/failed -- no per-page
-                # signal to target, so fall back across the whole document
-                # (bounded by the vision page cap), same as before LiteParse.
-                images = render_pages_to_images(
-                    staged.data,
-                    parsed.mime,
-                    max_pages=settings.dpr_agentic_vision_max_pages,
-                )
-                if not images:
-                    raise NeedsVisionFallback(
-                        "no usable extracted text and nothing to render"
-                    )
-                pages = await extract_pages_via_vision(gemini, images)
-            else:
-                # LiteParse succeeded overall; only recover the specific pages
-                # it couldn't, keeping its text for every other page.
-                images = render_pages_to_images(
-                    staged.data,
-                    parsed.mime,
-                    max_pages=settings.dpr_agentic_vision_max_pages,
-                    pages=parsed.low_text_pages,
-                )
-                if not images:
-                    raise NeedsVisionFallback(
-                        "no usable extracted text and nothing to render"
-                    )
-                recovered = await extract_pages_via_vision(gemini, images)
-                # strict=False: render_pages_to_images() silently drops any
-                # out-of-range page number, so recovered can be shorter than
-                # low_text_pages -- the remaining pages just keep their
-                # original (still weak) LiteParse text below.
-                recovered_by_page = dict(
-                    zip(
-                        parsed.low_text_pages,
-                        (p["text"] for p in recovered),
-                        strict=False,
-                    )
-                )
-                pages = [
-                    {
-                        "page": p["page"],
-                        "text": recovered_by_page.get(p["page"], p["text"]),
-                    }
-                    for p in pages
-                ]
-            preview = "\n".join(p["text"] for p in pages)
-            if not preview.strip():
-                raise NeedsVisionFallback("vision OCR produced no usable text")
-            reclassified = classify_by_rules(staged.name, parsed.mime, preview[:30000])
-            doc_class, confidence = reclassified.doc_class, reclassified.confidence
-
-        if doc_class != "DPR" or confidence < 0.8:
-            raise ClassificationReviewRequired(
-                f"classified as {doc_class} ({confidence:.2f})"
-            )
+        # Module-level names, looked up at call time, so tests that patch
+        # dpr_worker.inspect_document / render_pages_to_images /
+        # extract_pages_via_vision still take effect.
         run = get_run(engine, rid)
+        prepared = await prepare_document(
+            staged.data,
+            staged.name,
+            settings=settings,
+            gemini=gemini,
+            liteparse=liteparse,
+            run_id=rid,
+            inspect=inspect_document,
+            render=render_pages_to_images,
+            ocr=extract_pages_via_vision,
+            document_sha256=run["document_sha256"],
+            ocr_cache=(
+                PostgresOcrCache(engine, key, settings.dpr_ocr_cache_ttl_days)
+                if settings.dpr_ocr_cache_ttl_days > 0
+                else None
+            ),
+        )
         return AnalysisInput(
             service_request_id=run["service_request_id"],
             wallet_document_id=run["source_reference"],
             document_sha256=run["document_sha256"],
-            pages=[SourcePage(**p) for p in pages if p["text"].strip()],
+            pages=[SourcePage(**p) for p in prepared.pages],
+            # Service details (bank name...) staged at upload; {} if none.
+            project_context=load_staged_project_context(engine, rid, key),
         )
 
     async def store_result(rid: str, result) -> str:
@@ -221,6 +174,12 @@ async def process_one(
             lease_seconds=LEASE_SECONDS,
             heartbeat_interval=LEASE_SECONDS // 3,
             cam_engine_enabled=settings.cam_engine_enabled,
+            grounding_enabled=settings.dpr_agentic_grounding_enabled,
+            grounding_cache=(
+                PostgresGroundingCache(engine, settings.dpr_grounding_cache_ttl_days)
+                if settings.dpr_grounding_cache_ttl_days > 0
+                else None
+            ),
         )
         logger.info(
             "dpr_run_completed run_id=%s duration_ms=%d",
@@ -315,6 +274,16 @@ async def poll_once(
     *,
     liteparse: LiteParseClient | None = None,
 ) -> int:
+    try:
+        purged = purge_expired_ocr_cache(engine)
+        if purged:
+            logger.info("dpr_ocr_cache_purged rows=%d", purged)
+    except Exception:
+        logger.warning("dpr_ocr_cache_purge_failed", exc_info=True)
+    try:
+        purge_expired_grounding_cache(engine)
+    except Exception:
+        logger.warning("dpr_grounding_cache_purge_failed", exc_info=True)
     for reaped in reap_exhausted(engine):
         delete_staged_upload(engine, reaped)
         logger.warning("dpr_run_attempts_exhausted run_id=%s", reaped)

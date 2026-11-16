@@ -123,12 +123,19 @@ class Settings(BaseSettings):
     )
     dpr_agentic_gemini_api_key: SecretStr | None = None
     dpr_agentic_gemini_model: str = "gemini-2.5-flash"
+    # Bounded Gemini reasoning budget for the supported 2.5 family.
+    # Controls hidden thinking tokens separately from response size.
+    dpr_agentic_thinking_budget: int = Field(default=512, ge=0, le=4096)
+    dpr_agentic_thinking_level: str | None = None  # Opt-in for compatible Gemini 3 models
+    dpr_agentic_max_output_tokens: int = Field(default=6144, ge=512, le=16384)
+
     # Deterministic Section 9 financial engine (cam_financial_engine.py,
     # sector_feasibility.py) and CAM snapshot build/verify
-    # (cam_adapter.py/cam_verification.py). Off by default so the existing
-    # agentic pipeline's output is byte-for-byte unchanged until this is
-    # explicitly switched on; see PROGRESS.md milestone 2b.
-    cam_engine_enabled: bool = False
+    # (cam_adapter.py/cam_verification.py). On by default since the
+    # 2026-11-05 CAM audit (DPR_CAM_FIXES_AND_COST_AUDIT.md): with it off the
+    # CAM report's cost, funding and loan sections stay empty. Set
+    # CAM_ENGINE_ENABLED=false to disable; see PROGRESS.md milestone 2b.
+    cam_engine_enabled: bool = True
     # CAM report brand colors (Section 2.1): defaults are the original
     # design's own values. A future deployment can rebrand the report
     # without touching app/templates/cam/*.
@@ -156,6 +163,17 @@ class Settings(BaseSettings):
     # ordinary text pipeline's page cap -- a scanned document longer than
     # this is only ever analyzed on its first N pages.
     dpr_agentic_vision_max_pages: int = Field(default=20, ge=1, le=100)
+    # Days a document's Gemini-vision OCR text is kept (encrypted, table
+    # dpr_ocr_cache, ocr_cache.py) so a re-analysis of the same file reads
+    # identical text. 0 = never stored.
+    dpr_ocr_cache_ttl_days: int = Field(default=30, ge=0, le=365)
+    # Research and Policy agents search the web with Gemini's Google Search
+    # grounding (grounding.py): two searches per DPR, billed per query. The
+    # brief sent is built by code from non-identifying fields only.
+    dpr_agentic_grounding_enabled: bool = True
+    # Days a grounded result is reused for the same brief (bank, scheme,
+    # sector, state, loan band); 0 = no cache.
+    dpr_grounding_cache_ttl_days: int = Field(default=7, ge=0, le=90)
     # LiteParse (document_pipeline/liteparse_client.py) is the primary parser
     # for PDFs and images: local text extraction + local OCR (ImageMagick +
     # Tesseract), no network call. Gemini vision above is only the fallback
@@ -370,6 +388,15 @@ class Settings(BaseSettings):
         default_factory=lambda: [s.model_copy() for s in DEFAULT_SERVICES]
     )
     joining_fee: int = 295
+    # Who verifies the borrower's documents (KYC, land records, credit
+    # bureau) and under which of our services. The DPR analysis never does;
+    # every CAM says so, with this provider, service and its fee.
+    document_verification_provider: str = "IFPL"
+    document_verification_service_code: str = "VALUE_ADDITION"
+    # The vendor quotation is not IFPL's: our own service validates it.
+    quotation_verification_service_code: str = "DOC_VERIFICATION"
+    # The review asks for the corrected DPR within this many days.
+    cam_re_review_days: int = 7
 
     # Documents are stored base64-encoded in the service's custom field (user
     # spec, 2026-10-27). The vendor's real limit on a field value is UNKNOWN -

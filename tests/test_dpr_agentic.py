@@ -53,13 +53,21 @@ class FakeLLM:
         )
 
     async def extract(self, prompt, context):
-        return ProjectFinancials()
+        # Minimal usable extraction: an empty one now takes the early-stop
+        # path (orchestrator.partial_analysis_without_financials).
+        return ProjectFinancials(cost_of_project_stated_total=80.0)
+
+
+# Roles answered without an LLM call: research/policy have no grounding
+# source yet, and report is rendered from the structured snapshot.
+_NO_LLM_ROLES = {"research", "policy", "report"}
 
 
 def test_orchestrator_runs_all_roles_and_verifies_quote():
     fake = FakeLLM()
     result = asyncio.run(analyze(AnalysisInput.model_validate(PAYLOAD), fake))
-    assert len(fake.calls) == len(PROMPTS)
+    assert set(result.agent_outputs) == set(PROMPTS)
+    assert len(fake.calls) == len(PROMPTS) - len(_NO_LLM_ROLES)
     assert result.findings[0].verification == "source_verified"
     assert result.wallet_document_id == "W-1"
 
@@ -132,7 +140,9 @@ def test_extraction_failure_degrades_gracefully():
         analyze(AnalysisInput.model_validate(PAYLOAD), BrokenExtraction())
     )
     assert not [f for f in result.findings if f.provenance == "calculated"]
-    assert any("extraction failed" in q for q in result.unresolved_questions)
+    assert any(
+        "extraction failed" in q.casefold() for q in result.unresolved_questions
+    )
     # The rest of the pipeline still ran.
     assert result.status == "completed"
 

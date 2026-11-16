@@ -11,6 +11,8 @@ not record.
 import json
 from pathlib import Path
 
+import pytest
+
 from app.services.dpr_agentic.cam_adapter import build_snapshot_from_analysis
 from app.services.dpr_agentic.cam_render import (
     build_page6_context,
@@ -19,6 +21,16 @@ from app.services.dpr_agentic.cam_render import (
 )
 from app.services.dpr_agentic.cam_snapshot import CAMSnapshot
 from app.services.dpr_agentic.schemas import AnalysisResult
+
+
+@pytest.fixture(autouse=True)
+def _v1_layout(monkeypatch):
+    """These tests cover the 1.x six-page layout, which every 1.x report
+    already issued keeps (cam_render.uses_v2_layout). The 2.x layout is
+    tested in test_dpr_cam_render_v2.py."""
+    monkeypatch.setattr(
+        "app.services.dpr_agentic.cam_render.uses_v2_layout", lambda snapshot: False
+    )
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "tikamgarh_cam_snapshot.json"
 
@@ -49,7 +61,9 @@ def test_checklist_reflects_the_real_must_fix_count():
         for r in ctx6["checklist"]
         if r["requirement"] == "Must-fix issues from page 2"
     )
-    assert row["found"] == "5 unresolved"
+    # Fuel, crew, acreage and quotation -- all must-fix in the reference
+    # CAM template too; its fund-flow gap is "Good to fix" there.
+    assert row["found"] == "4 unresolved"
     assert row["met"] is False
 
 
@@ -69,11 +83,52 @@ def test_action_items_are_empty_when_nothing_is_outstanding():
     assert ctx6["action_items"] == []
     html = render_cam_report_html(_empty_snapshot())
     assert "No further action is needed" in html
+    # Document verification is always shown, as its own notice: this
+    # analysis never verifies KYC, land records or the credit report.
+    assert "Documents not verified by this report." in html
+    assert "Value Addition" in html
+
+
+def test_document_verification_notice_is_frozen_with_its_fee():
+    from decimal import Decimal
+
+    from app.services.dpr_agentic.cam_adapter import document_verification_notice
+    from app.services.dpr_agentic.cam_snapshot import DocumentVerificationNotice
+
+    notice = document_verification_notice()
+    assert (notice.provider, notice.service_name, notice.service_fee_inr) == (
+        "IFPL",
+        "Value Addition",
+        Decimal(500),
+    )
+    assert "Credit bureau report" in notice.documents
+    # IFPL does not cover the quotation: our Doc Verification service does.
+    assert (notice.quotation_service_name, notice.quotation_service_fee_inr) == (
+        "Doc Verification",
+        Decimal(500),
+    )
+    html = render_cam_report_html(_empty_snapshot())
+    assert "We validate the vendor quotation" in html
+    assert "Doc Verification" in html
+    snap = _empty_snapshot().model_copy(
+        update={
+            "document_verification": DocumentVerificationNotice(
+                provider="IFPL", service_name="Value Addition", service_fee_inr=750
+            )
+        }
+    )
+    html = render_cam_report_html(snap)
+    assert "Value Addition service (Rs 750)" in html  # the fee at issue, not today's
+    assert "KYC: identity and address proof, PAN" in html
+    # A report made before the notice existed: shown, without a fee.
+    before = _empty_snapshot().model_copy(update={"document_verification": None})
+    old = build_page6_context(before)["verification"]
+    assert old["fee"] is None and old["provider"] == "IFPL"
 
 
 def test_action_items_cite_the_real_must_fix_count_not_a_fixed_number():
     ctx6 = build_page6_context(_golden_snapshot())
-    assert any("5 must-fix item(s)" in a["title"] for a in ctx6["action_items"])
+    assert any("4 must-fix item(s)" in a["title"] for a in ctx6["action_items"])
 
 
 def test_never_names_a_specific_bank_or_branch():

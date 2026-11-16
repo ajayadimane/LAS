@@ -3,7 +3,7 @@ import type { ReportAnnexures, ReportSummary } from "@/api/services";
 import { Button } from "@/components/ui/Button";
 import { Icon } from "@/components/ui/Icon";
 import { StatusPill, type Tone } from "@/components/ui/StatusPill";
-import { inrShort, moneyToRupees } from "@/lib/format";
+import { inrShort, moneyToRupees, parseFinancialNumber } from "@/lib/format";
 
 const READINESS_COPY: Record<ReportSummary["readiness_status"], { label: string; tone: Tone }> = {
   READY_FOR_SUBMISSION_REVIEW: { label: "Ready for submission review", tone: "success" },
@@ -81,6 +81,7 @@ export function ReportSummarySection({
 
   const readiness = READINESS_COPY[summary.readiness_status];
   const fo = summary.financial_overview;
+  const averageDscr = parseFinancialNumber(fo.average_dscr?.computed_value);
 
   return (
     <div className="mt-3 space-y-4">
@@ -108,7 +109,7 @@ export function ReportSummarySection({
           <div>
             <p className="text-xs text-muted-foreground">Average DSCR</p>
             <p className="font-semibold tabular-nums">
-              {fo.average_dscr?.computed_value != null ? fo.average_dscr.computed_value.toFixed(2) : "Not computable"}
+              {averageDscr !== null ? averageDscr.toFixed(2) : "Not computable"}
             </p>
           </div>
         </div>
@@ -157,11 +158,12 @@ function CountTile({ label, value, tone }: { label: string; value: number; tone:
   );
 }
 
-function Overview({ label, money }: { label: string; money: { amount: number; unit: "absolute" | "lakh" | "crore" } | null }) {
+function Overview({ label, money }: { label: string; money: { amount: number | string; unit: "absolute" | "lakh" | "crore" } | null }) {
+  const rupees = money ? moneyToRupees(money) : null;
   return (
     <div>
       <p className="text-xs text-muted-foreground">{label}</p>
-      <p className="font-semibold tabular-nums">{money ? inrShort(moneyToRupees(money)) : "Not available"}</p>
+      <p className="font-semibold tabular-nums">{rupees !== null ? inrShort(rupees) : "Not available"}</p>
     </div>
   );
 }

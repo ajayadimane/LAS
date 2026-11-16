@@ -21,6 +21,7 @@ PROGRESS.md for the remaining four.
 from __future__ import annotations
 
 from decimal import Decimal
+from hashlib import sha256
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -44,6 +45,12 @@ def _env() -> Environment:
         loader=FileSystemLoader(str(TEMPLATES_DIR)),
         autoescape=select_autoescape(["html", "jinja"]),
     )
+
+
+def _public_report_reference(snapshot: CAMSnapshot) -> str:
+    """Stable display ID without exposing internal Wallet person/mobile references."""
+    digest = sha256(snapshot.report_id.encode("utf-8")).hexdigest()[:10].upper()
+    return f"LAS-CAM-{snapshot.generated_at.year}-{digest}"
 
 
 def format_money(money: Money | None) -> str | None:
@@ -138,54 +145,43 @@ def _readiness_copy(snapshot: CAMSnapshot) -> dict:
 
 
 def _checks(snapshot: CAMSnapshot) -> list[dict]:
-    """The "what we checked" status boxes. Never claims a check happened
-    that didn't: a category with zero findings and nothing computed shows
-    "Not yet checked", not a false "all clear"."""
+    """Describe checks performed; don't equate missing computation with no review.
 
-    def status_for(categories: set[str], computed: bool) -> tuple[str, str, str]:
-        relevant = [f for f in snapshot.findings if f.category in categories]
-        if any(f.priority.value == "must_fix" for f in relevant):
-            return "Needs attention", _RED, _RED_TINT
-        if not computed:
-            return "Not yet checked", _GREY, _GREY_TINT
+    Detection of a discrepancy counts as a review, not as verification of
+    the financial figure or of KYC identity.
+    """
+    def outcome(categories: set[str], *, assessed: bool) -> tuple[str, str, str]:
+        relevant = [f for f in snapshot.findings if f.category.casefold() in categories]
         if relevant:
-            return "Issues found", "var(--accent)", "var(--accent-tint)"
-        return "No issues found", "var(--brand)", "var(--brand-tint)"
+            urgent = any(f.priority.value == "must_fix" for f in relevant)
+            return (("Needs attention" if urgent else "Issues found"),
+                    _RED if urgent else "var(--accent)",
+                    _RED_TINT if urgent else "var(--accent-tint)")
+        if assessed:
+            return "No issues found", "var(--brand)", "var(--brand-tint)"
+        return "Not yet checked", _GREY, _GREY_TINT
 
-    repayment_status, repayment_color, repayment_tint = status_for(
-        {"dscr"}, bool(snapshot.financial_ratios.average_dscr)
-    )
-    cost_status, cost_color, cost_tint = status_for(
-        {"financial_calculation"}, bool(snapshot.project_cost.reconciliation)
-    )
-    funding_status, funding_color, funding_tint = status_for(
-        {"funding"}, bool(snapshot.means_of_finance.funding_gap)
-    )
+    repayment_categories = {"dscr", "repayment", "debt_service"}
+    cost_categories = {"project_cost", "cost", "financial_calculation", "inconsistency", "arithmetic"}
+    funding_categories = {"funding", "means_of_finance"}
+    repayment = outcome(repayment_categories,
+        assessed=bool(snapshot.repayment_schedule))
+    cost = outcome(cost_categories,
+        assessed=bool(snapshot.project_cost.components or snapshot.project_cost.dpr_reported_total))
+    funding = outcome(funding_categories,
+        assessed=bool(snapshot.means_of_finance.components or snapshot.means_of_finance.requested_loan))
+    identity_findings = [f for f in snapshot.findings if (
+        "identity" in f.category.casefold() or "borrower" in f.title.casefold()
+        or "applicant name" in f.title.casefold() or "name mismatch" in f.title.casefold()
+    )]
+    identity = (("Identity conflict — verify KYC", _RED, _RED_TINT)
+                if identity_findings else ("Not yet checked", _GREY, _GREY_TINT))
     return [
-        {
-            "title": "Repayment capacity",
-            "status": repayment_status,
-            "color": repayment_color,
-            "tint": repayment_tint,
-        },
-        {
-            "title": "Project cost",
-            "status": cost_status,
-            "color": cost_color,
-            "tint": cost_tint,
-        },
-        {
-            "title": "Funding plan",
-            "status": funding_status,
-            "color": funding_color,
-            "tint": funding_tint,
-        },
-        {
-            "title": "Identity and KYC",
-            "status": "Not yet checked",
-            "color": _GREY,
-            "tint": _GREY_TINT,
-        },
+        {"title": title, "status": value[0], "color": value[1], "tint": value[2]}
+        for title, value in (
+            ("Repayment capacity", repayment), ("Project cost", cost),
+            ("Funding plan", funding), ("Identity and KYC", identity)
+        )
     ]
 
 
@@ -212,7 +208,7 @@ def build_page1_context(snapshot: CAMSnapshot) -> dict:
     cost = snapshot.project_cost.dpr_reported_total
     loan = snapshot.means_of_finance.requested_loan
     promoter = snapshot.means_of_finance.promoter_contribution
-    year1 = snapshot.repayment_schedule[0] if snapshot.repayment_schedule else None
+    year1 = next((r for r in snapshot.repayment_schedule if r.year == 1), None)
     verified_benefit = next(
         (
             b
@@ -235,13 +231,13 @@ def build_page1_context(snapshot: CAMSnapshot) -> dict:
     )
 
     return {
-        "report_reference": snapshot.report_id,
+        "report_reference": _public_report_reference(snapshot),
         "report_version": snapshot.report_version,
         "report_date": snapshot.generated_at.strftime("%d %b %Y"),
         "scheme_claimed": (
-            snapshot.readiness_assessment.subsidy_benefits[0].scheme_name
-            if snapshot.readiness_assessment.subsidy_benefits
-            else "None identified"
+            snapshot.project_profile.scheme_claimed
+            or (snapshot.readiness_assessment.subsidy_benefits[0].scheme_name
+                if snapshot.readiness_assessment.subsidy_benefits else "Not verified")
         ),
         "bd_name": snapshot.borrower_profile.bd_name or "Not recorded",
         "service_request_id": snapshot.service_request_id,
@@ -334,9 +330,13 @@ def build_page2_context(snapshot: CAMSnapshot) -> dict:
         )
 
     return {
-        "report_reference": snapshot.report_id,
+        "report_reference": _public_report_reference(snapshot),
         "borrower_name": snapshot.borrower_profile.borrower_name,
         "intro_line": intro_line,
+        "must_fix_total": len(must_fix),
+        "should_fix_total": len(should_fix),
+        "good_to_fix_total": len(good_to_fix),
+        "has_more": len(must_fix)>3 or len(should_fix)>2 or len(good_to_fix)>0,
         "must_fix": [_entry(f) for f in must_fix],
         "should_fix": [_entry(f) for f in should_fix],
         "good_to_fix": [_entry(f) for f in good_to_fix],
@@ -385,14 +385,18 @@ def build_page3_context(snapshot: CAMSnapshot) -> dict:
     total = finance.dpr_reported_total
     loan = finance.requested_loan
     promoter = finance.promoter_contribution
+    # Display an explicitly known loan+promoter split even when the DPR has
+    # no separately extracted funding-total cell. The computed denominator
+    # is a display ratio, NOT represented as the DPR's reported total.
+    funding_base = (loan.amount + promoter.amount) if loan and promoter else None
     funding_split = (
         {
-            "loan_pct": round(loan.amount / total.amount * 100),
-            "promoter_pct": round(promoter.amount / total.amount * 100),
+            "loan_pct": round(loan.amount / funding_base * 100),
+            "promoter_pct": round(promoter.amount / funding_base * 100),
             "loan_amount": format_money(loan),
             "promoter_amount": format_money(promoter),
         }
-        if loan and promoter and total and total.amount
+        if loan and promoter and funding_base and funding_base > 0
         else None
     )
 
@@ -407,20 +411,28 @@ def build_page3_context(snapshot: CAMSnapshot) -> dict:
         if f.dpr_reported_value and f.recomputed_value
     ]
 
+    action_corrections = [
+        {"title": f.title, "action": f.suggested_action,
+         "ref": ", ".join("p." + str(page) for page in f.source_pages)}
+        for f in snapshot.findings
+        if f.suggested_action and not (f.dpr_reported_value and f.recomputed_value)
+        and f.priority.value in ("must_fix", "should_fix")
+    ][:1]
+    # AIF is ordinarily discussed as interest subvention/guarantee, not
+    # capital subsidy. A scheme *claim* must never assert capital support.
+    scheme_claim = snapshot.project_profile.scheme_claimed
     return {
-        "report_reference": snapshot.report_id,
+        "report_reference": _public_report_reference(snapshot),
         "borrower_name": snapshot.borrower_profile.borrower_name,
         "tiles": tiles,
         "cost_rows": cost_rows,
         "cost_total": format_money(cost.dpr_reported_total),
         "cost_check": cost_check,
         "funding_split": funding_split,
-        "subsidy_label": (
-            snapshot.readiness_assessment.subsidy_benefits[0].scheme_name
-            if snapshot.readiness_assessment.subsidy_benefits
-            else "None identified"
-        ),
+        "subsidy_label": "Not independently verified",
+        "claimed_scheme": scheme_claim,
         "corrections": corrections,
+        "action_corrections": action_corrections if not cost_rows else [],
     }
 
 
@@ -437,7 +449,7 @@ def build_page4_context(snapshot: CAMSnapshot) -> dict:
     actually computed (`scenario_analysis`) are rendered as a simple
     comparison, not a fabricated five-point chart."""
     ratios = snapshot.financial_ratios
-    year1 = snapshot.repayment_schedule[0] if snapshot.repayment_schedule else None
+    year1 = next((r for r in snapshot.repayment_schedule if r.year == 1), None)
 
     dscr_cards = []
     if ratios.dscr_pat_dep_only and ratios.dscr_pat_dep_only.computed_value is not None:
@@ -451,11 +463,13 @@ def build_page4_context(snapshot: CAMSnapshot) -> dict:
                 ),
             }
         )
-    if ratios.average_dscr and ratios.average_dscr.computed_value is not None:
+    # An average across years is NOT a valid Year-1 ratio fallback.
+    year1_dscr = year1.dscr if year1 and year1.dscr else None
+    if year1_dscr and year1_dscr.computed_value is not None:
         dscr_cards.append(
             {
                 "label": "Standard bank formula (Year 1)",
-                "value": f"{ratios.average_dscr.computed_value}×",
+                "value": f"{year1_dscr.computed_value}×",
                 "note": (
                     "Adds interest back into earnings before comparing to repayment."
                 ),
@@ -496,17 +510,17 @@ def build_page4_context(snapshot: CAMSnapshot) -> dict:
         for s in snapshot.scenario_analysis
     ]
 
-    if ratios.average_dscr and ratios.average_dscr.computed_value is not None:
+    if year1_dscr and year1_dscr.computed_value is not None:
         lede = (
             f"On the figures in this DPR, Year-1 earnings cover repayment "
-            f"{ratios.average_dscr.computed_value}× (standard formula). "
+            f"{year1_dscr.computed_value}× (stated DSCR definition). "
             f"See below for why your DPR's own figure differs."
         )
     else:
         lede = "Repayment coverage could not be computed from this DPR's figures."
 
     return {
-        "report_reference": snapshot.report_id,
+        "report_reference": _public_report_reference(snapshot),
         "borrower_name": snapshot.borrower_profile.borrower_name,
         "lede": lede,
         "dscr_cards": dscr_cards,
@@ -641,7 +655,7 @@ def build_page5_context(snapshot: CAMSnapshot) -> dict:
     )
 
     return {
-        "report_reference": snapshot.report_id,
+        "report_reference": _public_report_reference(snapshot),
         "borrower_name": snapshot.borrower_profile.borrower_name,
         "security_rows": security_rows,
         "disbursement_steps": disbursement_steps,
@@ -684,10 +698,9 @@ def build_page6_context(snapshot: CAMSnapshot) -> dict:
         if verified_benefit
         else {
             "label": "Capital subsidy",
-            "value": "None identified",
+            "value": "Eligibility not verified",
             "note": (
-                "No applicable capital subsidy has been verified from the "
-                "available sources."
+                "Scheme details and eligibility require authoritative confirmation."
             ),
         }
     )
@@ -737,6 +750,9 @@ def build_page6_context(snapshot: CAMSnapshot) -> dict:
             }
         )
 
+    # Shown as its own section on page 6 (always), not as an action item.
+    verification = _document_verification(snapshot)
+
     bd_name = snapshot.borrower_profile.bd_name or "your Business Associate"
     next_steps = [
         {"title": "Fix your DPR", "detail": "You and your consultant"},
@@ -746,14 +762,40 @@ def build_page6_context(snapshot: CAMSnapshot) -> dict:
     ]
 
     return {
-        "report_reference": snapshot.report_id,
+        "report_reference": _public_report_reference(snapshot),
         "borrower_name": snapshot.borrower_profile.borrower_name,
         "benefit_card": benefit_card,
         "checklist": checklist,
         "action_items": action_items,
         "next_steps": next_steps,
         "bd_name": bd_name,
+        "verification": verification,
     }
+
+
+def _document_verification(snapshot: CAMSnapshot) -> dict:
+    """The "documents not verified" notice for page 6. Reports made before
+    the notice existed show it without a fee (the fee then is unknown)."""
+    from .cam_snapshot import DOCUMENTS_NOT_VERIFIED
+
+    notice = snapshot.document_verification
+    fee = notice.service_fee_inr if notice else None
+    q_fee = notice.quotation_service_fee_inr if notice else None
+    return {
+        "provider": notice.provider if notice else "IFPL",
+        "service_name": notice.service_name if notice else "Value Addition",
+        "fee": f"Rs {fee:,.0f}" if fee is not None else None,
+        "documents": list(notice.documents if notice else DOCUMENTS_NOT_VERIFIED),
+        "quotation_service_name": notice.quotation_service_name if notice else None,
+        "quotation_fee": f"Rs {q_fee:,.0f}" if q_fee is not None else None,
+    }
+
+
+def uses_v2_layout(snapshot: CAMSnapshot) -> bool:
+    """2.x snapshots print the "DPR Pre-submission Review" layout
+    (cam_render_v2.py); 1.x ones keep this six-page layout, so a report
+    already issued never changes."""
+    return int(snapshot.schema_version.split(".")[0]) >= 2
 
 
 def render_cam_report_html(
@@ -761,11 +803,16 @@ def render_cam_report_html(
     *,
     brand_color: str = DEFAULT_BRAND_COLOR,
     accent_color: str = DEFAULT_ACCENT_COLOR,
+    result=None,
 ) -> str:
+    if uses_v2_layout(snapshot):
+        from .cam_render_v2 import render_html
+
+        return render_html(snapshot, result)
     env = _env()
     template = env.get_template("cam/report.html.jinja")
     return template.render(
-        title=f"Loan Readiness Report - {snapshot.report_id}",
+        title=f"Loan Readiness Report - {_public_report_reference(snapshot)}",
         brand=brand_color,
         accent=accent_color,
         ctx=build_page1_context(snapshot),
@@ -782,12 +829,16 @@ def render_cam_report_pdf(
     *,
     brand_color: str = DEFAULT_BRAND_COLOR,
     accent_color: str = DEFAULT_ACCENT_COLOR,
+    result=None,
 ) -> bytes:
     """Renders the CAM report to PDF bytes. No network access is made:
-    fonts and the stylesheet are local files resolved via `base_url`."""
+    fonts and the stylesheet are local files resolved via `base_url`.
+    `result` (the AnalysisResult) adds the audit details to the 2.x
+    appendix; it is optional."""
     from weasyprint import HTML
 
     html = render_cam_report_html(
-        snapshot, brand_color=brand_color, accent_color=accent_color
+        snapshot, brand_color=brand_color, accent_color=accent_color, result=result
     )
-    return HTML(string=html, base_url=str(CAM_TEMPLATES_DIR)).write_pdf()
+    base = TEMPLATES_DIR if uses_v2_layout(snapshot) else CAM_TEMPLATES_DIR
+    return HTML(string=html, base_url=str(base)).write_pdf()

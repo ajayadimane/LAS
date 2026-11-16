@@ -8,24 +8,42 @@ terminal state (see worker.py). Never queried for content outside that one
 reader.
 """
 
+import json
+
 from cryptography.fernet import Fernet
 from sqlalchemy import text
 
 from app.services.documents import StoredFile
 
 
-def stage_upload(engine, run_id: str, file: StoredFile, key: bytes) -> None:
-    ciphertext = Fernet(key).encrypt(file.data)
+def stage_upload(
+    engine,
+    run_id: str,
+    file: StoredFile,
+    key: bytes,
+    project_context: dict[str, str] | None = None,
+) -> None:
+    """`project_context`: the DPR Analysis service details (bank name,
+    project name), encrypted like the bytes (migration 012)."""
+    fernet = Fernet(key)
+    ciphertext = fernet.encrypt(file.data)
+    context_ciphertext = (
+        fernet.encrypt(json.dumps(project_context).encode())
+        if project_context
+        else None
+    )
     with engine.begin() as conn:
         conn.execute(
             text("""
                 INSERT INTO dpr_upload_staging
-                    (run_id, ciphertext, filename, content_type)
-                VALUES (:run_id, :ciphertext, :filename, :content_type)
+                    (run_id, ciphertext, filename, content_type,
+                     project_context_ciphertext)
+                VALUES (:run_id, :ciphertext, :filename, :content_type, :context)
                 ON CONFLICT (run_id) DO UPDATE
                   SET ciphertext = EXCLUDED.ciphertext,
                       filename = EXCLUDED.filename,
                       content_type = EXCLUDED.content_type,
+                      project_context_ciphertext = EXCLUDED.project_context_ciphertext,
                       created_at = now()
             """),
             {
@@ -33,8 +51,24 @@ def stage_upload(engine, run_id: str, file: StoredFile, key: bytes) -> None:
                 "ciphertext": ciphertext,
                 "filename": file.name,
                 "content_type": file.content_type,
+                "context": context_ciphertext,
             },
         )
+
+
+def load_staged_project_context(engine, run_id: str, key: bytes) -> dict[str, str]:
+    """The staged service details, or {} (none staged, or a pre-012 row)."""
+    with engine.connect() as conn:
+        value = conn.execute(
+            text(
+                "SELECT project_context_ciphertext FROM dpr_upload_staging "
+                "WHERE run_id=:run_id"
+            ),
+            {"run_id": run_id},
+        ).scalar()
+    if not value:
+        return {}
+    return json.loads(Fernet(key).decrypt(bytes(value)))
 
 
 def load_staged_upload(engine, run_id: str, key: bytes) -> StoredFile | None:

@@ -14,8 +14,10 @@ from app.services.dpr_agentic.financial_calc import (
 )
 from app.services.dpr_agentic.financial_schema import (
     CostComponent,
+    ExtractedValue,
     MeansOfFinanceComponent,
     ProjectFinancials,
+    RepaymentTableRow,
     YearFinancials,
 )
 
@@ -86,11 +88,97 @@ def test_means_of_finance_does_not_balance_cost_when_underfunded():
 
 
 def test_tolerance_absorbs_rounding_noise():
+    # Amounts are INR lakhs: 0.005 lakh = Rs 500 of table rounding.
     fin = ProjectFinancials(
-        cost_of_project_components=[CostComponent(label="Land", amount=499_999.5)],
-        cost_of_project_stated_total=500_000,
+        cost_of_project_components=[CostComponent(label="Land", amount=32.795)],
+        cost_of_project_stated_total=32.80,
     )
     assert cost_of_project_matches_components(fin).match is True
+
+
+def test_tolerance_flags_a_fifty_thousand_rupee_gap():
+    """0.5 lakh = Rs 50,000. The old 1.0 tolerance (mislabelled as rupees,
+    but applied to lakh amounts) accepted this as a match."""
+    fin = ProjectFinancials(
+        cost_of_project_components=[
+            CostComponent(label="Machinery", amount=30.0),
+            CostComponent(label="Shed", amount=2.30),
+        ],
+        cost_of_project_stated_total=32.80,
+    )
+    result = cost_of_project_matches_components(fin)
+    assert result.match is False
+    assert result.discrepancy == -0.5
+
+
+def _year_without_debt_service(year: int) -> YearFinancials:
+    return YearFinancials(
+        year=year, net_profit=3.0, depreciation=1.5, interest_on_term_loan=2.0
+    )
+
+
+def test_dscr_falls_back_to_the_repayment_table():
+    """The repayment extraction may put the schedule in repayment_table
+    instead of years[]; DSCR must still be computed from it."""
+    fin = ProjectFinancials(
+        years=[_year_without_debt_service(1)],
+        repayment_table=[
+            RepaymentTableRow(
+                year=1,
+                principal_due=ExtractedValue(value=3.21, page=9, status="extracted"),
+                interest_due=ExtractedValue(value=2.03, page=9, status="extracted"),
+            )
+        ],
+    )
+    [result] = dscr_per_year(fin)
+    assert result.check == "dscr_year_1"
+    assert result.computed_value == round((3.0 + 1.5 + 2.0) / (3.21 + 2.03), 2)
+
+
+def test_dscr_ignores_repayment_cells_that_were_not_extracted():
+    """The table's missing interest cell is never used; interest falls back
+    to the P&L's interest on term loan (2.0), not to the unextracted cell."""
+    fin = ProjectFinancials(
+        years=[_year_without_debt_service(1)],
+        repayment_table=[
+            RepaymentTableRow(
+                year=1,
+                principal_due=ExtractedValue(value=3.21, page=9, status="extracted"),
+                interest_due=ExtractedValue(value=9.99, page=None, status="missing"),
+            )
+        ],
+    )
+    [result] = dscr_per_year(fin)
+    assert result.computed_value == round((3.0 + 1.5 + 2.0) / (3.21 + 2.0), 2)
+
+
+def test_dscr_needs_principal():
+    year = _year_without_debt_service(1)  # no principal anywhere
+    assert dscr_per_year(ProjectFinancials(years=[year])) == []
+
+
+def test_dscr_uses_pnl_term_loan_interest_when_no_interest_repaid_is_stated():
+    year = _year_without_debt_service(1)
+    year.principal_repayment = 3.21  # interest_repayment stays None
+    [result] = dscr_per_year(ProjectFinancials(years=[year]))
+    assert result.computed_value == round((3.0 + 1.5 + 2.0) / (3.21 + 2.0), 2)
+
+
+def test_dscr_prefers_the_year_rows_own_figures_over_the_table():
+    year = _year_without_debt_service(1)
+    year.principal_repayment, year.interest_repayment = 4.0, 2.0
+    fin = ProjectFinancials(
+        years=[year],
+        repayment_table=[
+            RepaymentTableRow(
+                year=1,
+                principal_due=ExtractedValue(value=99.0, page=9, status="extracted"),
+                interest_due=ExtractedValue(value=99.0, page=9, status="extracted"),
+            )
+        ],
+    )
+    [result] = dscr_per_year(fin)
+    assert result.computed_value == round(6.5 / 6.0, 2)
 
 
 def test_dscr_computes_a_healthy_year():
@@ -182,22 +270,38 @@ def test_dscr_matches_the_documents_own_stated_figure():
     assert "matches the document's own stated DSCR" in findings[0].explanation
 
 
-def test_dscr_flags_a_different_stated_convention_without_treating_it_as_an_error():
-    """A real-world case: some DPRs don't add interest back into the DSCR
-    numerator, giving a materially different (lower) number from the same
-    inputs. The difference must be explained, not flagged as a mismatch
-    the way a cost/means-of-finance discrepancy is."""
+def test_a_lower_stated_dscr_is_one_should_fix_finding_per_the_bank_template():
+    """Reference CAM template: "Non-standard repayment formula: Year 1 is
+    1.97x, not 1.58x" is should-fix. The per-year figure stays informational;
+    one summary finding carries the priority."""
     fin = ProjectFinancials(years=[_year_with_stated_dscr(1.58)])
     result = dscr_per_year(fin)[0]
     assert result.match is False
-    findings = findings_from_calculations([result])
-    assert len(findings) == 1
-    explanation = findings[0].explanation
-    assert "1.58" in explanation
-    assert "not that either figure is wrong" in explanation
-    # Severity is still driven by the <1.0 insolvency check, not by this
-    # convention difference -- 2.15 is healthy, so this stays "info".
-    assert findings[0].severity == "info"
+    summary, per_year = findings_from_calculations([result])
+    assert summary.title == "Stated DSCR does not follow the standard formula"
+    assert summary.priority == "should_fix" and summary.severity == "medium"
+    assert "stated 1.58" in summary.explanation
+    assert per_year.severity == "info" and per_year.priority == "good_to_fix"
+
+
+def test_a_principal_only_stated_dscr_is_high_severity_and_named():
+    """A DPR dividing cash accrual 13.54 (7.53 + 4.17 + 1.84) by principal
+    4.13 alone states 3.28; standard 13.54 / 5.97 = 2.27. (Synthetic: the
+    live DPR these figures resemble printed 4.13 as its full instalment,
+    which test_a_full_instalment_row_is_the_whole_debt_service covers.)"""
+    year = YearFinancials(
+        year=2,
+        net_profit=7.53,
+        depreciation=4.17,
+        principal_repayment=4.13,
+        interest_repayment=1.84,
+        stated_dscr=3.28,
+    )
+    [result] = dscr_per_year(ProjectFinancials(years=[year]))
+    assert result.computed_value == 2.27 and result.note == "principal_only"
+    summary = findings_from_calculations([result])[0]
+    assert summary.severity == "high" and summary.priority == "should_fix"
+    assert "leaves out interest" in summary.explanation
 
 
 def test_aif_subvention_reconciles_when_rates_match():
@@ -265,3 +369,132 @@ def test_findings_from_calculations_only_reports_actual_mismatches():
         if f.category == "financial_calculation"
     ]
     assert mismatch_findings == []
+
+
+def test_a_moratorium_year_with_interest_only_gets_no_dscr():
+    year = YearFinancials(
+        year=1,
+        net_profit=1.11,
+        depreciation=0.71,
+        principal_repayment=0.0,
+        interest_repayment=0.32,
+        stated_dscr=0.0,
+    )
+    assert dscr_per_year(ProjectFinancials(years=[year])) == []
+
+
+def test_a_full_instalment_row_is_the_whole_debt_service():
+    """Seen live: "TL Installment 4.13" is principal + interest together;
+    13.54 / 4.13 = 3.28 is the DPR's own, correct, figure."""
+    year = YearFinancials(
+        year=2,
+        net_profit=7.53,
+        depreciation=4.17,
+        interest_on_term_loan=1.84,
+        total_instalment=4.13,
+        stated_dscr=3.28,
+    )
+    [result] = dscr_per_year(ProjectFinancials(years=[year]))
+    assert (result.computed_value, result.match) == (3.28, True)
+    assert not [
+        f
+        for f in findings_from_calculations([result])
+        if f.title.startswith("Stated DSCR")
+    ]
+    moratorium = year.model_copy(update={"year": 1, "total_instalment": 0.0})
+    assert dscr_per_year(ProjectFinancials(years=[moratorium])) == []
+
+
+def test_a_balance_sheet_that_does_not_balance_is_one_finding():
+    from app.services.dpr_agentic.financial_calc import (
+        balance_sheet_balances,
+        findings_from_calculations,
+    )
+    from app.services.dpr_agentic.financial_schema import (
+        ProjectFinancials,
+        YearFinancials,
+    )
+
+    fin = ProjectFinancials(
+        years=[
+            YearFinancials(year=1, total_assets=57.27, total_liabilities=86.92),
+            YearFinancials(year=2, total_assets=53.57, total_liabilities=83.22),
+            YearFinancials(year=3, total_assets=40.0, total_liabilities=40.0),
+        ]
+    )
+    result = balance_sheet_balances(fin)
+    assert not result.match and result.note == "1,2"
+    [finding] = findings_from_calculations([result])
+    assert finding.title == "Projected balance sheet does not balance"
+    assert finding.priority == "must_fix"  # gap 34% of liabilities
+    assert "year(s) 1, 2" in finding.explanation
+    balanced = ProjectFinancials(
+        years=[YearFinancials(year=1, total_assets=31.01, total_liabilities=31.01)]
+    )
+    assert balance_sheet_balances(balanced).match
+    assert findings_from_calculations([balance_sheet_balances(balanced)]) == []
+    assert balance_sheet_balances(ProjectFinancials()) is None
+
+
+def _repaying(years):
+    from app.services.dpr_agentic.financial_schema import (
+        ProjectFinancials,
+        YearFinancials,
+    )
+
+    return ProjectFinancials(
+        years=[
+            YearFinancials(
+                year=i,
+                revenue=rev,
+                net_profit=np,
+                depreciation=1.0,
+                interest_on_term_loan=1.0,
+                principal_repayment=3.0,
+                interest_repayment=1.0,
+            )
+            for i, (rev, np) in enumerate(years, start=1)
+        ]
+    )
+
+
+def test_average_dscr_against_the_bank_norm():
+    from app.services.dpr_agentic.financial_calc import (
+        dscr_average,
+        findings_from_calculations,
+    )
+
+    # cash 1+1+np; debt service 4 a year.
+    low = dscr_average(_repaying([(20, 2.0), (20, 2.4)]))  # (4 + 4.4) / 8
+    assert (low.computed_value, low.match) == (1.05, False)
+    [finding] = findings_from_calculations([low])
+    assert finding.title == "Average DSCR below the 1.25 banks require"
+    assert finding.priority == "should_fix"
+    insolvent = dscr_average(_repaying([(20, 1.0), (20, 1.0)]))  # 0.75
+    assert findings_from_calculations([insolvent])[0].priority == "must_fix"
+    healthy = dscr_average(_repaying([(20, 4.0), (20, 4.0)]))  # 1.5
+    assert healthy.match and findings_from_calculations([healthy]) == []
+    assert dscr_average(_repaying([(20, 4.0)])) is None  # one year: no average
+
+
+def test_price_stress_reports_only_the_smallest_failing_fall():
+    from app.services.dpr_agentic.financial_calc import (
+        dscr_stress,
+        findings_from_calculations,
+    )
+
+    # Year 2: cash 7, debt 4, revenue 20 -> 10% fall: (7-2)/4 = 1.25,
+    # 20% fall: (7-4)/4 = 0.75.
+    results = dscr_stress(_repaying([(10, 8.0), (20, 5.0)]))
+    assert [(r.check, r.computed_value, r.note) for r in results] == [
+        ("dscr_stress_price_10", 1.25, "year 2"),
+        ("dscr_stress_price_20", 0.75, "year 2"),
+    ]
+    [finding] = findings_from_calculations(results)
+    assert finding.title == "Repayment fails if the price falls 20%"
+    assert finding.priority == "good_to_fix"
+    fragile = dscr_stress(_repaying([(40, 2.5), (40, 2.5)]))  # (4.5-4)/4
+    [finding] = findings_from_calculations(fragile)
+    assert finding.title == "Repayment fails if the price falls 10%"
+    assert finding.priority == "should_fix"
+    assert dscr_stress(_repaying([(None, 5.0)])) == []  # no revenue: no test

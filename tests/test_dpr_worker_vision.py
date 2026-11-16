@@ -62,6 +62,17 @@ def _scanned_pdf_result(sha: str, confidence: float = 0.0, doc_class: str = "OTH
     )
 
 
+def _one_page_pdf() -> bytes:
+    """A real (blank) one-page PDF: the whole-document vision path opens the
+    staged bytes with PyMuPDF to enforce the vision page cap, which
+    b"dummy" cannot satisfy."""
+    import pymupdf
+
+    with pymupdf.open() as doc:
+        doc.new_page()
+        return doc.tobytes()
+
+
 def _submit_and_stage(engine, sha: str):
     run_id, _ = submit(
         engine,
@@ -72,7 +83,9 @@ def _submit_and_stage(engine, sha: str):
     stage_upload(
         engine,
         run_id,
-        StoredFile(name="scan.pdf", content_type="application/pdf", data=b"dummy"),
+        StoredFile(
+            name="scan.pdf", content_type="application/pdf", data=_one_page_pdf()
+        ),
         KEY,
     )
     return run_id

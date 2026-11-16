@@ -123,25 +123,29 @@ def build_annexure_d(snapshot: CAMSnapshot) -> dict:
     utilization, raw material requirements, production assumptions, market
     evidence.
 
-    Fed by: `operational_assumptions` (sector, a free-form assumptions
-    dict, classification) -- but this pipeline never populates it; every
-    stored report has it at its empty default. The dict itself is
-    structurally ready to hold any of the needed sub-items once an agent
-    starts filling it in, but none does today.
+    Fed by: `operational_assumptions` -- filled from the extracted unit
+    economics (cam_adapter._operational_assumptions, unit_economics.py)
+    when the DPR states them; empty for older reports and DPRs that state
+    no per-unit figures.
     """
     oa = snapshot.operational_assumptions
+    keys = " ".join(oa.assumptions).casefold()
+    missing = []
+    if "capacity" not in keys:
+        missing.append("installed_capacity: not stated in the DPR or not extracted")
+    if "utilisation" not in keys:
+        missing.append("utilization: not stated in the DPR or not extracted")
+    missing += [
+        "raw_material_requirements: not populated",
+        "production_assumptions: not populated",
+    ]
+    if "market evidence" not in keys:
+        missing.append("market_evidence: no sourced benchmark found or search off")
     return {
         "sector": oa.sector,
         "assumptions": dict(oa.assumptions),
         "classification": oa.classification,
-        "missing": [
-            "installed_capacity: not populated (operational_assumptions "
-            "is always empty in this pipeline today)",
-            "utilization: not populated",
-            "raw_material_requirements: not populated",
-            "production_assumptions: not populated",
-            "market_evidence: not populated",
-        ],
+        "missing": missing,
     }
 
 
@@ -183,12 +187,11 @@ def build_annexure_f(snapshot: CAMSnapshot) -> dict:
     document requirements, scheme eligibility (subsidy/AIF status), source
     URLs, effective dates, retrieval dates, unverified policy areas.
 
-    Fed by: `policy_assessment` and `readiness_assessment.subsidy_benefits`
-    -- both exist as schema-ready models, but neither is ever populated:
-    the policy agent explicitly refuses to invent policy statements
-    without a real, attached policy corpus (see PROGRESS.md), and no
-    subsidy/AIF-eligibility agent exists at all yet. "Lending product"
-    itself has no field anywhere in the snapshot.
+    Fed by: `policy_assessment` -- official-source statements from the
+    grounded policy search (grounding.py, cam_adapter._policy_assessment),
+    each "confirm with the bank"; non-official ones as unverified areas --
+    and `readiness_assessment.subsidy_benefits`, which no agent fills yet.
+    "Lending product" itself has no field anywhere in the snapshot.
     """
     pa = snapshot.policy_assessment
     return {
@@ -201,9 +204,16 @@ def build_annexure_f(snapshot: CAMSnapshot) -> dict:
         ],
         "missing": [
             "lending_product: not modeled anywhere in the snapshot",
-            "policy_statements: the policy agent has no policy corpus "
-            "attached, so this is always empty -- not a bug, a documented "
-            "refusal to invent unsourced policy claims",
+        ]
+        + (
+            []
+            if pa.statements
+            else [
+                "policy_statements: no official-source statement found (or "
+                "search off) -- never invented without a source",
+            ]
+        )
+        + [
             "subsidy_benefits: no subsidy/AIF-eligibility agent exists "
             "yet, so this is always empty",
         ],
@@ -242,6 +252,12 @@ def build_annexure_g(
         "run_status": run.get("status") if run else None,
         "run_attempts": run.get("attempts") if run else None,
         "report_generated_at": snapshot.generated_at.isoformat(),
+        # Documents this analysis never verifies, and who does.
+        "document_verification": (
+            snapshot.document_verification.model_dump(mode="json")
+            if snapshot.document_verification
+            else None
+        ),
         "reviewer_actions": [],
         "missing": [
             "per-role execution timing/duration: only which roles ran is "
