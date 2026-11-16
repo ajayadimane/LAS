@@ -6,6 +6,8 @@ No Wallet writes or automatic report release occur here.
 
 from __future__ import annotations
 
+import json
+from decimal import Decimal
 from uuid import UUID, uuid4
 
 from sqlalchemy import create_engine, text
@@ -168,20 +170,34 @@ def record_token_usage(
     prompt_tokens: int,
     completion_tokens: int,
     total_tokens: int,
+    thinking_tokens: int | None = None,
+    cached_tokens: int | None = None,
+    search_queries: int | None = None,
+    gemini_model: str | None = None,
+    cost_usd: Decimal | None = None,
+    cost_inr: Decimal | None = None,
+    usd_to_inr: float | None = None,
+    price_rates: dict | None = None,
 ) -> None:
-    """Persists the end-to-end Gemini token total for a run (migration 008).
+    """Persists the end-to-end Gemini token total for a run (migration 008)
+    and what it cost (013, run_cost.py; NULL when no rates are configured).
     Deliberately unconditional -- no status or lease check, unlike finish()/
     fail_stuck_run() -- because scripts/dpr_worker.py calls this from its own
     `finally`, after the run has already reached whatever terminal state it's
     going to reach (COMPLETED, FAILED via finish(), or FAILED via
     fail_stuck_run()); there's nothing left to race against. Writing 0s for a
     run that made no Gemini calls (e.g. failed before the first one) is
-    correct and distinct from a pre-migration row, which stays NULL."""
+    correct and distinct from a pre-migration row, which stays NULL. A
+    failed run is costed too: its calls were billed."""
     with engine.begin() as db:
         db.execute(
             text("""
             UPDATE dpr_analysis_runs SET gemini_calls=:calls, prompt_tokens=:prompt,
               completion_tokens=:completion, total_tokens=:total,
+              thinking_tokens=:thinking, cached_tokens=:cached,
+              search_queries=:searches, gemini_model=:model,
+              cost_usd=:cost_usd, cost_inr=:cost_inr, usd_to_inr=:usd_to_inr,
+              price_rates=CAST(:rates AS JSONB),
               updated_at=CURRENT_TIMESTAMP
             WHERE run_id=:id
         """),
@@ -191,6 +207,14 @@ def record_token_usage(
                 "prompt": prompt_tokens,
                 "completion": completion_tokens,
                 "total": total_tokens,
+                "thinking": thinking_tokens,
+                "cached": cached_tokens,
+                "searches": search_queries,
+                "model": gemini_model,
+                "cost_usd": cost_usd,
+                "cost_inr": cost_inr,
+                "usd_to_inr": usd_to_inr,
+                "rates": json.dumps(price_rates) if price_rates is not None else None,
             },
         )
 
@@ -202,7 +226,8 @@ def get_run(engine, run_id: str) -> dict | None:
                 text("""SELECT run_id, service_request_id, source_reference,
             document_sha256, status, attempts, artifact_ref, error_code,
             gemini_calls, prompt_tokens, completion_tokens, total_tokens,
-            created_at, updated_at
+            thinking_tokens, cached_tokens, search_queries, gemini_model,
+            cost_usd, cost_inr, created_at, updated_at
             FROM dpr_analysis_runs WHERE run_id=:id"""),
                 {"id": run_id},
             )
@@ -224,7 +249,8 @@ def latest_run_for(engine, source_reference: str) -> dict | None:
                 text("""SELECT run_id, service_request_id, source_reference,
             document_sha256, status, attempts, artifact_ref, error_code,
             gemini_calls, prompt_tokens, completion_tokens, total_tokens,
-            created_at, updated_at
+            thinking_tokens, cached_tokens, search_queries, gemini_model,
+            cost_usd, cost_inr, created_at, updated_at
             FROM dpr_analysis_runs WHERE source_reference=:ref
             ORDER BY created_at DESC LIMIT 1"""),
                 {"ref": source_reference},

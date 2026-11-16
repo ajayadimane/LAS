@@ -238,6 +238,39 @@ def test_record_token_usage_persists_the_totals_onto_the_run(dpr_pg):
     assert row["total_tokens"] == 12000
 
 
+def test_record_token_usage_stores_the_cost_and_the_rates_it_used(dpr_pg):
+    from decimal import Decimal
+
+    run_id, _ = _submit(dpr_pg)
+    record_token_usage(
+        dpr_pg,
+        run_id,
+        gemini_calls=3,
+        prompt_tokens=1000,
+        completion_tokens=200,
+        total_tokens=1500,
+        thinking_tokens=300,
+        cached_tokens=100,
+        search_queries=2,
+        gemini_model="gemini-3.8-flash",
+        cost_usd=Decimal("0.030550"),
+        cost_inr=Decimal("2.7037"),
+        usd_to_inr=88.5,
+        price_rates={"input_per_mtok_usd": "0.75"},
+    )
+    row = get_run(dpr_pg, run_id)
+    assert (row["thinking_tokens"], row["cached_tokens"]) == (300, 100)
+    assert row["search_queries"] == 2 and row["gemini_model"] == "gemini-3.8-flash"
+    assert row["cost_usd"] == Decimal("0.030550")
+    assert row["cost_inr"] == Decimal("2.7037")
+    with dpr_pg.connect() as conn:
+        rates = conn.execute(
+            text("SELECT price_rates FROM dpr_analysis_runs WHERE run_id=:id"),
+            {"id": run_id},
+        ).scalar_one()
+    assert rates == {"input_per_mtok_usd": "0.75"}
+
+
 def test_record_token_usage_is_unconditional_and_never_checks_status_or_lease(dpr_pg):
     """Called from scripts/dpr_worker.py's own `finally`, after the run has
     already reached its terminal state (finish() or fail_stuck_run() already

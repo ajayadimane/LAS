@@ -382,6 +382,77 @@ def test_process_one_logs_a_token_usage_summary_and_resets_the_context(dpr_pg, c
     assert row["prompt_tokens"] == 0
     assert row["completion_tokens"] == 0
     assert row["total_tokens"] == 0
+    # No rates configured: the cost is unknown, not zero.
+    assert row["cost_usd"] is None and row["cost_inr"] is None
+
+
+def test_worker_stores_the_run_cost_at_the_configured_rates(dpr_pg):
+    """Migration 013: the worker costs the usage gemini.py collected, at the
+    rates configured when the run finished."""
+    from decimal import Decimal
+
+    class BilledGemini:
+        model = "gemini-3.8-flash"
+
+        async def generate(self, prompt, context):
+            usage = CURRENT_RUN_USAGE.get()
+            if usage is not None:
+                usage.append(
+                    {
+                        "prompt_tokens": 1_000_000,
+                        "completion_tokens": 100_000,
+                        "total_tokens": 1_200_000,
+                        "thinking_tokens": 100_000,
+                        "cached_tokens": 0,
+                        "search_queries": 0,
+                    }
+                )
+            return AgentOutput(summary="checked")
+
+        async def extract(self, prompt, context):
+            return ProjectFinancials()
+
+    run_id, _ = submit(
+        dpr_pg,
+        service_request_id="SR-1",
+        document_sha256=hashlib.sha256(b"doc-cost").hexdigest(),
+        source_reference="wallet-person-custom-field:9000000013:GEO_CHECK",
+    )
+    stage_upload(
+        dpr_pg,
+        run_id,
+        StoredFile(name="report.pdf", content_type="application/pdf", data=b"dummy"),
+        KEY,
+    )
+    parsed = SimpleNamespace(
+        sha256=hashlib.sha256(b"doc-cost").hexdigest(),
+        mime="application/pdf",
+        doc_class="DPR",
+        confidence=0.99,
+        needs_vision=False,
+        low_text_pages=[],
+        pages=[{"page": 1, "text": "Detailed project report cost 100"}],
+    )
+    settings = _worker_settings().model_copy(
+        update={
+            "dpr_gemini_price_input_per_mtok_usd": 0.75,
+            "dpr_gemini_price_output_per_mtok_usd": 3.75,
+            "dpr_gemini_price_cached_input_per_mtok_usd": 0.075,
+            "dpr_gemini_price_search_per_1k_usd": 14.0,
+            "dpr_usd_to_inr": 88.0,
+        }
+    )
+    with patch.object(dpr_worker, "inspect_document", return_value=parsed):
+        asyncio.run(
+            dpr_worker.process_one(dpr_pg, KEY, BilledGemini(), run_id, settings)
+        )
+
+    row = get_run(dpr_pg, run_id)
+    calls = row["gemini_calls"]
+    assert calls >= 1 and row["gemini_model"] == "gemini-3.8-flash"
+    # Per call: 1M input x 0.75 + 200k output (thinking included) x 3.75.
+    assert row["cost_usd"] == Decimal("1.5") * calls
+    assert row["cost_inr"] == Decimal("1.5") * calls * 88
 
 
 def test_worker_failure_logging_never_includes_exception_message_text(dpr_pg, caplog):
