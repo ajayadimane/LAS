@@ -1,6 +1,7 @@
 """Milestone 2: finding deduplication/consolidation (brief Section 5.1)."""
 
 from app.services.dpr_agentic.finding_consolidation import consolidate
+from app.services.dpr_agentic.finding_rules import compute_dedup_key
 from app.services.dpr_agentic.schemas import Finding
 
 
@@ -101,9 +102,131 @@ def test_business_risk_category_is_not_classified_as_document_defect():
     assert merged[0].finding_class == "business_risk"
 
 
+def test_calculated_finding_and_its_narrative_restatement_merge():
+    """Same title, category and page: the narrative copy's explanation
+    mentions harvester operating days, which used to give it a topic key
+    the calculated copy did not share, so the report showed both."""
+    calculated = Finding(
+        category="assumption",
+        severity="high",
+        title="Claimed annual acreage exceeds plausible machine throughput",
+        explanation="Acres/day x days/season x seasons/year = 600 acres/year; "
+        "the document plans for 1200.",
+        evidence_page=4,
+        suggested_action="Verify this figure with the applicant.",
+        provenance="calculated",
+        verification="source_verified",
+    )
+    narrative = Finding(
+        category="assumption",
+        severity="high",
+        title="Claimed annual acreage exceeds plausible machine throughput",
+        explanation="At 10 acres/day over 30 operating days across 2 seasons, "
+        "one harvester can cover 300-600 acres/year.",
+        evidence_page=4,
+        suggested_action="Revise the acreage.",
+    )
+    [merged] = consolidate([calculated, narrative])
+    assert merged.provenance == "calculated"
+    assert merged.merged_duplicate_count == 2
+
+
+def test_explanation_wording_alone_does_not_pull_in_a_topic():
+    fuel = Finding(
+        category="financial_calculation",
+        severity="high",
+        title="Fuel cost understated",
+        explanation="Fuel for the harvester's operating days is priced too low.",
+        evidence_page=8,
+        suggested_action="Reprice fuel.",
+    )
+    assert not compute_dedup_key(fuel).startswith("issue:")
+
+
 def test_consolidate_is_idempotent():
     findings = [_finding(), _finding()]
     once = consolidate(findings)
     twice = consolidate(once)
     assert len(once) == len(twice) == 1
     assert once[0].merged_duplicate_count == twice[0].merged_duplicate_count == 2
+
+
+def test_agent_restating_a_calculated_finding_merges_across_categories():
+    """Seen live: an agent copied a calculated title under its own category."""
+    calculated = Finding(
+        category="financial_calculation",
+        severity="high",
+        title="Means Of Finance Balances Cost does not reconcile",
+        explanation="Computed 29.40 vs stated 29.30.",
+        suggested_action="Verify.",
+        provenance="calculated",
+        verification="source_verified",
+    )
+    restated = Finding(
+        category="project_cost",
+        severity="high",
+        title="Means of Finance Balances Cost does not reconcile",
+        explanation="Funding exceeds cost by 0.10 lakh.",
+        evidence_page=4,
+        suggested_action="Align totals.",
+    )
+    [merged] = consolidate([calculated, restated])
+    assert merged.provenance == "calculated" and merged.merged_duplicate_count == 2
+
+
+def test_a_related_but_distinct_title_stays_separate_from_a_calculation():
+    calculated = Finding(
+        category="financial_calculation",
+        severity="high",
+        title="Cost Of Project Total does not reconcile",
+        explanation="x",
+        suggested_action="Verify.",
+        provenance="calculated",
+    )
+    other = Finding(
+        category="project_cost",
+        severity="medium",
+        title="Project cost excludes working capital margin",
+        explanation="y",
+        evidence_page=4,
+        suggested_action="Add margin.",
+    )
+    assert len(consolidate([calculated, other])) == 2
+
+
+def test_same_title_under_a_topic_key_and_a_title_key_merges():
+    """Seen live: one copy keyed by its title words, the verifier's copy by
+    an issue topic picked up from its explanation."""
+    a = _finding(
+        category="operations",
+        title="Aggressive Capacity Utilization during Narrow Harvest Windows",
+        evidence_page=7,
+        explanation="x",
+    )
+    b = a.model_copy(
+        update={"dedup_key": "issue:day_one_full_utilization:7", "explanation": "y"}
+    )
+    assert len(consolidate([a, b])) == 1
+
+
+def test_same_issue_topic_with_and_without_a_page_merges():
+    a = _finding(
+        category="missing_document",
+        title="Vendor Quotation Not Provided",
+        evidence_page=None,
+        dedup_key="issue:missing_vendor_quote:unknown",
+    )
+    b = _finding(
+        category="missing_document",
+        title="Vendor Quotation Omitted",
+        evidence_page=7,
+        dedup_key="issue:missing_vendor_quote:7",
+    )
+    [merged] = consolidate([a, b])
+    assert merged.merged_duplicate_count == 2
+
+
+def test_same_title_on_different_pages_stays_separate():
+    a = _finding(title="Interest omitted from P&L", evidence_page=7)
+    b = _finding(title="Interest omitted from P&L", evidence_page=9)
+    assert len(consolidate([a, b])) == 2

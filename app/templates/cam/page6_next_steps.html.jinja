@@ -60,6 +60,16 @@
       {% endif %}
     </section>
 
+    <div class="cam-note-tile" style="border: 1px solid var(--accent); background: var(--accent-tint); font-size: 11px; line-height: 1.35; padding: 8px 12px;">
+      <strong>Documents not verified by this report.</strong>
+      We analyse your DPR as submitted, not whether your documents are genuine.
+      {{ ctx6.verification.provider }}, our regulated partner, collects and verifies
+      your {{ ctx6.verification.documents | join("; ") }} under our
+      {{ ctx6.verification.service_name }} service{% if ctx6.verification.fee %} ({{ ctx6.verification.fee }}){% endif %}.
+      {% if ctx6.verification.quotation_service_name %}We validate the vendor quotation
+      under our {{ ctx6.verification.quotation_service_name }} service{% if ctx6.verification.quotation_fee %} ({{ ctx6.verification.quotation_fee }}){% endif %}.{% endif %}
+    </div>
+
     <section class="cam-section">
       <h3 class="cam-h3">What happens next</h3>
       <div class="cam-steps-wrap">

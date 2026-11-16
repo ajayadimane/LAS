@@ -97,10 +97,40 @@ def inspect_document(
         pages, low_text_pages = _parse_with_liteparse(
             data, liteparse, max_pages, page_min_chars
         )
+        # LiteParse may return only a subset of pages after partial OCR or
+        # table failures. Never silently analyze that subset as a complete DPR.
+        if low_text_pages is not None:
+            with pymupdf.open(stream=data, filetype="pdf") as doc:
+                existing = {p["page"] for p in pages}
+                for page_number in range(1, doc.page_count + 1):
+                    if page_number not in existing:
+                        pages.append({"page": page_number, "text": ""})
+                        low_text_pages.append(page_number)
+                pages.sort(key=lambda p: p["page"])
+        # Some PDFs contain intentionally empty filler pages. Distinguish
+        # those from scanned pages to avoid needless Gemini OCR charges.
+        if low_text_pages:
+            with pymupdf.open(stream=data, filetype="pdf") as doc:
+                remaining = []
+                parsed_text = {p["page"]: p["text"] for p in pages}
+                for num in low_text_pages:
+                    pg = doc[num - 1] if 1 <= num <= doc.page_count else None
+                    if pg is None:
+                        remaining.append(num)
+                    elif (parsed_text.get(num, "").strip() or pg.get_images(full=True)
+                          or pg.get_text().strip() or pg.get_drawings()):
+                        remaining.append(num)
+                low_text_pages = remaining
+
     elif mime in (JPEG, PNG):
         pages, low_text_pages = _parse_with_liteparse(
             data, liteparse, max_pages, page_min_chars
         )
+        # Single-frame images are page 1. Do not call PyMuPDF's PDF parser
+        # on JPEG/PNG bytes (that formerly raised a malformed-PDF error).
+        if low_text_pages is not None and not pages:
+            pages = [{"page": 1, "text": ""}]
+            low_text_pages = [1]
     else:
         try:
             content = extract_text(data, mime)

@@ -348,6 +348,7 @@ def test_upload_queues_then_worker_completes_and_report_releases(
             doc_class="DPR",
             confidence=0.99,
             needs_vision=False,
+            low_text_pages=[],
             pages=[{"page": 1, "text": "Detailed project report cost 100"}],
         )
 

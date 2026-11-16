@@ -1,0 +1,65 @@
+1. Repayment capacity
+What we check
+
+Gemini reads (exactly as printed, with pages): yearly net profit, depreciation, interest on the term loan, principal, instalment, and the DPR's own DSCR. Where the DSCR or repayment table is printed cleanly, code reads those rows itself.
+Code recomputes DSCR for every year: (net profit + depreciation + term-loan interest) ÷ (principal + interest). If the DPR prints only one instalment row, that row is used as the whole debt service.
+Code compares its DSCR with the DPR's own. When they differ, it identifies which formula the DPR used, for example dividing only by principal and so overstating DSCR.
+Result	Rating
+Year-1 DSCR below 1.0	Must-fix
+A later year below 1.0	Should-fix
+The DPR's stated DSCR doesn't follow the standard formula	Should-fix, rated high if overstated
+Supporting checks:
+
+Code: project cost and means of finance reconcile, and the balance sheet balances.
+Checklist: loan interest is charged in the P&L, tax and depreciation are provided for, and the P&L, cash flow, balance sheet and DSCR table agree.
+Annexure C (scenarios), harvesters only: DSCR at lower acreages, plus three break-evens.
+CAM page 4, "Can you repay the loan?", shows the year-by-year DSCR.
+What it doesn't do
+
+DSCR is only as good as the projections. If revenue is inflated, DSCR is inflated too. That is why the revenue checks below matter.
+No minimum-DSCR rule: a DPR averaging 1.1 isn't flagged, though banks typically want about 1.25 or more. I don't know your banks' norm.
+No stress test outside harvesters: for polyhouse, dairy and the rest, nothing checks what happens to DSCR if revenue falls. The checklist only asks whether the DPR includes its own sensitivity analysis.
+The borrower's other loans and household income aren't considered. That's the credit bureau's job, under IFPL.
+2. Scheme fit
+What we check
+
+Gemini reads the scheme the DPR claims, and code maps it to a known name: AIF, SMAM, Custom Hiring Centre, PMEGP, PMFME, CGTMSE or NABARD refinance.
+The policy agent searches Google for the scheme's conditions (subsidy rate and caps, subvention, guarantee, who is covered) and the bank's published terms.
+Statements from official sites appear in Annexure F as "confirm with the bank", and up to 4 become questions in the report.
+Statements from other sites are listed as unverified.
+A search result can never make the borrower "eligible", "approved" or "sanctioned"; code removes such wording.
+Code checks:
+AIF interest: the standard rate minus the subvention must equal the effective rate.
+Means of finance: subsidy counted on top of the loan shows up as a reconciliation gap; this was the ₹105 lakh vs ₹70 lakh case on the polyhouse DPR.
+Subsidy cost norms for polyhouse and cold storage.
+Checklist: is an unsanctioned subsidy counted as funding?
+CAM page 6: shows "Eligibility not verified" unless eligibility has been confirmed.
+What it doesn't do
+
+No scheme rules are applied in code: for example, PMEGP project-cost caps and subsidy percentages, or AIF's eligible activities, loan cap and 7-year subvention period.
+The eligible subsidy amount is never computed, so a claimed subsidy can't be compared with what the scheme would actually give.
+The search runs on the DPR's claimed scheme only. It won't suggest a better-fitting scheme the DPR missed.
+3. Proof of revenue
+What we check
+
+Gemini reads the operating figures: the unit sold, capacity per day, operating days, utilisation, units sold per year, price and variable cost per unit, and the sector figures (acres, yield per m², milk yield and so on).
+Code checks consistency:
+Check	Rating
+Volume × price vs the revenue in the projections	Must-fix if stated revenue is 5% or more higher
+Units sold above capacity	Must-fix
+90% or more utilisation in year 1 ("full capacity from day one")	Must-fix
+Price at or below variable cost per unit	Must-fix
+Asset idle 90 days or more a year	Should-fix
+Harvester: planned acreage vs acres/day × days × seasons	Rated by the size of the gap
+Benchmarks (code): acreage, yield, milk per animal and price, compared with the sector table. Should-fix.
+Checklist: price supported by the local market; capacity and days realistic; seasonality reflected; demand not dependent on one buyer.
+The research agent adds published market ranges as evidence in Annexure D.
+What it doesn't do
+
+Nothing checks evidence that revenue will happen. No buyer agreements, milk-union membership, booked acreage, letters of intent, or past sales for an existing business. The "one buyer" question checks concentration, not proof.
+All checks are against the DPR's own figures and benchmarks. A DPR that is consistent and within the ranges passes, even if no customer has committed.
+What I'd add, in order of value
+A stress test for every sector, pure code: DSCR recomputed with revenue 10% and 20% lower. If DSCR falls below 1.0, it's a should-fix. This closes the biggest repayment gap.
+A minimum-DSCR rule: a finding when average or minimum DSCR is below your banks' norm. I need that norm from you, e.g. average 1.25 or more, minimum 1.0 or more.
+A revenue-evidence checklist item: "Does the DPR show evidence of demand, such as buyer or union agreements, bookings, letters of intent or past sales?" This is judged by Gemini.
+A scheme rules table in the style of the benchmarks: for each scheme, eligible activities, project-cost cap, subsidy percentage and cap, subvention rate and years. Code would then compute the eligible subsidy and compare it with the DPR's claim. The scheme figures would need credit's approval, like the benchmarks.

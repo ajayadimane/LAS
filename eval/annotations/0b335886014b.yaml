@@ -1,0 +1,45 @@
+document_sha256: 0b335886014b6c102c83dd27aea7de212d3162d86fbd3ef2d7ef6e8bac317f51
+label: approved
+reviewed: false
+expected:
+  cost_of_project_stated_total: 30.0
+  means_of_finance_stated_total: 30.0
+  standard_interest_rate_pct: 9.5
+  effective_interest_rate_pct: 6.5
+  term_loan_amount: 22.5
+  years:
+    1:
+      revenue: 21.6
+      principal_repayment: 3.21
+      interest_repayment: 1.46
+      stated_dscr: 2.02
+      tax_paid: 1.46
+    2:
+      revenue: 22.68
+      principal_repayment: 3.21
+      interest_repayment: 1.25
+      stated_dscr: 2.28
+      tax_paid: 1.25
+    3:
+      revenue: 23.82
+      principal_repayment: 3.21
+      interest_repayment: 1.04
+      stated_dscr: 2.55
+      tax_paid: 1.17
+    4:
+      revenue: 25.01
+      principal_repayment: 3.21
+      interest_repayment: 0.83
+      stated_dscr: 2.88
+      tax_paid: 0.97
+    5:
+      revenue: 26.26
+      principal_repayment: 3.21
+      interest_repayment: 0.62
+      stated_dscr: 3.21
+      tax_paid: 0.92
+must_find: []
+must_not_find: []
+candidate_must_find_titles:
+- Absence of Official Pro-Forma Invoice / Vendor Quotation
+- Omission of Term Loan Interest from Profitability Statement

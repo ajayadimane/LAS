@@ -23,6 +23,17 @@ from app.core.config import Settings
 from app.services.enrolment import DocumentNotAllowedError, EnrolmentService
 
 
+def _project_context(svc, values: dict[str, str]) -> dict[str, str]:
+    """The service's details as {key: value} (e.g. bank_name), skipping
+    unset ones ("NA" or empty, as everywhere else)."""
+    out = {}
+    for detail in getattr(svc, "details", None) or []:
+        value = (values.get(detail.field_id) or "").strip()
+        if value and value.casefold() != "na":
+            out[detail.key] = value
+    return out
+
+
 async def upload_and_queue_analysis(
     request: Request,
     filename: str,
@@ -92,7 +103,13 @@ async def upload_and_queue_analysis(
                 source_reference=source_ref,
             )
             init_branches(engine, run_id)
-            stage_upload(engine, run_id, file, key.get_secret_value().encode())
+            stage_upload(
+                engine,
+                run_id,
+                file,
+                key.get_secret_value().encode(),
+                project_context=_project_context(svc, values),
+            )
             if wallet_status == "STORED":
                 mark_wallet_stored(engine, run_id, wallet_reference)
             else:

@@ -74,16 +74,22 @@ def test_custom_threshold_is_honored():
     assert priority == "should_fix"
 
 
-def test_missing_document_is_always_must_fix():
-    finding = Finding(
-        category="missing_document",
-        severity="low",
-        title="Quotation missing",
-        explanation="x",
-        suggested_action="Request it.",
-    )
-    priority, _ = priority_for_narrative(finding)
-    assert priority == "must_fix"
+def test_free_form_findings_are_never_must_fix():
+    """Must-fix comes only from code checks and checklist items; free-form
+    "missing document" and "critical" findings made the must-fix list differ
+    between runs of the same DPR. The quotation must-fix now comes from the
+    DOC_QUOTATION checklist item (test_dpr_checklists.py)."""
+    for category, severity in (("missing_document", "low"), ("risk", "critical")):
+        finding = Finding(
+            category=category,
+            severity=severity,
+            title="Quotation missing",
+            explanation="x",
+            suggested_action="Request it.",
+        )
+        priority, rule = priority_for_narrative(finding)
+        assert priority == "should_fix"
+        assert "free-form" in rule
 
 
 def test_narrative_high_severity_is_should_fix():

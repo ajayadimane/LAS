@@ -19,6 +19,7 @@ from app.core.logging import configure_logging, get_logger
 from app.services.admin_session import AdminSession
 from app.services.dpr_agentic.jobs import engine_for
 from app.services.dpr_agentic.migrate import apply_migrations
+from app.services.dpr_agentic.report_store import check_pdf_renderer_ready
 from app.services.dpr_agentic.worker_process import (
     start_if_enabled as start_dpr_worker_if_enabled,
 )
@@ -74,6 +75,8 @@ async def lifespan(app: FastAPI):
     app.state.admin_session = AdminSession(app.state.vendor_client, settings)
     app.state.mailer = Mailer(settings)
     app.state.dpr_engine = build_dpr_engine(settings)
+    if settings.dpr_agentic_enabled:
+        check_pdf_renderer_ready()
     # The OTP service is a separate host with its own key: its own client.
     otp_http = build_otp_http_client(settings)
     app.state.otp_client = OtpClient(otp_http, settings)

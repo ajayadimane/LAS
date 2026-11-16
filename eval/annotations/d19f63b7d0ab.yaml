@@ -1,0 +1,79 @@
+document_sha256: d19f63b7d0ab85bc863bd9504cd91a8299e9e1ee3e133df4e766eadb17f8d2a3
+label: rejected
+reviewed: false
+expected:
+  cost_of_project_stated_total: 28.5
+  means_of_finance_stated_total: 28.5
+  subvention_rate_pct: 3.0
+  term_loan_amount: 21.0
+  loan_tenor_years: 7.0
+  years:
+    1:
+      revenue: 4.89
+      net_profit: 1.11
+      depreciation: 0.71
+      interest_repayment: 0.32
+      stated_dscr: 0.0
+      profit_before_tax: 1.11
+      tax_paid: 0.0
+    2:
+      revenue: 31.4
+      net_profit: 7.53
+      depreciation: 4.17
+      interest_repayment: 1.84
+      stated_dscr: 3.28
+      profit_before_tax: 7.53
+      tax_paid: 0.0
+    3:
+      revenue: 33.6
+      net_profit: 9.12
+      depreciation: 3.54
+      interest_repayment: 1.63
+      stated_dscr: 3.46
+      profit_before_tax: 9.12
+      tax_paid: 0.0
+    4:
+      revenue: 35.95
+      net_profit: 10.66
+      depreciation: 3.01
+      interest_repayment: 1.39
+      stated_dscr: 3.65
+      profit_before_tax: 10.66
+      tax_paid: 0.0
+    5:
+      revenue: 38.47
+      net_profit: 11.53
+      depreciation: 2.56
+      interest_repayment: 1.13
+      stated_dscr: 3.69
+      profit_before_tax: 12.18
+      tax_paid: 0.65
+    6:
+      revenue: 41.16
+      net_profit: 12.8
+      depreciation: 2.18
+      interest_repayment: 0.85
+      stated_dscr: 3.83
+      profit_before_tax: 13.69
+      tax_paid: 0.89
+    7:
+      revenue: 44.04
+      net_profit: 14.08
+      depreciation: 1.85
+      interest_repayment: 0.55
+      stated_dscr: 3.99
+      profit_before_tax: 15.2
+      tax_paid: 1.12
+    8:
+      revenue: 47.13
+      net_profit: 15.33
+      depreciation: 1.57
+      interest_repayment: 0.21
+      stated_dscr: 4.14
+      profit_before_tax: 16.73
+      tax_paid: 1.4
+must_find: []
+must_not_find: []
+candidate_must_find_titles:
+- Absence of Verified Vendor Quotation / Pro-Forma Invoice
+- Negative Amortization and Balloon Installments in Term Loan Repayment Schedule

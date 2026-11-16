@@ -1,0 +1,92 @@
+document_sha256: e3aae76bbdce02b2c6b07c2171a891ad2f56a27dc0ef241ab08ec2e75a0cce31
+label: rejected
+reviewed: false
+expected:
+  cost_of_project_stated_total: 29.3
+  means_of_finance_stated_total: 29.4
+  standard_interest_rate_pct: 9.0
+  subvention_rate_pct: 3.0
+  term_loan_amount: 22.0
+  loan_tenor_years: 7.0
+  years:
+    1:
+      revenue: 50.0
+      operating_expenses: 39.5
+      net_profit: 4.21
+      depreciation: 4.41
+      interest_on_term_loan: 1.88
+      principal_repayment: 2.36
+      interest_repayment: 1.88
+      stated_dscr: 2.48
+      profit_before_tax: 4.21
+      tax_paid: 0.0
+    2:
+      revenue: 55.0
+      operating_expenses: 43.55
+      net_profit: 5.69
+      depreciation: 3.75
+      interest_on_term_loan: 1.66
+      principal_repayment: 2.58
+      interest_repayment: 1.66
+      stated_dscr: 2.62
+      profit_before_tax: 6.04
+      tax_paid: 0.35
+    3:
+      revenue: 60.0
+      operating_expenses: 47.7
+      net_profit: 7.0
+      depreciation: 3.19
+      interest_on_term_loan: 1.42
+      principal_repayment: 2.82
+      interest_repayment: 1.42
+      stated_dscr: 2.74
+      profit_before_tax: 7.69
+      tax_paid: 0.69
+    4:
+      revenue: 65.0
+      operating_expenses: 51.85
+      net_profit: 8.27
+      depreciation: 2.71
+      interest_on_term_loan: 1.15
+      principal_repayment: 3.09
+      interest_repayment: 1.15
+      stated_dscr: 2.86
+      profit_before_tax: 9.29
+      tax_paid: 1.02
+    5:
+      revenue: 70.0
+      operating_expenses: 56.0
+      net_profit: 9.41
+      depreciation: 2.3
+      interest_on_term_loan: 0.86
+      principal_repayment: 3.38
+      interest_repayment: 0.86
+      stated_dscr: 2.96
+      profit_before_tax: 10.84
+      tax_paid: 1.43
+    6:
+      revenue: 75.0
+      operating_expenses: 60.15
+      net_profit: 10.45
+      depreciation: 1.96
+      interest_on_term_loan: 0.53
+      principal_repayment: 3.69
+      interest_repayment: 0.53
+      stated_dscr: 3.07
+      profit_before_tax: 12.36
+      tax_paid: 1.91
+    7:
+      revenue: 80.0
+      operating_expenses: 64.3
+      net_profit: 11.47
+      depreciation: 1.67
+      interest_on_term_loan: 0.2
+      principal_repayment: 4.03
+      interest_repayment: 0.2
+      stated_dscr: 3.15
+      profit_before_tax: 13.83
+      tax_paid: 2.36
+must_find: []
+must_not_find: []
+candidate_must_find_titles:
+- Absence of Vendor Quotation or Pro-Forma Invoice

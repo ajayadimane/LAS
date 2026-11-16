@@ -25,14 +25,14 @@
     <section class="cam-priority-group">
       <div class="cam-priority-group__head">
         <span class="cam-pill cam-pill--must-fix">Must fix</span>
-        <span class="cam-priority-group__count">{{ ctx2.must_fix | length }} issue(s)</span>
+        <span class="cam-priority-group__count">{{ ctx2.must_fix_total }} issue(s)</span>
       </div>
       {% if ctx2.must_fix %}
-      {% for f in ctx2.must_fix %}
+      {% for f in ctx2.must_fix[:3] %}
       <div class="cam-finding-row">
         <div>
           <div class="cam-finding-row__title">{{ f.title }}</div>
-          <div class="cam-finding-row__body">{{ f.explanation }} <strong>Do:</strong> {{ f.suggested_action }}</div>
+          <div class="cam-finding-row__body">{{ f.explanation | truncate(165, True) }} <strong>Do:</strong> {{ f.suggested_action | truncate(85, True) }}</div>
         </div>
         <div class="cam-finding-row__ref">{{ f.ref }}</div>
       </div>
@@ -45,17 +45,17 @@
     <section class="cam-priority-group cam-priority-group--loose">
       <div class="cam-priority-group__head">
         <span class="cam-pill cam-pill--should-fix">Should fix</span>
-        <span class="cam-priority-group__count">{{ ctx2.should_fix | length }} issue(s)</span>
+        <span class="cam-priority-group__count">{{ ctx2.should_fix_total }} issue(s)</span>
       </div>
       {% if ctx2.should_fix %}
       <div class="cam-grid-2">
-        {% for f in ctx2.should_fix %}
+        {% for f in ctx2.should_fix[:2] %}
         <div class="cam-finding-card">
           <div class="cam-finding-card__head">
             <div class="cam-finding-card__title">{{ f.title }}</div>
             <div class="cam-finding-card__ref">{{ f.ref }}</div>
           </div>
-          <div class="cam-finding-card__body">{{ f.explanation }}</div>
+          <div class="cam-finding-card__body">{{ f.explanation | truncate(165, True) }}</div>
         </div>
         {% endfor %}
       </div>
@@ -67,17 +67,17 @@
     <section class="cam-priority-group cam-priority-group--loose">
       <div class="cam-priority-group__head">
         <span class="cam-pill cam-pill--good-to-fix">Good to fix</span>
-        <span class="cam-priority-group__count">{{ ctx2.good_to_fix | length }} issue(s)</span>
+        <span class="cam-priority-group__count">{{ ctx2.good_to_fix_total }} issue(s)</span>
       </div>
       {% if ctx2.good_to_fix %}
       <div class="cam-grid-2">
-        {% for f in ctx2.good_to_fix %}
+        {% for f in ctx2.good_to_fix[:0] %}
         <div class="cam-finding-card">
           <div class="cam-finding-card__head">
             <div class="cam-finding-card__title">{{ f.title }}</div>
             <div class="cam-finding-card__ref">{{ f.ref }}</div>
           </div>
-          <div class="cam-finding-card__body">{{ f.explanation }}</div>
+          <div class="cam-finding-card__body">{{ f.explanation | truncate(165, True) }}</div>
         </div>
         {% endfor %}
       </div>
@@ -85,6 +85,7 @@
       <p class="cam-empty-note">No good-to-fix issues were found.</p>
       {% endif %}
     </section>
+    {% if ctx2.has_more %}<p class="cam-empty-note">Only the highest-priority findings are shown here. See the complete findings register and technical annexures for all issues.</p>{% endif %}
   </main>
 
   <footer class="cam-footer">

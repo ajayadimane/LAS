@@ -27,7 +27,7 @@ from app.services.dpr_agentic.report_service import (
     access_report_versions,
     source_reference,
 )
-from app.services.dpr_agentic.report_store import list_report_versions
+from app.services.dpr_agentic.report_store import list_report_versions, get_cam_snapshot
 from app.services.dpr_agentic.schemas import AnalysisResult
 from app.services.enrolment import EnrolmentService, UnknownServiceError
 
@@ -195,12 +195,13 @@ async def resolve_annexures(
     if resolved_version is None:
         versions = list_report_versions(engine, ref)
         resolved_version = versions[-1] if versions else 0
-    snapshot = build_snapshot_from_analysis(
-        report,
-        report_id=ref,
-        report_version=resolved_version,
-        analysis_run_id=report.wallet_document_id,
-    )
+    snapshot = get_cam_snapshot(engine, ref, version=resolved_version)
+    if snapshot is None:
+        # Compatibility only: pre-010 report versions have no frozen snapshot.
+        snapshot = build_snapshot_from_analysis(
+            report, report_id=ref, report_version=resolved_version,
+            analysis_run_id=report.wallet_document_id,
+        )
     run = latest_run_for(engine, ref)
     return build_annexures(snapshot, report, run)
 
@@ -242,12 +243,13 @@ async def resolve_summary(
     if resolved_version is None:
         versions = list_report_versions(engine, ref)
         resolved_version = versions[-1] if versions else 0
-    snapshot = build_snapshot_from_analysis(
-        report,
-        report_id=ref,
-        report_version=resolved_version,
-        analysis_run_id=report.wallet_document_id,
-    )
+    snapshot = get_cam_snapshot(engine, ref, version=resolved_version)
+    if snapshot is None:
+        # Compatibility only: pre-010 report versions have no frozen snapshot.
+        snapshot = build_snapshot_from_analysis(
+            report, report_id=ref, report_version=resolved_version,
+            analysis_run_id=report.wallet_document_id,
+        )
     priority_counts = {"must_fix": 0, "should_fix": 0, "good_to_fix": 0}
     evidence_references_count = 0
     for f in snapshot.findings:

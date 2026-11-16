@@ -57,7 +57,7 @@ def test_agent_parallel_fanout_and_dependency_join():
         async def generate(self, prompt, context):
             from app.services.dpr_agentic.orchestrator import PROMPTS
 
-            name = next(k for k, v in PROMPTS.items() if v == prompt)
+            name = next(k for k, v in PROMPTS.items() if prompt.startswith(v))
             if name in ("finance", "sector", "research", "policy"):
                 active.add(name)
                 maximum[0] = max(maximum[0], len(active))
@@ -68,7 +68,8 @@ def test_agent_parallel_fanout_and_dependency_join():
         async def extract(self, prompt, context):
             from app.services.dpr_agentic.financial_schema import ProjectFinancials
 
-            return ProjectFinancials()
+            # Non-empty, so the full graph runs (empty -> early stop).
+            return ProjectFinancials(cost_of_project_stated_total=80.0)
 
     payload = AnalysisInput(
         service_request_id="SR1",
@@ -94,7 +95,7 @@ def test_analyze_parallel_cam_engine_flag_on_populates_outputs():
         async def generate(self, prompt, context):
             from app.services.dpr_agentic.orchestrator import PROMPTS
 
-            name = next(k for k, v in PROMPTS.items() if v == prompt)
+            name = next(k for k, v in PROMPTS.items() if prompt.startswith(v))
             return AgentOutput(summary=name)
 
         async def extract(self, prompt, context):

@@ -25,7 +25,10 @@ from app.core.config import get_settings  # noqa: E402
 from app.core.logging import configure_logging  # noqa: E402
 from app.services.dpr_agentic.jobs import engine_for  # noqa: E402
 from app.services.dpr_agentic.migrate import apply_migrations  # noqa: E402
-from app.services.dpr_agentic.report_store import rerender_failed_pdfs  # noqa: E402
+from app.services.dpr_agentic.report_store import (  # noqa: E402
+    check_pdf_renderer_ready,
+    rerender_failed_pdfs,
+)
 
 
 def main() -> int:
@@ -35,6 +38,14 @@ def main() -> int:
 
     settings = get_settings()
     configure_logging(settings.log_level)
+    if not check_pdf_renderer_ready():
+        print(
+            "PDF renderer dependencies missing in the active Python environment. "
+            "Run: python -m pip install -e .  "
+            "Then: python -c 'import jinja2, weasyprint'",
+            file=sys.stderr,
+        )
+        return 2
     if not settings.dpr_database_url:
         sys.exit("rerender_cam_pdfs: DPR_DATABASE_URL is not set")
     engine = engine_for(settings.dpr_database_url.get_secret_value())

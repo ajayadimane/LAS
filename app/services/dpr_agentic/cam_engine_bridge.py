@@ -50,8 +50,11 @@ from .finding_rules import compute_dedup_key, priority_for_calculation
 from .schemas import Finding
 from .sector_feasibility import assess_sector_feasibility
 
-MONEY_TOLERANCE = Decimal("0.01")  # lakh
-MATERIAL_GAP_TOLERANCE = Decimal("1")  # lakh
+MONEY_TOLERANCE = Decimal("0.01")  # lakh (Rs 1,000)
+# Acres, not money: a claimed annual acreage within one acre of the
+# feasible figure is not worth a finding. (This was MATERIAL_GAP_TOLERANCE,
+# shared with the fund-flow check, where 1 lakh hid gaps up to Rs 1,00,000.)
+ACREAGE_TOLERANCE = Decimal("1")  # acres
 
 # Keyword classification of a means-of-finance line's free-text label, as
 # extracted verbatim from the DPR -- never a guess at an amount, only at
@@ -187,6 +190,7 @@ def _calculated_finding(
     if show_value_pair and stated_value is not None:
         finding.dpr_stated_value = f"{stated_value}{unit}"
         finding.recomputed_display_value = f"{computed_value}{unit}"
+    finding.why_it_matters = "Figures that do not reconcile get the DPR queried"
     return finding
 
 
@@ -416,21 +420,28 @@ def _fund_flow_finding(
     trace = fund_flow_gap(sources_total=sources, applications_total=applications)
     if (
         trace.computed_value is None
-        or abs(trace.computed_value) <= MATERIAL_GAP_TOLERANCE
+        or abs(trace.computed_value) <= MONEY_TOLERANCE
     ):
         return None, trace
     finding = _calculated_finding(
         check="fund_flow_sources_applications_balance",
         title="Fund flow sources do not match applications",
         explanation=(
-            f"{trace.formula} Sources {sources} lakh, applications "
-            f"{applications} lakh, gap {trace.computed_value} lakh."
+            f"The fund-flow statement's sources total {sources} lakh but its "
+            f"applications total {applications} lakh, a gap of "
+            f"{trace.computed_value} lakh. A balanced statement shows that gap "
+            "explicitly, usually as the closing cash balance; here it is "
+            "unaccounted for."
         ),
         page=fin.fund_flow_sources_total.page,
         computed_value=sources,
         stated_value=applications,
         show_value_pair=False,
     )
+    finding.dpr_stated_value = f"Sources {sources}, applications {applications}"
+    # Both sides, never one as the "correct" figure; the fix is the
+    # reference template's "add closing cash".
+    finding.should_be = "Add the closing cash so both sides match"
     return finding, trace
 
 
@@ -568,7 +579,7 @@ def run_harvester_engine(
         if (
             outputs.feasible_acres_per_year.status == "COMPUTED"
             and feasible is not None
-            and abs(acres_stated - feasible) > MATERIAL_GAP_TOLERANCE
+            and abs(acres_stated - feasible) > ACREAGE_TOLERANCE
         ):
             feasible_whole = feasible.quantize(Decimal("1"))
             acres_stated_whole = acres_stated.quantize(Decimal("1"))

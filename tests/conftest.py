@@ -101,7 +101,7 @@ def _fail_on_real_gemini_client():
     )
     original_init = GeminiAgentClient.__init__
 
-    def guarded_init(self, client, api_key, model):
+    def guarded_init(self, client, api_key, model, *args, **kwargs):
         if real_key and api_key == real_key:
             raise RuntimeError(
                 "A test constructed GeminiAgentClient with the real "
@@ -110,7 +110,7 @@ def _fail_on_real_gemini_client():
                 "explicit fake key (e.g. 'test-gemini-key') instead. See "
                 "PROGRESS.md milestone 5's disclosed incident."
             )
-        return original_init(self, client, api_key, model)
+        return original_init(self, client, api_key, model, *args, **kwargs)
 
     GeminiAgentClient.__init__ = guarded_init
     try:
@@ -280,7 +280,7 @@ def dpr_pg(dpr_pg_engine):
     with dpr_pg_engine.begin() as conn:
         conn.execute(
             text(
-                "TRUNCATE dpr_upload_staging, dpr_report_artifacts, "
+                "TRUNCATE dpr_upload_staging, dpr_report_artifacts, dpr_ocr_cache, dpr_grounding_cache, "
                 "dpr_analysis_branch_status, dpr_analysis_runs"
             )
         )

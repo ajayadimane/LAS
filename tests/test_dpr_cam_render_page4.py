@@ -12,6 +12,8 @@ scenario's own cost assumption, never a fabricated chart or an invented
 import json
 from pathlib import Path
 
+import pytest
+
 from app.services.dpr_agentic.cam_adapter import build_snapshot_from_analysis
 from app.services.dpr_agentic.cam_render import (
     build_page4_context,
@@ -20,6 +22,16 @@ from app.services.dpr_agentic.cam_render import (
 )
 from app.services.dpr_agentic.cam_snapshot import CAMSnapshot
 from app.services.dpr_agentic.schemas import AnalysisResult
+
+
+@pytest.fixture(autouse=True)
+def _v1_layout(monkeypatch):
+    """These tests cover the 1.x six-page layout, which every 1.x report
+    already issued keeps (cam_render.uses_v2_layout). The 2.x layout is
+    tested in test_dpr_cam_render_v2.py."""
+    monkeypatch.setattr(
+        "app.services.dpr_agentic.cam_render.uses_v2_layout", lambda snapshot: False
+    )
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "tikamgarh_cam_snapshot.json"
 

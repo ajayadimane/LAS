@@ -144,7 +144,7 @@ export interface AnalysisReport {
 
 /** Mirrors app/services/dpr_agentic/cam_snapshot.py's Money. */
 export interface Money {
-  amount: number;
+  amount: number | string;
   currency: string;
   unit: "absolute" | "lakh" | "crore";
 }
@@ -153,7 +153,7 @@ export interface Money {
 export interface CalculationTrace {
   formula: string;
   inputs: Record<string, string>;
-  computed_value: number | null;
+  computed_value: number | string | null;
   status: "COMPUTED" | "NOT_COMPUTABLE";
   reason_not_computable: string | null;
   calculation_version: string;

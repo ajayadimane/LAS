@@ -189,14 +189,18 @@ def test_gemini_client_appends_usage_to_the_current_run_usage_list_when_set():
 
     usage_log: list[dict] = []
     asyncio.run(run(usage_log))
-    assert usage_log == [
-        {
-            "role": "unknown",
-            "prompt_tokens": 10,
-            "completion_tokens": 20,
-            "total_tokens": 30,
-        }
-    ]
+    assert len(usage_log) == 1
+    assert {
+        k: usage_log[0][k]
+        for k in ("role", "prompt_tokens", "completion_tokens", "total_tokens")
+    } == {
+        "role": "unknown",
+        "prompt_tokens": 10,
+        "completion_tokens": 20,
+        "total_tokens": 30,
+    }
+    # Token counts and sizes only -- never page text or model output.
+    assert CANARY not in json.dumps(usage_log)
     assert CURRENT_RUN_USAGE.get() is None  # reset after
 
 
@@ -253,6 +257,7 @@ def test_worker_never_logs_page_text_or_llm_output(dpr_pg, caplog):
         doc_class="DPR",
         confidence=0.99,
         needs_vision=False,
+        low_text_pages=[],
         pages=[{"page": 1, "text": f"Document body containing {CANARY}"}],
     )
 
@@ -278,7 +283,8 @@ def test_process_one_sets_current_run_id_for_the_whole_call_chain(dpr_pg):
 
         async def extract(self, prompt, context):
             seen_run_ids.append(CURRENT_RUN_ID.get())
-            return ProjectFinancials()
+            # Non-empty, so the full graph runs (empty -> early stop).
+            return ProjectFinancials(cost_of_project_stated_total=100.0)
 
     run_id, _ = submit(
         dpr_pg,
@@ -298,6 +304,7 @@ def test_process_one_sets_current_run_id_for_the_whole_call_chain(dpr_pg):
         doc_class="DPR",
         confidence=0.99,
         needs_vision=False,
+        low_text_pages=[],
         pages=[{"page": 1, "text": "Detailed project report cost 100"}],
     )
 
@@ -308,9 +315,10 @@ def test_process_one_sets_current_run_id_for_the_whole_call_chain(dpr_pg):
             dpr_worker.process_one(dpr_pg, KEY, RecordingGemini(), run_id, settings)
         )
 
-    # extract() once, generate() once per role (10 roles) -- every single
-    # call, across every LangGraph node, saw the same run_id.
-    assert len(seen_run_ids) == 11
+    # extract() once, generate() once per LLM-backed role (7: research,
+    # policy and report make no LLM call) -- every single call, across every
+    # LangGraph node, including the concurrent ones, saw the same run_id.
+    assert len(seen_run_ids) == 8
     assert all(seen == run_id for seen in seen_run_ids)
     assert CURRENT_RUN_ID.get() is None  # reset after the run finishes
 
@@ -349,6 +357,7 @@ def test_process_one_logs_a_token_usage_summary_and_resets_the_context(dpr_pg, c
         doc_class="DPR",
         confidence=0.99,
         needs_vision=False,
+        low_text_pages=[],
         pages=[{"page": 1, "text": "Detailed project report cost 100"}],
     )
 
@@ -405,6 +414,7 @@ def test_worker_failure_logging_never_includes_exception_message_text(dpr_pg, ca
         doc_class="DPR",
         confidence=0.99,
         needs_vision=False,
+        low_text_pages=[],
         pages=[{"page": 1, "text": "Detailed project report cost 100"}],
     )
 
