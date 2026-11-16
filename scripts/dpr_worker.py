@@ -71,6 +71,13 @@ from app.services.dpr_agentic.ocr_cache import (  # noqa: E402
     purge_expired_ocr_cache,
 )
 from app.services.dpr_agentic.report_store import store_report  # noqa: E402
+from app.services.dpr_agentic.run_cost import (  # noqa: E402
+    price_rates,
+    prices_from_settings,
+    run_cost_usd,
+    sum_usage,
+    to_inr,
+)
 from app.services.dpr_agentic.schemas import AnalysisInput, SourcePage  # noqa: E402
 from app.services.dpr_agentic.upload_staging import (  # noqa: E402
     delete_staged_upload,
@@ -233,31 +240,53 @@ async def process_one(
         # also the total for upload-to-report-ready. Per-call detail is the
         # dpr_gemini_call log line in gemini.py, already emitted as each call
         # happens -- this is the one-line rollup for the whole run.
-        total_prompt_tokens = sum(u["prompt_tokens"] for u in usage_log)
-        total_completion_tokens = sum(u["completion_tokens"] for u in usage_log)
-        total_tokens = sum(u["total_tokens"] for u in usage_log)
+        usage = sum_usage(usage_log)
+        # The cost at the configured rates (run_cost.py); never allowed to
+        # stop the token totals being stored.
+        cost_usd = cost_inr = prices = None
+        usd_to_inr = getattr(settings, "dpr_usd_to_inr", None)
+        try:
+            prices = prices_from_settings(settings)
+            if prices is not None:
+                cost_usd = run_cost_usd(usage, prices)
+                cost_inr = to_inr(cost_usd, usd_to_inr)
+        except Exception:  # noqa: BLE001
+            logger.warning("dpr_run_cost_failed run_id=%s", run_id, exc_info=True)
         logger.info(
             "dpr_run_token_usage run_id=%s gemini_calls=%d total_prompt_tokens=%d "
-            "total_completion_tokens=%d total_tokens=%d",
+            "total_completion_tokens=%d total_tokens=%d thinking_tokens=%d "
+            "cached_tokens=%d search_queries=%d cost_usd=%s cost_inr=%s",
             run_id,
-            len(usage_log),
-            total_prompt_tokens,
-            total_completion_tokens,
-            total_tokens,
+            usage.gemini_calls,
+            usage.prompt_tokens,
+            usage.completion_tokens,
+            usage.total_tokens,
+            usage.thinking_tokens,
+            usage.cached_tokens,
+            usage.search_queries,
+            cost_usd,
+            cost_inr,
         )
-        # Persisted (migration 008) so the total is queryable per run, not
-        # just grep-able in logs -- e.g. for cost reporting or surfacing on
-        # the BD dashboard later. Unconditional: the run has already reached
-        # its terminal state by this point (finish() or fail_stuck_run()
-        # above already ran), so there's no lease/status race to guard
-        # against here.
+        # Persisted (migrations 008, 013) so the totals and the cost are
+        # queryable per run, not just grep-able in logs. Unconditional: the
+        # run has already reached its terminal state by this point (finish()
+        # or fail_stuck_run() above already ran), so there's no lease/status
+        # race to guard against here.
         record_token_usage(
             engine,
             run_id,
-            gemini_calls=len(usage_log),
-            prompt_tokens=total_prompt_tokens,
-            completion_tokens=total_completion_tokens,
-            total_tokens=total_tokens,
+            gemini_calls=usage.gemini_calls,
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens,
+            total_tokens=usage.total_tokens,
+            thinking_tokens=usage.thinking_tokens,
+            cached_tokens=usage.cached_tokens,
+            search_queries=usage.search_queries,
+            gemini_model=getattr(gemini, "model", None),
+            cost_usd=cost_usd,
+            cost_inr=cost_inr,
+            usd_to_inr=usd_to_inr if cost_inr is not None else None,
+            price_rates=price_rates(prices) if cost_usd is not None else None,
         )
         CURRENT_RUN_USAGE.reset(usage_token)
         CURRENT_RUN_ID.reset(run_id_token)

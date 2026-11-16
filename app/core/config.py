@@ -128,6 +128,18 @@ class Settings(BaseSettings):
     dpr_agentic_thinking_budget: int = Field(default=512, ge=0, le=4096)
     dpr_agentic_thinking_level: str | None = None  # Opt-in for compatible Gemini 3 models
     dpr_agentic_max_output_tokens: int = Field(default=6144, ge=512, le=16384)
+    # Gemini rates for DPR_AGENTIC_GEMINI_MODEL, in USD (run_cost.py). Each
+    # analysis run stores its cost at the rates set when it ran; the cost is
+    # left NULL unless all four are set. Google changes these (gemini-3.8-
+    # flash doubles on 2027-01-01), so update them with the model.
+    dpr_gemini_price_input_per_mtok_usd: float | None = Field(default=None, ge=0)
+    dpr_gemini_price_output_per_mtok_usd: float | None = Field(default=None, ge=0)
+    dpr_gemini_price_cached_input_per_mtok_usd: float | None = Field(
+        default=None, ge=0
+    )
+    dpr_gemini_price_search_per_1k_usd: float | None = Field(default=None, ge=0)
+    # Optional: also store each run's cost in rupees at this rate.
+    dpr_usd_to_inr: float | None = Field(default=None, gt=0)
 
     # Deterministic Section 9 financial engine (cam_financial_engine.py,
     # sector_feasibility.py) and CAM snapshot build/verify
