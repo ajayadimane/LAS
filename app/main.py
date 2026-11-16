@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI
 
-from app.api.v1 import dpr_analysis, health
+from app.api.v1 import dpr_analysis, health, intake
 from app.api.v1.router import api_router
 from app.clients.otp_client import OtpClient, build_otp_http_client
 from app.clients.vendor_client import VendorClient
@@ -23,6 +23,8 @@ from app.services.dpr_agentic.report_store import check_pdf_renderer_ready
 from app.services.dpr_agentic.worker_process import (
     start_if_enabled as start_dpr_worker_if_enabled,
 )
+from app.services.intake.processor import IntakeProcessor
+from app.services.intake.worker import IntakeWorker
 from app.services.mailer import Mailer
 from app.services.otp import OtpGuard
 
@@ -77,6 +79,8 @@ async def lifespan(app: FastAPI):
     app.state.dpr_engine = build_dpr_engine(settings)
     if settings.dpr_agentic_enabled:
         check_pdf_renderer_ready()
+    app.state.intake_engine = build_intake_engine(settings, app.state.dpr_engine)
+    app.state.intake_worker = start_intake_worker(app, settings)
     # The OTP service is a separate host with its own key: its own client.
     otp_http = build_otp_http_client(settings)
     app.state.otp_client = OtpClient(otp_http, settings)
@@ -85,12 +89,19 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        if app.state.intake_worker is not None:
+            await app.state.intake_worker.stop()
         if app.state.dpr_worker is not None:
             await app.state.dpr_worker.stop()
         await client.aclose()
         await gemini_client.aclose()
         if app.state.dpr_engine is not None:
             app.state.dpr_engine.dispose()
+        if (
+            app.state.intake_engine is not None
+            and app.state.intake_engine is not app.state.dpr_engine
+        ):
+            app.state.intake_engine.dispose()
         await otp_http.aclose()
         logger.info("shutdown complete")
 
@@ -121,6 +132,54 @@ def build_dpr_engine(settings: Settings):
     return engine
 
 
+def build_intake_engine(settings: Settings, dpr_engine):
+    """The Core LAS Postgres engine for email-intake events, or None.
+
+    Same database as the DPR jobs (dpr_database_url); reuses the DPR engine
+    when that feature is on, otherwise opens its own. None (intake disabled,
+    no database, or unreachable) makes the intake route answer 503, which
+    LAS_Email retries -- it never crashes the app.
+    """
+    if not (settings.intake_enabled and settings.dpr_database_url):
+        return None
+    if dpr_engine is not None:
+        return dpr_engine
+    try:
+        engine = engine_for(settings.dpr_database_url.get_secret_value())
+        apply_migrations(engine)
+    except Exception:
+        logger.exception(
+            "intake_db_unavailable -- email intake is disabled for this run"
+        )
+        return None
+    logger.info("intake_db_ready")
+    return engine
+
+
+def start_intake_worker(app: FastAPI, settings: Settings):
+    """The background loop acting on intake events, or None.
+
+    Needs the intake database and its encryption key, and
+    intake_worker_enabled (tests turn it off and drive the processor
+    directly).
+    """
+    engine = app.state.intake_engine
+    if engine is None or settings.intake_encryption_key is None:
+        return None
+    if not settings.intake_worker_enabled:
+        return None
+    processor = IntakeProcessor(
+        engine,
+        settings,
+        app.state.vendor_client,
+        app.state.admin_session,
+        app.state.mailer,
+    )
+    worker = IntakeWorker(processor, settings.intake_poll_seconds)
+    worker.start()
+    return worker
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     prefix = settings.context_path
@@ -142,6 +201,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(api_router, prefix=prefix)
     # Off the versioned /api/v1 surface on purpose -- see router.py's note.
     app.include_router(dpr_analysis.router, prefix=prefix)
+    # Service-to-service (LAS_Email), also off the dashboard's /api/v1.
+    app.include_router(intake.router, prefix=prefix)
     return app
 
 

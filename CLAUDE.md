@@ -3,7 +3,9 @@
 ## What this project is
 A FastAPI middleware (Backend-for-Frontend) between our LAS dashboard and a
 third-party application's REST APIs. The third party owns the database and all
-CRUD logic. **We have no database.** Every operation is a call to their API.
+CRUD logic. **We hold no customer, wallet or payment records**: every such operation is a
+call to their API. (Our own Postgres, `DPR_DATABASE_URL`, holds only DPR analysis jobs/reports
+and email-intake events.)
 
 Dashboard -> this FastAPI app -> third-party LAS APIs
 
@@ -245,6 +247,41 @@ The vendor product is **iWallet**. There is no OpenAPI spec; the contract is 13 
   proves the token (the OTP service never sees it, so claims would otherwise
   be trusted unverified) and 409s an already-registered mobile. Never retried.
   Mobile change: OTP side ready, but no vendor update API yet.
+- **Email intake** (user, 2026-11-16; plan `~/.claude/plans/i-have-one-new-goofy-bachman.md`).
+  BDs email customer details + documents to `las@integramicro.co.in`. **LAS_Email** (teammate's
+  project, a separate service living in `LAS_Email/` of this repo, its own venv and `.env`) runs in
+  `CORE_HANDOFF_MODE`: it only reads the mailbox, checks the sender (SPF/DKIM/DMARC + its BD
+  list), extracts with Gemini (grounded) and classifies attachments, then POSTs one JSON event
+  per email to `POST /internal/v1/intake/events` (`X-Intake-Key` = `INTAKE_API_KEY`; contract
+  `app/schemas/intake.py`; attachments base64 inside the JSON, no multipart). **Everything else
+  is ours**: registration, services, payment (Pay now / Pay later reply mail to the BD),
+  documents and every email. Events are validated and stored encrypted
+  (`INTAKE_ENCRYPTION_KEY`, `migrations/010-011`), 202 / 409 on a repeat Message-ID.
+  **Phase 1 done** (`app/services/intake/processor.py`, worker loop in the lifespan): sender
+  must be in `INTAKE_BD_SENDERS` with DKIM/DMARC pass; each customer becomes a case
+  (`[LAS-IN-<ref>]` in every subject, replies matched by In-Reply-To/References or the ref);
+  missing details are asked for (one reminder at 24 h, closed at 72 h); then
+  `BdService.create_customer` (OTP skipped, customer verifies later), signed in as
+  `INTAKE_VENDOR_USER_ID` (a BD account; the super-admin sign-in needs a user bearer too); a
+  vendor 409 continues only if the person is this BD's; 5xx = NEEDS_ATTENTION, never retried.
+  Ends in AWAITING_PAYMENT with a "Pay now / Pay later" mailto mail, which also carries the
+  customer's user id + temporary password (user, 2026-11-16; never stored with the case). An
+  authenticated sender not in `INTAKE_BD_SENDERS` gets "You are not a registered BD. Please
+  contact the LAS Admin to register as a BD." at most once a day; LAS_Email forwards such mail
+  without extraction, and never forwards a sender failing SPF/DKIM/DMARC. **Phase 2 done** (verified live
+  2026-11-16: Pay later reply -> Rs 1,295 pool transfer, txn 7528005146682114048, test
+  customer 9531477342): the choice is read deterministically
+  (`app/services/intake/payment_reply.py`: the button's `LAS-PAY <ref> PAY_NOW|PAY_LATER`
+  subject, else exactly one of "pay now"/"pay later" in the reply's own text, quotes cut;
+  unclear = asked again; never the LLM). PAYING is set before `EnrolmentService.pay` (single
+  use); pay later passes both consents (the button's wording). Refusal = back to
+  AWAITING_PAYMENT, nothing charged; unknown outcome / paid-but-not-recorded =
+  NEEDS_ATTENTION, never retried. Then one document per paid service
+  (`INTAKE_DOC_CLASS_SERVICE_MAP`, single service = all files), DONE, "Payment recorded" mail.
+  A reply to a FAILED case with changed details reopens it; replies in any other state get a
+  status mail. DPR analysis is not yet queued for emailed documents (dashboard only). Never re-enable
+  LAS_Email's own business jobs or outbox: its `partner_onboarding` registers customers in
+  iWallet directly with random address/bank values.
 - Service prefixes: `/IdentityAccessMgmt` (identity), `/customermgmt` (persons and
   custom field definitions), `/regularWallet` (wallet creation),
   `/walletInfoRetrieval` (all reads).

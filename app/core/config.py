@@ -223,9 +223,9 @@ class Settings(BaseSettings):
         "parse" as a command. Treat blank the same as unset."""
         return v if v and v.strip() else None
 
-    @field_validator("dpr_staging_encryption_key")
+    @field_validator("dpr_staging_encryption_key", "intake_encryption_key")
     @classmethod
-    def _validate_fernet_key(cls, v: SecretStr | None) -> SecretStr | None:
+    def _validate_fernet_key(cls, v: SecretStr | None, info) -> SecretStr | None:
         if v is None:
             return v
         from cryptography.fernet import Fernet
@@ -234,7 +234,7 @@ class Settings(BaseSettings):
             Fernet(v.get_secret_value().encode())
         except Exception as exc:
             raise ValueError(
-                "dpr_staging_encryption_key must be a valid Fernet key "
+                f"{info.field_name} must be a valid Fernet key "
                 '(python -c "from cryptography.fernet import Fernet; '
                 'print(Fernet.generate_key().decode())")'
             ) from exc
@@ -407,6 +407,63 @@ class Settings(BaseSettings):
     document_allowed_types: list[str] = Field(
         default_factory=lambda: ["application/pdf", "image/jpeg", "image/png"]
     )
+
+    # --- Email intake (LAS_Email -> us) -----------------------------------
+    # LAS_Email is a separate service that only reads the mailbox and extracts
+    # what a BD's email says; it pushes one event per email to
+    # POST /internal/v1/intake/events and we own everything after that
+    # (user decision, 2026-11-16). Off = the route 404s.
+    intake_enabled: bool = False
+    # Shared secret LAS_Email sends as X-Intake-Key. `_previous` is accepted
+    # too during a rotation, then unset.
+    intake_api_key: SecretStr | None = None
+    intake_api_key_previous: SecretStr | None = None
+    # Events and attachments are stored in the Core LAS Postgres
+    # (dpr_database_url), encrypted with this Fernet key: they carry customer
+    # PII and documents. Unset = the route 503s.
+    intake_encryption_key: SecretStr | None = None
+    # One request = one email. Attachments arrive base64-encoded inside the
+    # JSON (no multipart dependency), and LAS_Email only includes the bytes of
+    # files we can store (document_max_bytes / document_allowed_types).
+    intake_max_request_bytes: int = Field(default=16 * 1024 * 1024, ge=1024)
+    # LAS_Email walks at most 25 attachments per mail (attachment_max_count).
+    intake_max_attachments: int = Field(default=25, ge=0, le=50)
+    # Sender address (lower-case) -> BD id (= broker id). Only these senders'
+    # mail is acted on; anything else is ignored without a reply.
+    intake_bd_senders: dict[str, str] = Field(default_factory=dict)
+    # The account the intake worker signs in as: a background job has no
+    # dashboard user's token, and every vendor call (even the super-admin
+    # sign-in) needs one. Must be a BD account (group LAS.admin).
+    intake_vendor_user_id: str | None = None
+    intake_vendor_password: SecretStr | None = None
+    # Sent as X-Original-Forwarded-For on the worker's vendor calls (there is
+    # no end user's IP); the gateway 429s without it.
+    intake_client_ip: str = "127.0.0.1"
+    # The background loop that acts on stored events (app/services/intake/).
+    # Off = events are stored but nothing happens until it is turned on.
+    intake_worker_enabled: bool = True
+    # How often the worker looks for new events and due reminders.
+    intake_poll_seconds: float = Field(default=10.0, gt=0)
+    intake_max_customers_per_mail: int = Field(default=10, ge=1, le=50)
+    # Asking the BD for missing details: one reminder, then the case expires.
+    intake_info_reminder_hours: float = Field(default=24.0, gt=0)
+    intake_info_expiry_hours: float = Field(default=72.0, gt=0)
+    # Shown in the "choose payment" mail for Pay now, if set (placeholder
+    # until a real QR / payment confirmation exists).
+    intake_pay_now_upi_id: str | None = None
+    # Which service an emailed attachment belongs to, by LAS_Email's document
+    # class. With a single chosen service every attachment goes to it.
+    intake_doc_class_service_map: dict[str, str] = Field(
+        default_factory=lambda: {"DPR": "DPR_ANALYSIS", "QUOTATION": "DOC_VERIFICATION"}
+    )
+    # How to reach the LAS Admin, added to the "you are not a registered BD"
+    # reply if set (e.g. an email address or phone number).
+    intake_admin_contact: str | None = None
+
+    @field_validator("intake_bd_senders")
+    @classmethod
+    def _lower_case_senders(cls, v: dict[str, str]) -> dict[str, str]:
+        return {k.strip().lower(): str(bd).strip() for k, bd in v.items()}
 
     @field_validator("context_path")
     @classmethod

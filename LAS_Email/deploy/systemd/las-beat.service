@@ -1,0 +1,25 @@
+# Celery Beat scheduler. Run EXACTLY ONE instance.
+[Unit]
+After=network-online.target postgresql.service redis-server.service
+Wants=network-online.target
+
+[Service]
+User=las
+Group=las
+WorkingDirectory=/opt/las-email
+EnvironmentFile=/opt/las-email/.env
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/srv/las /opt/las-email/var
+# Starting points, not measured limits — tune to this server's actual CPU/RAM.
+MemoryMax=512M
+CPUQuota=50%
+TasksMax=128
+LimitNOFILE=65536
+ExecStart=/opt/las-email/.venv/bin/celery -A las.worker.celery_app beat -l info --schedule /opt/las-email/var/celerybeat-schedule
+
+[Install]
+WantedBy=multi-user.target

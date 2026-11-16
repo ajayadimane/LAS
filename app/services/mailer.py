@@ -33,6 +33,13 @@ class Mail:
     subject: str
     text: str
     html: str
+    # Threading, for mail a reply is expected to (email intake). A reply's
+    # In-Reply-To / References then name one of our Message-IDs.
+    in_reply_to: str | None = None
+    references: tuple[str, ...] = ()
+    # Marks the mail as automated (RFC 3834), so the recipient's
+    # out-of-office reply is not sent back to us.
+    auto_submitted: bool = False
 
 
 class Mailer:
@@ -45,7 +52,8 @@ class Mailer:
             self._settings.smtp_password.get_secret_value()
         )
 
-    async def send(self, mail: Mail) -> None:
+    async def send(self, mail: Mail) -> str:
+        """Send it; returns the Message-ID it was sent with."""
         if not self.configured:
             raise MailNotConfiguredError("SMTP_PASSWORD is not set")
         message = self._build(mail)
@@ -60,6 +68,7 @@ class Mailer:
             )
             raise MailSendError(type(exc).__name__) from exc
         logger.info("mail_sent to_domain=%s subject=%r", _domain(mail.to), mail.subject)
+        return str(message["Message-ID"])
 
     def _build(self, mail: Mail) -> EmailMessage:
         s = self._settings
@@ -68,6 +77,15 @@ class Mailer:
         message["To"] = mail.to
         message["Subject"] = mail.subject
         message["Message-ID"] = make_msgid(domain=_domain(s.mail_from) or None)
+        if mail.in_reply_to:
+            message["In-Reply-To"] = mail.in_reply_to
+        refs = [r for r in mail.references if r]
+        if mail.in_reply_to and mail.in_reply_to not in refs:
+            refs.append(mail.in_reply_to)
+        if refs:
+            message["References"] = " ".join(refs[-20:])
+        if mail.auto_submitted:
+            message["Auto-Submitted"] = "auto-replied"
         message.set_content(mail.text)
         message.add_alternative(mail.html, subtype="html")
         return message
