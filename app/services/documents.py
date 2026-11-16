@@ -107,3 +107,15 @@ def decode_file(raw: str, fallback_name: str) -> StoredFile | None:
     except (binascii.Error, ValueError):
         return None
     return StoredFile(name=name, content_type=content_type, data=payload)
+
+
+def document_problem(content_type: str, size: int, settings) -> str | None:
+    """Why a document cannot be stored, or None. The same limits as an upload
+    from the dashboard (app/api/uploads.py)."""
+    if size <= 0:
+        return "the file is empty"
+    if content_type not in settings.document_allowed_types:
+        return "file type not accepted (PDF, JPG or PNG only)"
+    if size > settings.document_max_bytes:
+        return f"larger than {settings.document_max_bytes // (1024 * 1024)} MB"
+    return None

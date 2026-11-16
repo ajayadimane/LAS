@@ -1,0 +1,98 @@
+{
+  "field": {
+    "amount": [
+      1.0,
+      1.0
+    ],
+    "attachment_filenames": [
+      1.0,
+      1.0
+    ],
+    "confirm_answer": [
+      1.0,
+      1.0
+    ],
+    "correction.new": [
+      1.0,
+      1.0
+    ],
+    "customers.*.email": [
+      1.0,
+      1.0
+    ],
+    "customers.*.mobile": [
+      1.0,
+      1.0
+    ],
+    "customers.*.name": [
+      1.0,
+      1.0
+    ],
+    "customers.*.services": [
+      1.0,
+      1.0
+    ],
+    "menu_choices": [
+      1.0,
+      1.0
+    ],
+    "services": [
+      1.0,
+      1.0
+    ],
+    "txn_ref": [
+      1.0,
+      1.0
+    ]
+  },
+  "intent": {
+    "CANCEL_REQUEST": [
+      1.0,
+      1.0
+    ],
+    "CLARIFICATION_REPLY": [
+      1.0,
+      1.0
+    ],
+    "CONFIRM": [
+      1.0,
+      1.0
+    ],
+    "CORRECTION": [
+      1.0,
+      1.0
+    ],
+    "GENERAL_QUESTION": [
+      1.0,
+      1.0
+    ],
+    "MULTI_CUSTOMER": [
+      1.0,
+      1.0
+    ],
+    "NEW_CUSTOMER": [
+      1.0,
+      1.0
+    ],
+    "OUT_OF_SCOPE": [
+      1.0,
+      1.0
+    ],
+    "PAYMENT_PROOF": [
+      0.6666666666666666,
+      1.0
+    ],
+    "SELECT_SERVICES": [
+      1.0,
+      1.0
+    ],
+    "STATUS_QUERY": [
+      1.0,
+      0.875
+    ],
+    "SUBMIT_DOCUMENT": [
+      1.0,
+      1.0
+    ]
+  }
+}
