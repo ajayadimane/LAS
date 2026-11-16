@@ -153,7 +153,17 @@ def financial_review(result: AnalysisResult) -> list[ReviewMeasure]:
     rows: list[ReviewMeasure] = []
 
     cost = fin.cost_of_project_stated_total
-    cost_check = _calc(result, "cost_of_project_matches_components")
+    # financial_calc stores this check as "cost_of_project_total"; a result
+    # analysed before the check existed gets it recomputed from the DPR.
+    cost_check = _calc(result, "cost_of_project_total")
+    if cost_check is None:
+        from .financial_calc import cost_of_project_matches_components
+
+        if computed := cost_of_project_matches_components(fin):
+            cost_check = {
+                "computed_value": computed.computed_value,
+                "match": computed.match,
+            }
     rows.append(
         ReviewMeasure(
             measure="Total project cost (₹ lakh)",
@@ -167,15 +177,6 @@ def financial_review(result: AnalysisResult) -> list[ReviewMeasure]:
                 if cost_check.get("match")
                 else "below"
             ),
-        )
-    )
-
-    loan = fin.term_loan_amount
-    rows.append(
-        ReviewMeasure(
-            measure="Term loan (₹ lakh)",
-            dpr_value=_num(loan.value if loan.status == "extracted" else None),
-            baseline="≤ scheme ceiling",
         )
     )
 
@@ -194,6 +195,8 @@ def financial_review(result: AnalysisResult) -> list[ReviewMeasure]:
         default=None,
     )
     own = own_contribution(fin)
+    rows.append(_term_loan_row(fin, cost, own, minimum))
+
     share = own / cost * 100 if own is not None and cost else None
     rows.append(
         ReviewMeasure(
@@ -284,6 +287,50 @@ def financial_review(result: AnalysisResult) -> list[ReviewMeasure]:
     return rows
 
 
+_BACK_ENDED = re.compile(r"back[\s\-]*ended|credit[\s\-]*linked", re.I)
+
+
+def _term_loan_row(fin, cost, own, own_minimum) -> ReviewMeasure:
+    """Our term loan is what the DPR's funding needs to balance: project
+    cost less your contribution and any upfront subsidy in the means of
+    finance. A back-ended (credit-linked) subsidy arrives after the loan and
+    is set against it, so it does not reduce the loan (seen live: promoter
+    25% + loan 75% with a 50% back-ended NHB subsidy listed beside them).
+    The DPR's loan meets the baseline when it equals that figure and stays
+    within the scheme ceiling (cost less the scheme's minimum own share)."""
+    from .financial_calc import TOLERANCE
+    from .financial_ratios import term_loan
+    from .schemes import _SUBSIDY_LINE
+
+    loan = term_loan(fin)
+    upfront_subsidy = sum(
+        c.amount
+        for c in fin.means_of_finance_components
+        if _SUBSIDY_LINE.search(c.label) and not _BACK_ENDED.search(c.label)
+    )
+    balance = (
+        round(cost - own - upfront_subsidy, 2) if cost and own is not None else None
+    )
+    ceiling = round(cost * (1 - own_minimum / 100), 2) if cost and own_minimum else None
+    if loan is None or balance is None:
+        status = "pending"
+    elif abs(loan - balance) > TOLERANCE or (
+        ceiling is not None and loan > ceiling + TOLERANCE
+    ):
+        status = "below"
+    else:
+        status = "meets"
+    return ReviewMeasure(
+        measure="Term loan (₹ lakh)",
+        dpr_value=_num(loan),
+        recomputed=_num(balance),
+        baseline=f"≤ {ceiling:,.2f} (scheme ceiling)"
+        if ceiling is not None
+        else "≤ scheme ceiling",
+        status=status,
+    )
+
+
 def _stated_ratio(fin, key: str) -> float | None:
     ratios = fin.stated_ratios
     if ratios is None:
@@ -315,6 +362,11 @@ def _ratio_rows(result, fin, own_minimum: float | None) -> list[ReviewMeasure]:
     )
 
     bep = _value(result, "cash_break_even")
+    if bep is None:
+        # Not stored (an analysis before the high-low fallback): from the DPR.
+        from .financial_ratios import cash_break_even
+
+        bep = (computed := cash_break_even(fin)) and computed.computed_value
     rows.append(
         ReviewMeasure(
             measure="Cash break-even (% capacity)",

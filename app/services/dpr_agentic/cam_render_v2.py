@@ -1,7 +1,7 @@
 """Renders a 2.x CAMSnapshot as the management-approved "DPR Pre-submission
 Review": a cover, four numbered sections (scheme fit, action plan, financial
-corrections, verification and documents) and the annexures A-G as appendix
-pages.
+corrections, verification and documents). The annexures A-G are not
+printed; they stay available as JSON (cam_annexures.py).
 
 Design reference: /NewCAMdesign/C1-C5 (*.dc.html, 794x1123 px artboards,
 Inter, accent #1F6B4A). Rebuilt as flowing paged media rather than fixed
@@ -343,10 +343,8 @@ def build_verification(snapshot: CAMSnapshot) -> dict:
     notice = _document_verification(snapshot)
     kyc = snapshot.kyc_verification
     pending = (
-        f"Pending: verified by {notice['provider']} under our "
-        f"{notice['service_name']} service"
-        + (f" ({notice['fee']})" if notice["fee"] else "")
-        + ", with your consent."
+        f"Pending: Get your Credit and KYC details verified by {notice['provider']} "
+        f"through our {notice['service_name']} Service."
     )
     if kyc is None:
         cards = None
@@ -411,223 +409,6 @@ def build_verification(snapshot: CAMSnapshot) -> dict:
     }
 
 
-def build_appendix(snapshot: CAMSnapshot, result=None) -> list[dict]:
-    """Annexures A-G as readable tables: what each has, never the developer
-    notes of the JSON annexures (cam_annexures.py)."""
-    sections = []
-
-    def money(m):
-        return _lakh(m) or "—"
-
-    pl = [
-        [
-            str(p.year),
-            money(p.revenue),
-            money(p.operating_expenses),
-            money(p.net_profit),
-            money(p.depreciation),
-            money(p.interest_on_term_loan),
-        ]
-        for p in snapshot.financial_projections
-    ]
-    sections.append(
-        {
-            "letter": "A",
-            "title": "Financial statements",
-            "tables": [
-                {
-                    "caption": "Projected profit and loss, as in your DPR",
-                    "head": [
-                        "Year",
-                        "Revenue",
-                        "Operating cost",
-                        "Net profit",
-                        "Depreciation",
-                        "Term-loan interest",
-                    ],
-                    "rows": pl,
-                }
-            ],
-            "empty": None
-            if pl
-            else "No yearly projections could be read from the DPR.",
-        }
-    )
-    rs = [
-        [
-            str(r.year),
-            money(r.principal_due),
-            money(r.interest_due),
-            money(r.total_debt_service),
-            money(r.cash_available_for_debt_service),
-            f"{r.dscr.computed_value:g}" if r.dscr and r.dscr.computed_value else "—",
-            f"{r.dscr_stated_in_dpr:g}" if r.dscr_stated_in_dpr is not None else "—",
-        ]
-        for r in snapshot.repayment_schedule
-    ]
-    sections.append(
-        {
-            "letter": "B",
-            "title": "Repayment",
-            "tables": [
-                {
-                    "caption": "Repayment and DSCR by year (recomputed)",
-                    "head": [
-                        "Year",
-                        "Principal",
-                        "Interest",
-                        "Debt service",
-                        "Cash available",
-                        "DSCR",
-                        "DSCR in DPR",
-                    ],
-                    "rows": rs,
-                }
-            ],
-            "empty": None if rs else "No repayment schedule could be read.",
-        }
-    )
-    scen = [
-        [
-            s.label,
-            ", ".join(
-                f"Yr {y}: {t.computed_value:g}"
-                for y, t in sorted(s.dscr_by_year.items())
-                if t.computed_value is not None
-            )
-            or "—",
-        ]
-        for s in snapshot.scenario_analysis
-    ]
-    calcs = getattr(result, "calculations", []) if result is not None else []
-    for c in calcs:
-        if str(c.get("check", "")).startswith("dscr_stress_price_"):
-            pct = str(c["check"]).rsplit("_", 1)[1]
-            scen.append(
-                [
-                    f"Selling price {pct}% lower, costs unchanged",
-                    f"Lowest DSCR {c.get('computed_value')} ({c.get('note')})",
-                ]
-            )
-    sections.append(
-        {
-            "letter": "C",
-            "title": "Sensitivity analysis",
-            "tables": [
-                {"caption": "Scenarios", "head": ["Scenario", "DSCR"], "rows": scen}
-            ],
-            "empty": None if scen else "No scenario could be computed for this DPR.",
-        }
-    )
-    oa = [[k, v] for k, v in snapshot.operational_assumptions.assumptions.items()]
-    sections.append(
-        {
-            "letter": "D",
-            "title": "Project feasibility",
-            "tables": [
-                {
-                    "caption": "Operating assumptions and the benchmarks used",
-                    "head": ["Item", "Value"],
-                    "rows": oa,
-                }
-            ],
-            "empty": None if oa else "The DPR states no per-unit operating figures.",
-        }
-    )
-    register = [
-        [
-            f.finding_id,
-            f.title,
-            PRIORITY_LABEL.get(f.priority.value, f.priority.value),
-            ", ".join(str(p) for p in f.source_pages) or "—",
-            f.priority_rule,
-        ]
-        for f in snapshot.findings
-    ]
-    sections.append(
-        {
-            "letter": "E",
-            "title": "Findings register",
-            "tables": [
-                {
-                    "caption": "Every finding, with the rule that set its priority",
-                    "head": ["ID", "Finding", "Priority", "Pages", "Rule"],
-                    "rows": register,
-                }
-            ],
-            "empty": None if register else "No findings.",
-        }
-    )
-    pa = snapshot.policy_assessment
-    statements = [
-        [
-            s.text,
-            " · ".join(x for x in (s.source_domain, s.source_url) if x) or "—",
-            _date(s.retrieval_date) or "—",
-        ]
-        for s in pa.statements
-    ]
-    sections.append(
-        {
-            "letter": "F",
-            "title": "Bank and scheme references",
-            "tables": [
-                {
-                    "caption": "Official statements found (confirm with your bank)",
-                    "head": ["Statement", "Source", "Retrieved"],
-                    "rows": statements,
-                },
-                {
-                    "caption": "Checked, but not confirmed against an official source",
-                    "head": ["Area"],
-                    "rows": [[a] for a in pa.unverified_policy_areas],
-                },
-            ],
-            "empty": None,
-        }
-    )
-    audit = [
-        ["Review reference", reference(snapshot)],
-        ["Report version", str(snapshot.report_version)],
-        ["Analysis ID", snapshot.analysis_run_id],
-        [
-            "Document checksum (SHA-256)",
-            snapshot.document_inventory[0].document_sha256
-            if snapshot.document_inventory
-            else "—",
-        ],
-        ["Generated", snapshot.generated_at.strftime("%d-%m-%Y %H:%M UTC")],
-        ["Schema version", snapshot.schema_version],
-    ]
-    if result is not None:
-        audit.append(["AI model", getattr(result, "gemini_model", None) or "—"])
-        audit.append(
-            ["Agents run", ", ".join(sorted(getattr(result, "agent_outputs", {})))]
-        )
-    if snapshot.document_verification:
-        dv = snapshot.document_verification
-        audit.append(
-            [
-                "Documents verified by",
-                f"{dv.provider} ({dv.service_name})"
-                + (
-                    f"; quotation: {dv.quotation_service_name}"
-                    if dv.quotation_service_name
-                    else ""
-                ),
-            ]
-        )
-    sections.append(
-        {
-            "letter": "G",
-            "title": "Audit trail",
-            "tables": [{"caption": None, "head": ["Item", "Value"], "rows": audit}],
-            "empty": None,
-        }
-    )
-    return sections
-
-
 def render_html(snapshot: CAMSnapshot, result=None) -> str:
     from .cam_render import _env
 
@@ -643,5 +424,4 @@ def render_html(snapshot: CAMSnapshot, result=None) -> str:
         plan=build_action_plan(snapshot),
         fin=build_financials(snapshot),
         ver=build_verification(snapshot),
-        appendix=build_appendix(snapshot, result),
     )

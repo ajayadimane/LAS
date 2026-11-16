@@ -24,7 +24,7 @@
     <span class="sub">Review ref <b>{{ reference }}</b></span>
   </div>
   <div class="kicker">{{ cover.kicker }}</div>
-  <h1>Is your DPR ready for the bank?</h1>
+  <h1>DPR Analysis</h1>
   <p class="lede">We checked your Detailed Project Report against {{ cover.bank }} baselines and scheme rules. This report lists what to correct before you apply.</p>
 
   <div class="facts">
@@ -196,22 +196,5 @@
   </div>
 </section>
 
-{# ---------------- Appendix: annexures A-G ---------------- #}
-<section class="section">
-  <div class="sh"><div class="bd">A</div><div><h2>Appendix: annexures</h2><div class="sub">The detail behind this review.</div></div></div>
-  {% for a in appendix %}
-  <div class="annex">
-    <h3>Annexure {{ a.letter }} · {{ a.title }}</h3>
-    {% if a.empty %}<div class="ph" style="font-size:12px">{{ a.empty }}</div>{% endif %}
-    {% for t in a.tables %}{% if t.rows %}
-    {% if t.caption %}<div class="cap">{{ t.caption }}</div>{% endif %}
-    <table>
-      <thead><tr>{% for h in t.head %}<th>{{ h }}</th>{% endfor %}</tr></thead>
-      <tbody>{% for row in t.rows %}<tr>{% for c in row %}<td{% if c is string and 'http' in c %} class="url"{% endif %}>{{ c }}</td>{% endfor %}</tr>{% endfor %}</tbody>
-    </table>
-    {% endif %}{% endfor %}
-  </div>
-  {% endfor %}
-</section>
 </body>
 </html>

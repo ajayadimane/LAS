@@ -138,6 +138,41 @@ def test_cash_break_even_from_unit_economics():
     assert cash_break_even(_fin()) is None  # no variable cost per unit
 
 
+def _two_year_fin(cost_y2: float) -> ProjectFinancials:
+    """Revenue 40 then 60 at 40% then 60% utilisation; depreciation 5, no
+    interest; cash costs 22 then `cost_y2`. No variable cost per unit."""
+    years = [
+        YearFinancials(
+            year=n,
+            revenue=revenue,
+            profit_before_tax=revenue - costs - 5,
+            depreciation=5,
+            interest_on_term_loan=0,
+        )
+        for n, revenue, costs in ((1, 40, 22), (2, 60, cost_y2))
+    ]
+    return ProjectFinancials(
+        years=years,
+        unit_economics=UnitEconomics(
+            unit_name="unit",
+            years=[
+                UnitEconomicsYear(year=1, utilisation_pct=40, page=5),
+                UnitEconomicsYear(year=2, utilisation_pct=60, page=5),
+            ],
+        ),
+    )
+
+
+def test_cash_break_even_derives_the_variable_share_from_two_years():
+    # Costs rise 6 on 20 more revenue: 30% variable, fixed 28 - 18 = 10;
+    # contribution at full capacity 60 x 0.7 / 0.6 = 70.
+    r = cash_break_even(_two_year_fin(28))
+    assert r.computed_value == 14.3
+    assert "variable cost derived from years 1 and 2" in r.note
+    # Costs rising faster than revenue (escalation) is not a cost split.
+    assert cash_break_even(_two_year_fin(45)) is None
+
+
 def test_stress_average_and_headroom():
     fin = _fin()
     # Cash 140, debt 95, revenue 250: (140 - 25) / 95.
@@ -332,3 +367,38 @@ def test_stated_ratios_must_appear_on_their_page():
     ratios = verify_sector_pages(fin, pages).stated_ratios
     assert ratios.irr_pct.value == 18.5
     assert ratios.payback_years.status == "missing"
+
+
+def test_term_loan_is_the_balance_of_the_funding_within_the_ceiling():
+    from app.services.dpr_agentic.financial_schema import MeansOfFinanceComponent
+
+    fin = _fin(
+        means_of_finance_components=[
+            MeansOfFinanceComponent(label="Promoter contribution", amount=10),
+            MeansOfFinanceComponent(label="Margin money subsidy", amount=15),
+            MeansOfFinanceComponent(label="Term loan", amount=75),
+        ]
+    )
+    row = cam_review._term_loan_row(fin, 100, 10, None)
+    assert (row.dpr_value, row.recomputed, row.status) == ("75.00", "75.00", "meets")
+    assert row.baseline == "≤ scheme ceiling"
+    # A 30% minimum own share caps the loan at 70.
+    row = cam_review._term_loan_row(fin, 100, 10, 30)
+    assert (row.baseline, row.status) == ("≤ 70.00 (scheme ceiling)", "below")
+    # Funding that does not balance.
+    row = cam_review._term_loan_row(fin, 100, 20, None)
+    assert (row.recomputed, row.status) == ("65.00", "below")
+    # A back-ended subsidy is paid after the loan: it does not reduce it.
+    back_ended = _fin(
+        means_of_finance_components=[
+            MeansOfFinanceComponent(label="Promoter's Equity", amount=25),
+            MeansOfFinanceComponent(
+                label="Capital Subsidy (Credit linked back ended @50%)", amount=50
+            ),
+            MeansOfFinanceComponent(label="Loan", amount=75),
+        ]
+    )
+    row = cam_review._term_loan_row(back_ended, 100, 25, None)
+    assert (row.recomputed, row.status) == ("75.00", "meets")
+    # No own contribution in the DPR: nothing to recompute.
+    assert cam_review._term_loan_row(fin, 100, None, None).status == "pending"

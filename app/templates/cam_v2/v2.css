@@ -157,15 +157,6 @@ th.rec { border-top: 2px solid var(--accent); }
 .soft { background: #F5F7FA; border-color: var(--rule); }
 .fine { margin-top: 10px; font-size: 12px; color: var(--muted); }
 
-/* ---- Appendix ---- */
-.annex { margin-top: 18px; }
-.annex h3 { margin: 0 0 6px; font-size: 14px; font-weight: 700; color: var(--navy); }
-.annex .cap { margin: 10px 0 6px; font-size: 12px; font-weight: 600; color: #334155; }
-.annex table { font-size: 11px; }
-.annex th, .annex td { padding: 4px 6px; }
-/* overflow-wrap: anywhere also lowers the min-content width, so a long
-   source URL wraps instead of squeezing every other column. */
-.annex td.url { overflow-wrap: anywhere; }
 /* Page 3 holds two tables and the stress box on one page. */
 table.tight, table.plan { table-layout: fixed; }
 table.plan td { overflow-wrap: anywhere; }

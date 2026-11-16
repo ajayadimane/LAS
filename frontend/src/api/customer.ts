@@ -9,8 +9,8 @@ import type {
   PaymentResponse,
   ReportAnnexures,
   ReportSummary,
+  ServiceDetails,
 } from "./services";
-import type { CustomerServices, DocumentUploadResponse, PaymentMode, PaymentResponse, ServiceDetails } from "./services";
 
 /** The signed-in customer's own record. Mirrors app/api/v1/customer.py. */
 

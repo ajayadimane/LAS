@@ -1,6 +1,6 @@
 """The 2.x "DPR Pre-submission Review" layout (cam_render_v2.py) and the
 snapshot fields it prints (cam_review.py): readiness, action plan,
-recomputed figures, scheme fit, verification, documents, appendix, and the
+recomputed figures, scheme fit, verification, documents, and the
 PSR reference stored with the report."""
 
 from datetime import datetime, timezone
@@ -79,8 +79,8 @@ def test_new_snapshots_use_the_new_layout_and_issued_ones_keep_theirs():
     assert snap.schema_version.startswith("2.") and uses_v2_layout(snap)
     old = snap.model_copy(update={"schema_version": "1.0.0"})
     assert not uses_v2_layout(old)
-    assert "Is your DPR ready for the bank?" in render_cam_report_html(snap)
-    assert "Is your DPR ready for the bank?" not in render_cam_report_html(old)
+    assert "<h1>DPR Analysis</h1>" in render_cam_report_html(snap)
+    assert "<h1>DPR Analysis</h1>" not in render_cam_report_html(old)
 
 
 def test_readiness_score_counts_check_families_and_checklist_answers():
@@ -88,7 +88,7 @@ def test_readiness_score_counts_check_families_and_checklist_answers():
         calculations=[
             {"check": "dscr_year_1", "match": True},
             {"check": "dscr_year_2", "match": False},  # the DSCR family fails
-            {"check": "cost_of_project_matches_components", "match": True},
+            {"check": "cost_of_project_total", "match": True},
         ],
         checks=[
             ChecklistAnswer(check_id="SEC_PRICE_REALISTIC", status="ok"),
@@ -170,6 +170,38 @@ def test_recomputed_figures_come_from_the_code_checks():
     assert rows["Project IRR (%)"].status == "pending"
 
 
+def test_total_project_cost_is_recomputed_from_the_cost_lines():
+    fin = {
+        "cost_of_project_components": [
+            {"label": "Machinery", "amount": 30.0},
+            {"label": "Building", "amount": 12.5},
+        ],
+        "cost_of_project_stated_total": 45.0,
+    }
+    # The stored check, as financial_calc names it.
+    stored = _result(
+        extracted_financials=fin,
+        calculations=[
+            {
+                "check": "cost_of_project_total",
+                "computed_value": 42.5,
+                "stated_value": 45.0,
+                "match": False,
+            }
+        ],
+    )
+    row = {m.measure: m for m in _snap(stored).financial_review}[
+        "Total project cost (₹ lakh)"
+    ]
+    assert (row.dpr_value, row.recomputed, row.status) == ("45.00", "42.50", "below")
+    # An older result without the check is recomputed from the DPR's lines.
+    older = _result(extracted_financials=fin)
+    row = {m.measure: m for m in _snap(older).financial_review}[
+        "Total project cost (₹ lakh)"
+    ]
+    assert (row.recomputed, row.status) == ("42.50", "below")
+
+
 def test_documents_follow_the_checklist_answers():
     result = _result(
         checks=[
@@ -224,8 +256,9 @@ def test_kyc_is_pending_until_ifpl_results_arrive():
     snap = _snap()
     ver = build_verification(snap)
     assert ver["cards"] is None
-    assert (
-        "Pending: verified by IFPL under our Value Addition service" in ver["pending"]
+    assert ver["pending"] == (
+        "Pending: Get your Credit and KYC details verified by IFPL "
+        "through our Value Addition Service."
     )
     assert "Doc Verification" in ver["quotation"]
     filled = snap.model_copy(
@@ -264,7 +297,7 @@ def test_pdf_flows_long_action_plans_and_counts_real_pages():
         text_all = "".join(p.get_text() for p in doc)
         assert f"Page 1 of {pages}" in doc[0].get_text()
         assert f"Page {pages} of {pages}" in doc[pages - 1].get_text()
-        assert "Issue 39" in text_all and "Annexure G" in text_all
+        assert "Issue 39" in text_all and "Annexure" not in text_all
         assert "Review ref PSR/2026/000007" in doc[2].get_text()
         fonts = {f[3] for p in doc for f in p.get_fonts()}
         assert any("Inter" in f for f in fonts)
