@@ -297,9 +297,12 @@ def _source_profiles(
     if not b.borrower_name:
         b.borrower_name = verified.get("borrower_name")
     if not p.lending_bank:
-        # The customer's own BankName service detail first, then the DPR.
-        p.lending_bank = result.service_details.get("bank_name") or verified.get(
-            "bank_name"
+        # The DPR's own bank first, then the dashboard's BankName, then the
+        # configured default -- the same rule the policy search used.
+        from .grounding import resolve_lending_bank
+
+        p.lending_bank, p.lending_bank_source = resolve_lending_bank(
+            document.document_facts if document else [], result.service_details
         )
     for key in (
         "project_name",

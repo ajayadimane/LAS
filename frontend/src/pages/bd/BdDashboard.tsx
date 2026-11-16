@@ -100,7 +100,7 @@ export default function BdDashboard() {
           <StatCard label="Payment pending" value={stat(counts.pending)} tone="warning" />
           <div className="rounded-2xl bg-primary p-5 text-primary-foreground">
             <div className="flex items-start justify-between gap-2">
-              <p className="text-sm font-semibold">Wallet</p>
+              <p className="text-sm font-semibold">Service Fee Account</p>
               {wallet.isError && (
                 <button className="text-xs underline opacity-80 hover:opacity-100" onClick={() => wallet.refetch()}>
                   Retry

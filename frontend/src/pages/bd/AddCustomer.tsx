@@ -112,7 +112,7 @@ export default function AddCustomer() {
       {
         onSuccess: (res) => {
           const ok = res.wallet_opened && res.login_created;
-          toast(ok ? `${name} saved, wallet opened and login created` : `${name} saved, but setup is not complete`,
+          toast(ok ? `${name} saved, service fee account opened and login created` : `${name} saved, but setup is not complete`,
             ok ? "success" : "default");
         },
       },
@@ -120,7 +120,7 @@ export default function AddCustomer() {
   };
 
   const retryWallet = (id: string) =>
-    openWallet.mutate(id, { onSuccess: () => toast("Wallet opened", "success") });
+    openWallet.mutate(id, { onSuccess: () => toast("Service fee account opened", "success") });
 
   const retryLogin = (id: string) =>
     createLogin.mutate(id, {
@@ -207,11 +207,11 @@ export default function AddCustomer() {
               {alreadyRegistered && !openWallet.isSuccess && (
                 <div className="mt-2">
                   <p className="text-xs">
-                    If you added this customer before and their wallet or login was not set up, you can finish that now.
+                    If you added this customer before and their service fee account or login was not set up, you can finish that now.
                   </p>
                   <Button size="sm" variant="outline" className="mt-2 rounded-lg" disabled={openWallet.isPending}
                     onClick={() => finishSetup(digits(form.mobile_number))}>
-                    {openWallet.isPending ? "Opening wallet…" : "Finish setup for this customer"}
+                    {openWallet.isPending ? "Opening service fee account…" : "Finish setup for this customer"}
                   </Button>
                   {openWallet.isError && <p className="mt-2 text-xs">{openWallet.error.message}</p>}
                 </div>
@@ -221,16 +221,16 @@ export default function AddCustomer() {
 
           {personId && walletReady && (
             <Notice tone="success">
-              {create.data ? `${name} is registered and their wallet is open.` : "Wallet opened for the existing customer."}
+              {create.data ? `${name} is registered and their service fee account is open.` : "Service fee account opened for the existing customer."}
               {" "}Choose services below.
             </Notice>
           )}
 
           {create.data && !walletReady && (
             <Notice tone="warning">
-              <p>{name} is registered, but their wallet could not be opened: {create.data.wallet_error?.message}</p>
+              <p>{name} is registered, but their service fee account could not be opened: {create.data.wallet_error?.message}</p>
               <Button size="sm" className="mt-2 rounded-lg" disabled={openWallet.isPending} onClick={() => retryWallet(create.data.person_id)}>
-                {openWallet.isPending ? "Opening wallet…" : "Retry opening wallet"}
+                {openWallet.isPending ? "Opening service fee account…" : "Retry opening service fee account"}
               </Button>
               {openWallet.isError && <p className="mt-2 text-xs">{openWallet.error.message}</p>}
             </Notice>
