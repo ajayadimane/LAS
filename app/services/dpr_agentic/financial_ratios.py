@@ -23,8 +23,9 @@ Definitions (amounts in lakh):
   year; fixed assets are the project cost without working capital and
   preliminary / pre-operative expenses.
 - cash_break_even: cash fixed costs / contribution at full capacity, in
-  % of capacity, for the year of highest utilisation; needs the variable
-  cost per unit (unit economics).
+  % of capacity, for the year of highest utilisation; the variable cost
+  per unit (unit economics), or when none is printed, the variable share
+  derived from the lowest- and highest-revenue years (high-low).
 - dscr_average_price_10: the average DSCR with the selling price 10% lower
   and every cost unchanged (the stress box).
 """
@@ -42,6 +43,9 @@ IRR_TOLERANCE_PCT = 1.0
 RATIO_TOLERANCE = 0.05
 PAYBACK_TOLERANCE_YEARS = 0.5
 BREAK_EVEN_TOLERANCE_PCT = 2.0
+# The high-low split of cash_break_even needs revenue to change by at
+# least this share between the two years it compares.
+HIGH_LOW_MIN_REVENUE_SPREAD = 0.10
 # IRR needs at least this many projection years to mean anything.
 MIN_IRR_YEARS = 3
 STRESS_PRICE_FALL_PCT = 10
@@ -225,7 +229,44 @@ def fixed_asset_coverage(fin: ProjectFinancials) -> CalculationResult | None:
     )
 
 
+def _cash_costs(fin: ProjectFinancials, y) -> float | None:
+    """A year's cash operating costs: revenue less profit before tax,
+    depreciation and term-loan interest. None when a figure is missing."""
+    if y.revenue is None or y.depreciation is None:
+        return None
+    if y.profit_before_tax is not None:
+        pbt = y.profit_before_tax
+    elif y.net_profit is not None:
+        # No PBT line: tax (if any) counts as a cost, which can only
+        # raise the break-even -- the cautious side.
+        pbt = y.net_profit + (y.tax_paid or 0.0)
+    else:
+        return None
+    return y.revenue - pbt - y.depreciation - _interest(fin, y)
+
+
+def _variable_share_from_years(rows) -> tuple[float, str] | None:
+    """The variable cost per rupee of revenue when the DPR prints no
+    variable cost per unit: how cash costs move between the lowest- and
+    highest-revenue years (high-low method). Price or cost escalation in
+    between blurs it, so a result outside (0, 1) or from too small a
+    revenue change is not trusted."""
+    if len(rows) < 2:
+        return None
+    low = min(rows, key=lambda r: r[1])
+    high = max(rows, key=lambda r: r[1])
+    spread = high[1] - low[1]
+    if spread < HIGH_LOW_MIN_REVENUE_SPREAD * high[1]:
+        return None
+    share = (high[2] - low[2]) / spread
+    if not 0 < share < 1:
+        return None
+    return share, f"variable cost derived from years {low[0]} and {high[0]}"
+
+
 def cash_break_even(fin: ProjectFinancials) -> CalculationResult | None:
+    """Uses the DPR's variable cost per unit when it prints one, otherwise
+    the share derived from how costs move across the projection years."""
     from .unit_economics import (
         _unit_economics_of,
         _utilisation_by_year,
@@ -237,45 +278,48 @@ def cash_break_even(fin: ProjectFinancials) -> CalculationResult | None:
         return None
     price = _ev(ue.price_per_unit_rupees)
     variable = _ev(ue.variable_cost_per_unit_rupees)
-    if not price or variable is None or variable >= price:
-        return None
-    variable_share = variable / price
     capacity = full_capacity_per_year(ue, fin)
     utilisation = _utilisation_by_year(ue, capacity)
-    candidates = []
+    rows = []  # (year, revenue, cash costs, utilisation %)
     for y in fin.years:
-        if y.revenue is None or y.depreciation is None:
+        cash_costs = _cash_costs(fin, y)
+        if cash_costs is None:
             continue
         util = utilisation.get(y.year)
-        if not util and capacity:
+        if not util and capacity and price:
             # No year-wise volume printed: the volume the revenue implies.
             util = min(y.revenue * RUPEES_PER_LAKH / price / capacity * 100, 100.0)
         if not util:
             continue
-        if y.profit_before_tax is not None:
-            pbt = y.profit_before_tax
-        elif y.net_profit is not None:
-            # No PBT line: tax (if any) counts as a cost, which can only
-            # raise the break-even -- the cautious side.
-            pbt = y.net_profit + (y.tax_paid or 0.0)
-        else:
-            continue
-        cash_costs = y.revenue - pbt - y.depreciation - _interest(fin, y)
-        fixed_cash = cash_costs - variable_share * y.revenue
-        contribution_full = y.revenue * (1 - variable_share) / (util / 100)
+        rows.append((y.year, y.revenue, cash_costs, util))
+    if price and variable is not None and variable < price:
+        variable_share, how = variable / price, None
+    elif derived := _variable_share_from_years(rows):
+        variable_share, how = derived
+    else:
+        return None
+    candidates = []
+    for year, revenue, cash_costs, util in rows:
+        fixed_cash = cash_costs - variable_share * revenue
+        contribution_full = revenue * (1 - variable_share) / (util / 100)
         if fixed_cash < 0 or contribution_full <= 0:
             continue
-        candidates.append((util, -y.year, fixed_cash / contribution_full * 100))
+        candidates.append((util, -year, fixed_cash / contribution_full * 100))
     if not candidates:
         return None
     util, minus_year, pct = max(candidates)
     basis = fin.stated_ratios.break_even_basis if fin.stated_ratios else None
+    note = f"year {-minus_year}"
+    if how:
+        note += f"; {how}"
+    if basis:
+        note += f"; DPR basis: {basis}"
     return _result(
         "cash_break_even",
         round(pct, 1),
         _stated(fin, "break_even_pct"),
         BREAK_EVEN_TOLERANCE_PCT,
-        note=f"year {-minus_year}" + (f"; DPR basis: {basis}" if basis else ""),
+        note=note,
     )
 
 
