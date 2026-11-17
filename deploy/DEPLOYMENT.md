@@ -259,7 +259,7 @@ CORE_INTAKE_URL=http://127.0.0.1:8109/las-api/internal/v1/intake/events
 **2. Stored mail.** Copy the developer's `LAS_Email/var/objects/` to the same place on the
 server (encrypted mail and attachments; readable only with the `.env`'s `LOCAL_STORE_KEY_B64`).
 
-**3. Backend settings for intake** (`/las` `.env`, then `docker-compose up -d --force-recreate`
+**3. Backend settings for intake** (`/las` `.env`, then `docker-compose down && docker-compose up -d`
 in the backend folder): `INTAKE_ENABLED=true`, `INTAKE_API_KEY`, `INTAKE_ENCRYPTION_KEY` (the
 same value as the developer's, or stored events cannot be read), `INTAKE_BD_SENDERS`,
 `INTAKE_VENDOR_USER_ID`, `INTAKE_VENDOR_PASSWORD`, `SMTP_PASSWORD`.
@@ -313,7 +313,12 @@ LAS_Email (unzipped with the rest; its `.env` and `var/` are kept): in `LAS_Emai
 `docker-compose -f docker-compose.demo.yaml build` (only rebuilds if `requirements.lock` changed),
 `... run --rm las-email alembic upgrade head`, then `... restart las-email`.
 
-**A setting changed** (`.env`): `sudo docker-compose up -d --force-recreate`.
+**A setting changed** (`.env`): `sudo docker-compose down && sudo docker-compose up -d`.
+
+**Never `up --force-recreate` with docker-compose 1.29.2:** with a newer Docker Engine it crashes
+with `KeyError: 'ContainerConfig'` while recreating. Always `down`, then `up -d` (same for
+`-f docker-compose.demo.yaml` in `LAS_Email/`). If a crash left a container named
+`<id>_las`, remove it with `docker rm -f <name>`.
 A plain `docker restart` does not re-read `.env`.
 
 ---
