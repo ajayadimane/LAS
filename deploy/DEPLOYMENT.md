@@ -39,7 +39,7 @@ reaches them.** If nginx runs on this same server, change both `--host` values i
 ## 0. Before you start (one-time checks)
 
 ```bash
-docker compose version    # Docker with the compose plugin
+docker-compose version    # Docker with the compose plugin
 nginx -v                  # nginx installed
 psql --version            # PostgreSQL 14+ (else: sudo apt install postgresql)
 python3 --version         # 3.10+ (for LAS_Email)
@@ -192,12 +192,12 @@ The base image `python3.10-tar-ubuntu-20.04` must already exist on the server (`
 
 ```bash
 cd /opt/las
-sudo docker compose build
+sudo docker-compose build
 
 # Create/upgrade the tables (as core_owner). Every deploy; safe to repeat.
-sudo docker compose run --rm fraud python scripts/migrate.py
+sudo docker-compose run --rm fraud python scripts/migrate.py
 
-sudo docker compose up -d
+sudo docker-compose up -d
 ```
 
 This starts the container `las` (`restart: always`). On every start it runs `npm ci` for the
@@ -207,12 +207,12 @@ crashes; if either the API or the dev server stops, the whole container restarts
 Check:
 
 ```bash
-sudo docker compose ps                              # las: Up
+sudo docker-compose ps                              # las: Up
 curl http://127.0.0.1:8109/las-api/health           # {"status":"ok",...,"environment":"demo"}
 curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8110/las/   # 200
-sudo docker compose logs | grep -i -E "error|schema|intake" | tail
-sudo docker compose logs | grep dpr_worker | tail   # "dpr_worker_autostarted", no "missing_settings"
-sudo docker compose logs | grep -i vite | tail      # "VITE v5.4.11 ready"
+sudo docker-compose logs | grep -i -E "error|schema|intake" | tail
+sudo docker-compose logs | grep dpr_worker | tail   # "dpr_worker_autostarted", no "missing_settings"
+sudo docker-compose logs | grep -i vite | tail      # "VITE v5.4.11 ready"
 ```
 
 ---
@@ -316,9 +316,9 @@ so a BD's reply to an old case is treated as a new mail.
 sudo -u postgres pg_dump -Fc las_demo > /var/backups/las_demo_$(date +%Y%m%d%H%M).dump   # first, always
 sudo cp -a /opt/las /opt/las.previous                                                       # for rollback
 cd /opt/las && sudo unzip -oq <new las-code.zip> -d /opt/las      # keeps .env (not in the zip)
-sudo docker compose build                                         # only rebuilds if requirements.txt changed
-sudo docker compose run --rm fraud python scripts/migrate.py
-sudo docker compose restart
+sudo docker-compose build                                         # only rebuilds if requirements.txt changed
+sudo docker-compose run --rm fraud python scripts/migrate.py
+sudo docker-compose restart
 ```
 
 The code is mounted, not baked into the image, so a restart picks up the new code.
@@ -327,7 +327,7 @@ LAS_Email, if it changed: copy `/opt/las/LAS_Email/.` over `/opt/las-email/` (it
 in the zip, so it is kept), then `sudo -u las make install migrate` and
 `sudo systemctl restart las-worker las-beat las-ingest`.
 
-**A setting changed** (`.env`): `sudo docker compose up -d --force-recreate`.
+**A setting changed** (`.env`): `sudo docker-compose up -d --force-recreate`.
 A plain `docker restart` does not re-read `.env`.
 
 ---
@@ -335,9 +335,9 @@ A plain `docker restart` does not re-read `.env`.
 ## 10. Rollback
 
 ```bash
-sudo docker compose down
+sudo docker-compose down
 sudo mv /opt/las /opt/las.failed && sudo mv /opt/las.previous /opt/las
-cd /opt/las && sudo docker compose up -d --build
+cd /opt/las && sudo docker-compose up -d --build
 ```
 
 Migrations only add things, so the previous image normally runs on the newer tables. If it does
@@ -349,8 +349,8 @@ not, restore the dump taken before the update (`pg_restore --clean -d las_demo <
 
 | Symptom | Likely cause / fix |
 |---|---|
-| `502 Bad Gateway` on `/las/` | The dev server is not up yet (`npm ci` still running) or failed: `docker compose logs`. |
-| `502 Bad Gateway` on `/las-api/...` | The API is not running: `docker compose ps`, `docker compose logs`. |
+| `502 Bad Gateway` on `/las/` | The dev server is not up yet (`npm ci` still running) or failed: `docker-compose logs`. |
+| `502 Bad Gateway` on `/las-api/...` | The API is not running: `docker-compose ps`, `docker-compose logs`. |
 | The container keeps restarting with `npm` network errors | The server cannot reach `registry.npmjs.org` (step 0). |
 | `/las/` blank page, or assets 404 | `VITE_BASE_PATH` is not `/las` (set in `docker-compose.yaml`), or `/las/` in nginx has a trailing slash on `proxy_pass`. |
 | Browser console: websocket errors | The `Upgrade`/`Connection` lines are missing from `/las/` in nginx. Harmless, but noisy. |
@@ -361,10 +361,10 @@ not, restore the dump taken before the update (`pg_restore --clean -d las_demo <
 | Adding a customer fails with `ADMIN_...` | `VENDOR_ADMIN_USER_ID` / `VENDOR_ADMIN_PASSWORD` wrong. |
 | Log says `SchemaNotReady`; DPR or intake features off | Migrations not run: the `scripts/migrate.py` line in step 5. |
 | `password authentication failed for user core_app` | Password in `DPR_DATABASE_URL` differs from step 3. Fix `.env`, or `ALTER ROLE core_app PASSWORD '...'`. |
-| DPR stays "queued" | `docker compose logs \| grep dpr_worker`: `missing_settings` (a `DPR_*` setting), or Gemini unreachable. |
+| DPR stays "queued" | `docker-compose logs \| grep dpr_worker`: `missing_settings` (a `DPR_*` setting), or Gemini unreachable. |
 | BD gets no reply to an email | `journalctl -u las-ingest -u las-worker`. Handoff `REJECTED`/`401`: `CORE_INTAKE_API_KEY` ≠ `INTAKE_API_KEY`. Sender not in both BD lists: they get "not a registered BD". |
 | BDs get every reply twice | Two LAS_Email copies read the mailbox. Stop the other one. |
-| A container keeps restarting | `docker compose logs <name>`: usually a typo in `.env`. |
+| A container keeps restarting | `docker-compose logs <name>`: usually a typo in `.env`. |
 
-Logs: `docker compose logs -f`, `journalctl -u las-ingest -u las-worker -u las-beat -f`,
+Logs: `docker-compose logs -f`, `journalctl -u las-ingest -u las-worker -u las-beat -f`,
 `/var/log/nginx/error.log`.

@@ -3,8 +3,8 @@ version: '3'
 # One container: the backend API (8109, which also runs the DPR worker as its
 # child, DPR_WORKER_AUTOSTART) and the frontend dev server (8110).
 #
-#   docker compose run --rm fraud python scripts/migrate.py   # tables; every deploy
-#   docker compose up -d --build
+#   docker-compose run --rm fraud python scripts/migrate.py   # tables; every deploy
+#   docker-compose up -d --build
 #
 # Security: both ports listen on 0.0.0.0. Keep 8109 and 8110 closed in the
 # firewall so only nginx reaches them; if nginx runs on this server, change both
