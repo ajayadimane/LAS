@@ -1,0 +1,59 @@
+# LAS on the demo server: backend API, DPR worker, frontend (Vite dev server).
+#
+#   docker compose run --rm las python scripts/migrate.py   # tables, as core_owner; every deploy
+#   docker compose up -d --build
+#   docker compose logs -f
+#
+# Everything listens on 127.0.0.1 only: nginx on this host is the one public entry
+# point (/las/ -> 8110, /las-api/ -> 8109). Never change these to 0.0.0.0:
+#   - the API trusts X-Forwarded-For from nginx and must not be reachable around it;
+#   - Vite's dev server (5.4.11) has known file-read flaws. Its container also mounts
+#     only ./frontend, so the backend's .env is not even on its filesystem.
+# LAS_Email is not here: it runs under systemd (LAS_Email/deploy/README.md).
+
+x-backend: &backend
+  build: .
+  image: las-backend:latest
+  network_mode: host
+  restart: always
+  env_file:
+    - .env
+  environment:
+    HOST: 127.0.0.1
+    PORT: "8109"
+    CONTEXT_PATH: /las-api
+    DPR_WORKER_AUTOSTART: "false"   # the worker is its own service below
+  volumes:
+    - /etc/timezone:/etc/timezone:ro
+    - /etc/localtime:/etc/localtime:ro
+
+services:
+  las:
+    <<: *backend
+    container_name: las
+
+  las-dpr-worker:
+    <<: *backend
+    container_name: las-dpr-worker
+    command: ["python", "scripts/dpr_worker.py"]
+    healthcheck:
+      disable: true
+
+  las-frontend:
+    image: node:20.18.1-bookworm-slim
+    container_name: las-frontend
+    network_mode: host
+    restart: always
+    working_dir: /ui
+    environment:
+      VITE_BASE_PATH: /las
+      VITE_API_BASE_PATH: /las-api
+      VITE_API_PROXY_TARGET: http://127.0.0.1:8109
+    volumes:
+      - ./frontend:/ui
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+    command:
+      - sh
+      - -c
+      - npm ci --no-audit --no-fund && exec npm run dev -- --host 127.0.0.1 --port 8110 --strictPort

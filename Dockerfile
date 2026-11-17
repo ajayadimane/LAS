@@ -1,9 +1,10 @@
 # LAS Dashboard Middleware (backend only; the UI is the static frontend/dist).
-# One image, two containers (deploy/DEPLOYMENT.md):
-#   las-backend     the API (default command)
+# One image, two containers (docker-compose.yaml, deploy/DEPLOYMENT.md):
+#   las             the API (default command)
 #   las-dpr-worker  the DPR analysis worker: same image, command
 #                   `python scripts/dpr_worker.py`
 #
+# Without compose:
 #   docker build -t las-backend .
 #   docker run -d --name las-backend --restart unless-stopped --network host \
 #     --env-file /opt/las/.env las-backend
