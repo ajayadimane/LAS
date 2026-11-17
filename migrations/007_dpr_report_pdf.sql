@@ -24,6 +24,7 @@ BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint
         WHERE conname = 'dpr_report_artifacts_pdf_render_status_check'
+          AND connamespace = current_schema()::regnamespace
     ) THEN
         ALTER TABLE dpr_report_artifacts
             ADD CONSTRAINT dpr_report_artifacts_pdf_render_status_check

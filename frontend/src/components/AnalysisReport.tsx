@@ -28,8 +28,10 @@ import { StatusPill } from "@/components/ui/StatusPill";
  */
 export function AnalysisReportCard({ bdId, personId, service }: { bdId: string; personId: string; service: CustomerService }) {
   const enabled = !!service.document;
-  const query = useServiceReport(bdId, personId, service.code, enabled);
   const summary = useServiceReportSummary(bdId, personId, service.code, enabled);
+  // The full report only matters once the summary says it is released: a
+  // second parallel call would just repeat the same 403 and vendor lookup.
+  const query = useServiceReport(bdId, personId, service.code, enabled && summary.isSuccess);
   const [previewingPdf, setPreviewingPdf] = useState(false);
   const [showAnnexures, setShowAnnexures] = useState(false);
   const annexures = useServiceReportAnnexures(bdId, personId, service.code, enabled && showAnnexures);
@@ -69,7 +71,7 @@ export function AnalysisReportCard({ bdId, personId, service }: { bdId: string; 
         showAnnexures={showAnnexures}
         onToggleAnnexures={() => setShowAnnexures((v) => !v)}
         paymentDue={
-          <ReportPaymentDue amount={owed}>
+          <ReportPaymentDue amount={owed} checking={summary.isFetching} onCheck={() => void summary.refetch()}>
             {owed !== null && (
               <div className="mb-3 flex flex-wrap items-center gap-4">
                 <UpiQr text={upiLink(UPI_ID, owed, `LAS ${service.name} report`)} size={140} />

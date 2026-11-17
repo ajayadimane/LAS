@@ -27,6 +27,19 @@ _engine: AsyncEngine | None = None
 _factory: SessionFactory | None = None
 
 
+def schema_connect_args(schema: str | None = None) -> dict:
+    """asyncpg connect_args putting ``schema`` first on search_path (nothing for ``public``).
+
+    asyncpg ignores libpq's ``?options=-csearch_path=...``, so it goes in server_settings. Set on
+    the connection as well as by ``ALTER ROLE ... SET search_path`` (Core's deploy/db/setup.sql),
+    so a role missing that setting still lands in the right schema, not silently in public.
+    """
+    schema = schema or get_settings().db_schema
+    if schema == "public":
+        return {}
+    return {"server_settings": {"search_path": f"{schema},public"}}
+
+
 def make_engine(url: str | None = None, *, pool_size: int | None = None) -> AsyncEngine:
     s = get_settings()
     return create_async_engine(
@@ -34,6 +47,7 @@ def make_engine(url: str | None = None, *, pool_size: int | None = None) -> Asyn
         pool_size=pool_size or s.db_pool_size,
         pool_pre_ping=True,
         echo=s.db_echo,
+        connect_args=schema_connect_args(),
     )
 
 

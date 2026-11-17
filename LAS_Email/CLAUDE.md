@@ -91,8 +91,14 @@ openpyxl · cryptography · Google Gemini via `google-genai` · structlog · pyt
 **Deployment: the company's own server** (`deploy/`): systemd units, local PostgreSQL, Redis, ClamAV
 and filesystem storage. Do not add cloud SDKs.
 
-**Database in development: the developer's local PostgreSQL server, database `LAS_Email`**
-(`DATABASE_URL` in `.env`). Extensions: `pgcrypto`, `citext`. Tests never touch it: a session
+**Database: one PostgreSQL database shared with Core LAS, this service in schema `email`**
+(`DB_SCHEMA=email`; user, 2026-11-17, for UAT/prod). Roles: `email_app` (rows only, `DATABASE_URL`)
+and `email_owner` (Alembic, `MIGRATION_DATABASE_URL`); created by Core's `deploy/db/setup.sql`,
+runbook in Core's `deploy/db/README.md`. Every connection sets `search_path=<schema>,public`
+(`las.common.db.schema_connect_args`; asyncpg ignores `?options=`); `alembic_version` is in the
+schema. Never name a schema in SQL. The app role cannot REFRESH the materialized view: call
+`refresh_ai_usage_daily()` (0021). Extensions `pgcrypto`, `citext` live in `public`, created by
+the DBA. `DB_SCHEMA` defaults to `public` (a standalone database, as before). Tests never touch it: a session
 fixture uses `TEST_DATABASE_ADMIN_URL` to create a throwaway `las_test_<random>`, migrates it and
 drops it; transaction-per-test rollback, except `@pytest.mark.commits` tests.
 

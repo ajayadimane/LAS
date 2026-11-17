@@ -7,6 +7,14 @@ CRUD logic. **We hold no customer, wallet or payment records**: every such opera
 call to their API. (Our own Postgres, `DPR_DATABASE_URL`, holds only DPR analysis jobs/reports
 and email-intake events.)
 
+**Database layout (user, 2026-11-17, for UAT/prod):** one database per environment shared with
+LAS_Email -- Core in schema `core` (`DB_SCHEMA`), LAS_Email in `email`, extensions in `public`;
+app roles `core_app`/`email_app` may only read and write rows, owners `core_owner`/`email_owner`
+run migrations (`python scripts/migrate.py`, `DB_MIGRATE_ON_STARTUP=false` in UAT/prod). Still
+two services talking over HTTP: never read the other schema. `deploy/db/setup.sql` +
+`deploy/db/README.md`; local merge: `scripts/merge_email_db.py`. Never name a schema in SQL
+(`search_path` decides); constraint guards in migrations filter on `current_schema()`.
+
 Dashboard -> this FastAPI app -> third-party LAS APIs
 
 ## Responsibilities of this service
@@ -320,7 +328,7 @@ The vendor product is **iWallet**. There is no OpenAPI spec; the contract is 13 
   `/walletInfoRetrieval` (all reads).
 
 ## Tech stack
-- Python 3.12, FastAPI, Uvicorn
+- Python 3.10 (the venv, the lock and the Docker image; keep code 3.10-compatible), FastAPI, Uvicorn
 - httpx.AsyncClient (one shared client created in app lifespan, not per request)
 - Pydantic v2 + pydantic-settings for config from `.env`
 - tenacity for retries

@@ -32,6 +32,13 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://localhost/LAS_Email"
     # Tests only: a role that may CREATE DATABASE (tests use a throwaway las_test_<random>).
     test_database_admin_url: str | None = None
+    # The Postgres schema LAS_Email's tables live in. UAT/prod share one database with Core LAS
+    # (schema "core"), so this is "email" there; "public" keeps a standalone database as it was.
+    # Connections use search_path "<schema>, public" (the citext extension stays in public).
+    db_schema: str = Field(default="public", pattern=r"^[a-z_][a-z0-9_]{0,62}$")
+    # `make migrate` connects with this (the schema owner role) when set; the services themselves
+    # use DATABASE_URL (a role that may only read and write rows). Unset = DATABASE_URL.
+    migration_database_url: str | None = None
     db_pool_size: int = 10
     db_echo: bool = False
 
@@ -124,7 +131,7 @@ class Settings(BaseSettings):
         }
     )
 
-    @field_validator("database_url", "test_database_admin_url")
+    @field_validator("database_url", "test_database_admin_url", "migration_database_url")
     @classmethod
     def _asyncpg(cls, v: str | None) -> str | None:
         return to_async_url(v) if v else v

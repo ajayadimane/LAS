@@ -1463,7 +1463,9 @@ async def test_a_pay_later_report_is_locked_until_the_customer_pays(
     assert locked.subject.endswith("customer payment due")
     assert "still owes Rs 1,295" in locked.text
     assert f"LAS-PAID%20{case.ref}" in locked.html
-    to_customer = mailer.to("ramesh@example.com")[-1]
+    # To the email on the customer's iWallet record (the vendor read), which may
+    # differ from the one the BD first sent.
+    to_customer = mailer.to(REAL_PERSON["emailAddress"])[-1]
     assert "payment due" in to_customer.subject and "Rs 1,295" in to_customer.text
 
     # The BD confirms the customer paid.

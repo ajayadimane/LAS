@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "./client";
+import { pollWhileAnalysing } from "./reportLock";
 import type { VendorAck } from "./bd";
 
 /** Something a service asks for when chosen, e.g. DPR Analysis: bank name, project name. */
@@ -319,7 +320,7 @@ export const useServiceReport = (bdId: string, personId: string, code: string, e
     queryFn: () => api.get<AnalysisReport>(customerPath(bdId, personId, `services/${encodeURIComponent(code)}/report`)),
     enabled,
     retry: false,
-    refetchInterval: (query) => (query.state.data ? false : query.state.error?.status === 403 ? 10_000 : false),
+    refetchInterval: pollWhileAnalysing,
   });
 
 /** Section 17 status card for one service's report: readiness, Must/Should/
@@ -331,7 +332,7 @@ export const useServiceReportSummary = (bdId: string, personId: string, code: st
     queryFn: () => api.get<ReportSummary>(customerPath(bdId, personId, `services/${encodeURIComponent(code)}/report/summary`)),
     enabled,
     retry: false,
-    refetchInterval: (query) => (query.state.data ? false : query.state.error?.status === 403 ? 10_000 : false),
+    refetchInterval: pollWhileAnalysing,
   });
 
 /** Annexure B figures, fetched only once the user opens that panel. */

@@ -10,7 +10,15 @@ from pydantic import ValidationError
 
 from app.core.config import Settings
 from app.main import create_app
-from tests.test_enrolment import AUTH, BASE, PAY_LATER, TRANSFER, fields, person  # noqa: F401
+from tests.test_enrolment import (  # noqa: F401
+    AUTH,
+    BASE,
+    PAY_LATER,
+    TRANSFER,
+    field_value,
+    fields,
+    person,
+)
 
 
 def test_vendor_wallet_stub_enabled_is_refused_outside_dev_or_test():
@@ -47,6 +55,7 @@ def test_pay_later_with_the_stub_never_calls_the_real_vendor_transfer(
     vendor,
     person,  # noqa: F811
     fields,  # noqa: F811
+    field_value,  # noqa: F811 -- PAY_LATER carries DPR Analysis's bank + project
 ):
     transfer_route = vendor.put(TRANSFER).mock()  # would fail the test if called
     response = stub_client.post(f"{BASE}/payment", json=PAY_LATER, headers=AUTH)
@@ -63,6 +72,7 @@ def test_pay_later_with_the_stub_still_persists_the_same_custom_fields(
     stub_client,
     person,  # noqa: F811
     fields,  # noqa: F811
+    field_value,  # noqa: F811 -- PAY_LATER carries DPR Analysis's bank + project
 ):
     response = stub_client.post(f"{BASE}/payment", json=PAY_LATER, headers=AUTH)
     assert response.status_code == 200

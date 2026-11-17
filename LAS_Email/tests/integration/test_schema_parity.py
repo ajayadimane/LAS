@@ -9,43 +9,45 @@ import pytest
 from sqlalchemy import inspect, make_url, text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
+from las.common.db import schema_connect_args
 from las.common.models import Base
 from las.common.sqlsplit import split_sql
-from tests.conftest import _run_migrations
+from tests.conftest import _run_migrations, create_test_schema
 
 CATALOG_QUERIES = {
     "columns": """
         SELECT table_name, column_name, data_type, udt_name, is_nullable,
                coalesce(column_default, ''), coalesce(character_maximum_length, 0),
                coalesce(numeric_precision, 0), coalesce(numeric_scale, 0)
-        FROM information_schema.columns WHERE table_schema = 'public'
+        FROM information_schema.columns WHERE table_schema = current_schema()
           AND table_name <> 'alembic_version'""",
     "constraints": """
         SELECT conrelid::regclass::text, conname, pg_get_constraintdef(oid)
-        FROM pg_constraint WHERE connamespace = 'public'::regnamespace
+        FROM pg_constraint WHERE connamespace = current_schema()::regnamespace
           AND conrelid::regclass::text <> 'alembic_version'""",
     "indexes": """
         SELECT tablename, indexname, indexdef FROM pg_indexes
-        WHERE schemaname = 'public' AND tablename <> 'alembic_version'""",
+        WHERE schemaname = current_schema() AND tablename <> 'alembic_version'""",
     "triggers": """
         SELECT tgrelid::regclass::text, tgname, pg_get_triggerdef(oid)
         FROM pg_trigger WHERE NOT tgisinternal""",
     "views": """
-        SELECT viewname, pg_get_viewdef(viewname::regclass, true) FROM pg_views WHERE schemaname='public'""",
+        SELECT viewname, pg_get_viewdef(viewname::regclass, true) FROM pg_views WHERE schemaname = current_schema()""",
     "matviews": """
-        SELECT matviewname, pg_get_viewdef(matviewname::regclass, true) FROM pg_matviews WHERE schemaname='public'""",
+        SELECT matviewname, pg_get_viewdef(matviewname::regclass, true) FROM pg_matviews WHERE schemaname = current_schema()""",
     "sequences": """
         SELECT sequence_name, start_value, increment FROM information_schema.sequences
-        WHERE sequence_schema = 'public'""",
+        WHERE sequence_schema = current_schema()""",
     "functions": """
-        SELECT proname, pg_get_functiondef(oid) FROM pg_proc WHERE pronamespace = 'public'::regnamespace
-          AND prokind = 'f' AND proname = 'audit_log_immutable'""",
+        SELECT proname, pg_get_functiondef(oid) FROM pg_proc WHERE pronamespace = current_schema()::regnamespace
+          AND prokind = 'f'
+          AND proname IN ('audit_log_immutable', 'refresh_ai_usage_daily')""",
     "extensions": "SELECT extname FROM pg_extension",
 }
 
 
 async def _catalog(url: str) -> dict[str, set[tuple[Any, ...]]]:
-    eng = create_async_engine(url)
+    eng = create_async_engine(url, connect_args=schema_connect_args())
     try:
         async with eng.connect() as c:
             return {
@@ -66,8 +68,13 @@ async def test_migration_matches_schema_sql(admin_url: str) -> None:
         async with admin.connect() as c:
             for n in names:
                 await c.execute(text(f'CREATE DATABASE "{n}"'))
+        for u in urls:
+            e = create_async_engine(u, isolation_level="AUTOCOMMIT")
+            async with e.connect() as c:
+                await create_test_schema(c)
+            await e.dispose()
         await asyncio.to_thread(_run_migrations, urls[0])
-        eng = create_async_engine(urls[1])
+        eng = create_async_engine(urls[1], connect_args=schema_connect_args())
         async with eng.begin() as c:
             schema = await asyncio.to_thread(Path("docs/schema.sql").read_text)
             for stmt in split_sql(schema):

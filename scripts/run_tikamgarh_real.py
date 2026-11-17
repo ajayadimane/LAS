@@ -53,8 +53,8 @@ from app.services.dpr_agentic.document_pipeline.liteparse_client import (  # noq
     LiteParseClient,
 )
 from app.services.dpr_agentic.gemini import GeminiAgentClient  # noqa: E402
-from app.services.dpr_agentic.jobs import engine_for, get_run, submit  # noqa: E402
-from app.services.dpr_agentic.migrate import apply_migrations  # noqa: E402
+from app.services.dpr_agentic.jobs import get_run, submit  # noqa: E402
+from app.services.dpr_agentic.migrate import core_engine  # noqa: E402
 from app.services.dpr_agentic.report_store import get_report  # noqa: E402
 from app.services.dpr_agentic.upload_staging import stage_upload  # noqa: E402
 
@@ -121,8 +121,7 @@ def main() -> None:
     sha = hashlib.sha256(data).hexdigest()
     print(f"Document: {DPR_PATH} ({len(data)} bytes, sha256={sha})")
 
-    engine = engine_for(settings.dpr_database_url.get_secret_value())
-    apply_migrations(engine)
+    engine = core_engine(settings)
 
     run_id, created = submit(
         engine,

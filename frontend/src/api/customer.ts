@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { pollWhileAnalysing } from "./reportLock";
 import { api, ApiError, downloadFile } from "./client";
 import type { PostalAddress } from "./bd";
 import type {
@@ -99,7 +100,7 @@ export const useMyServiceReport = (code: string, enabled: boolean) =>
     queryFn: () => api.get<AnalysisReport>(`customer/services/${encodeURIComponent(code)}/report`),
     enabled,
     retry: false,
-    refetchInterval: (query) => (query.state.data ? false : query.state.error?.status === 403 ? 10_000 : false),
+    refetchInterval: pollWhileAnalysing,
   });
 
 /** Section 17 status card for my own service's report. */
@@ -109,7 +110,7 @@ export const useMyServiceReportSummary = (code: string, enabled: boolean) =>
     queryFn: () => api.get<ReportSummary>(`customer/services/${encodeURIComponent(code)}/report/summary`),
     enabled,
     retry: false,
-    refetchInterval: (query) => (query.state.data ? false : query.state.error?.status === 403 ? 10_000 : false),
+    refetchInterval: pollWhileAnalysing,
   });
 
 /** My own service's Annexure B figures, fetched only once that panel opens. */

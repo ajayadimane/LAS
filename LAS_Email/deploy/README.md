@@ -36,8 +36,16 @@ for l in eng hin kan; do sudo curl -LO https://github.com/tesseract-ocr/tessdata
 and set `TESSDATA_PATH=/srv/las/tessdata`.
 
 ## 3. Database
+UAT and prod: **one database shared with Core LAS**, this service in schema `email`. The DBA
+creates it once with Core's `deploy/db/setup.sql`; the full runbook is in Core's
+`deploy/db/README.md`. In `.env`:
+```
+DATABASE_URL=postgresql+asyncpg://email_app:...@db-host:5432/las_uat        # rows only
+DB_SCHEMA=email
+MIGRATION_DATABASE_URL=postgresql+asyncpg://email_owner:...@db-host:5432/las_uat
+```
+Then, on every deploy (Alembic connects as `email_owner`, the services as `email_app`):
 ```bash
-sudo -u postgres createuser las_app -P && sudo -u postgres createdb -O las_app LAS_Email
 sudo -u las make db-check migrate seed
 ```
 Add each BD (`bd_partners`: email, `ibkart_bd_code` = Core's BD id); keep the list in step with
@@ -55,7 +63,8 @@ sudo systemctl enable --now las-worker las-beat las-ingest
 `las-beat` and `las-ingest` must run as exactly one instance each.
 
 ## 5. Backups (nothing does this for you)
-- Database: nightly `pg_dump -Fc LAS_Email`.
+- Database: nightly `pg_dump -Fc las_<env>` (both services), or `pg_dump -Fc -n email las_<env>`
+  for this service only.
 - Files: `/srv/las/objects` (already encrypted) — rsync/restic to another machine.
 - **`LOCAL_STORE_KEY_B64`**: keep it in a password manager / offline, separately from the file
   backups. Without it the stored mails and attachments cannot be decrypted.

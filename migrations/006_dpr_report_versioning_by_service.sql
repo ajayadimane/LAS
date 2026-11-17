@@ -51,6 +51,7 @@ BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint
         WHERE conname = 'dpr_report_artifacts_render_status_check'
+          AND connamespace = current_schema()::regnamespace
     ) THEN
         ALTER TABLE dpr_report_artifacts
             ADD CONSTRAINT dpr_report_artifacts_render_status_check
@@ -81,6 +82,7 @@ BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint
         WHERE conname = 'dpr_report_artifacts_pkey'
+          AND connamespace = current_schema()::regnamespace
     ) THEN
         ALTER TABLE dpr_report_artifacts ADD PRIMARY KEY (id);
     END IF;
@@ -90,6 +92,7 @@ DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint WHERE conname = 'dpr_report_artifacts_run_snapshot_key'
+          AND connamespace = current_schema()::regnamespace
     ) THEN
         ALTER TABLE dpr_report_artifacts
             ADD CONSTRAINT dpr_report_artifacts_run_snapshot_key UNIQUE (run_id, snapshot_sha256);
@@ -124,6 +127,7 @@ DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint WHERE conname = 'dpr_report_artifacts_source_version_key'
+          AND connamespace = current_schema()::regnamespace
     ) THEN
         ALTER TABLE dpr_report_artifacts
             ADD CONSTRAINT dpr_report_artifacts_source_version_key UNIQUE (source_reference, version);
