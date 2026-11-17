@@ -107,6 +107,9 @@ def test_registers_then_opens_the_wallet(client, vendor):
                 f"{service}_Doc",
             )
         }
+        # The DPR Analysis report (it produces one): the field must exist on
+        # the person from registration -- the vendor never adds one later.
+        | {"DPR_ANALYSIS_Report": "NA"}
         # DPR Analysis details: sent now, since the vendor never adds a
         # field to an existing person.
         | {"BankName": "NA", "Project_Name": "NA"}

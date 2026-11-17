@@ -40,6 +40,8 @@ class Mail:
     # Marks the mail as automated (RFC 3834), so the recipient's
     # out-of-office reply is not sent back to us.
     auto_submitted: bool = False
+    # Inline PNGs the HTML refers to as <img src="cid:NAME"> (the UPI QR).
+    inline_images: tuple[tuple[str, bytes], ...] = ()
 
 
 class Mailer:
@@ -88,6 +90,10 @@ class Mailer:
             message["Auto-Submitted"] = "auto-replied"
         message.set_content(mail.text)
         message.add_alternative(mail.html, subtype="html")
+        if mail.inline_images:
+            html_part = message.get_body(preferencelist=("html",))
+            for name, png in mail.inline_images:
+                html_part.add_related(png, "image", "png", cid=f"<{name}>")
         return message
 
     def _send_sync(self, message: EmailMessage) -> None:

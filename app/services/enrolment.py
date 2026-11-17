@@ -36,6 +36,7 @@ their BD to authorize -- stand guarantor -- and the transfer runs at that
 point (`authorize`); the BD may `decline`. Waiting services are "Awaiting BD".
 """
 
+import asyncio
 from collections.abc import Mapping
 
 from app.clients.vendor_client import VendorCallContext, VendorClient
@@ -119,10 +120,20 @@ class PaymentOutcomeUnknownError(Exception):
 
 
 class EnrolmentService:
-    def __init__(self, client: VendorClient, settings: Settings, bd: BdService) -> None:
+    def __init__(
+        self,
+        client: VendorClient,
+        settings: Settings,
+        bd: BdService,
+        dues_engine=None,
+    ) -> None:
         self._client = client
         self._settings = settings
         self._bd = bd
+        # Core Postgres for pay_later_dues (app/services/dues.py). None = a
+        # Pay later is not recorded; its report then stays locked until the
+        # BD confirms the customer paid (no row counts as due).
+        self._dues_engine = dues_engine
         self._fields = CustomFieldService(client, settings)
         self._stub_wallet = (
             StubWalletPaymentClient() if settings.vendor_wallet_stub_enabled else None
@@ -479,6 +490,11 @@ class EnrolmentService:
             transfer.transaction_id,
             transfer.correlation_id,
         )
+        # The customer now owes this (the BD is guarantor): it locks the
+        # report until the BD confirms the customer paid.
+        await self._record_dues(
+            person_id, services, joining_fee, transfer.transaction_id
+        )
         # Step 4.
         done: dict[str, str] = {}
         for f in fields:
@@ -502,6 +518,30 @@ class EnrolmentService:
                 status_recorded=False,
             )
         return response(payment_status=s.payment_status_paid, transfer=transfer)
+
+    async def _record_dues(
+        self,
+        person_id: str,
+        services: list[ServiceConfig],
+        joining_fee: int,
+        transfer_txn: str | None,
+    ) -> None:
+        if self._dues_engine is None:
+            logger.warning(
+                "pay_later_due_not_recorded person_id=%s (no database)", person_id
+            )
+            return
+        from app.services.dues import record_dues
+
+        amounts = {x.code: x.fee for x in services}
+        if services and joining_fee:
+            amounts[services[0].code] += joining_fee
+        try:
+            await asyncio.to_thread(
+                record_dues, self._dues_engine, person_id, amounts, transfer_txn
+            )
+        except Exception:  # never fail a payment that went through
+            logger.exception("pay_later_due_not_recorded person_id=%s", person_id)
 
     async def _release(
         self,

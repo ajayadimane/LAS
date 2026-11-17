@@ -42,6 +42,8 @@ class ReportGateInput:
     consent_satisfied: bool
     retention_status: RetentionStatus
     report_artifact_verified: bool
+    # Pay later, and the customer has not paid yet (app/services/dues.py).
+    customer_payment_due: bool = False
 
 
 @dataclass(frozen=True)
@@ -71,6 +73,8 @@ def evaluate_report_access(state: ReportGateInput) -> ReportGateDecision:
         reasons.append("SOURCE_IDENTITY_UNVERIFIED")
     if not state.payment_verified:
         reasons.append("PAYMENT_NOT_VERIFIED")
+    if state.customer_payment_due:
+        reasons.append("CUSTOMER_PAYMENT_DUE")
     if not state.consent_satisfied:
         reasons.append("CONSENT_NOT_SATISFIED")
     if state.retention_status is not RetentionStatus.COMPLIANT:

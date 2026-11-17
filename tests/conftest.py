@@ -281,7 +281,8 @@ def dpr_pg(dpr_pg_engine):
         conn.execute(
             text(
                 "TRUNCATE dpr_upload_staging, dpr_report_artifacts, dpr_ocr_cache, dpr_grounding_cache, "
-                "dpr_analysis_branch_status, dpr_analysis_runs"
+                "dpr_analysis_branch_status, dpr_report_wallet_sync, "
+                "dpr_analysis_runs, pay_later_dues"
             )
         )
     return dpr_pg_engine

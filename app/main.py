@@ -174,6 +174,7 @@ def start_intake_worker(app: FastAPI, settings: Settings):
         app.state.vendor_client,
         app.state.admin_session,
         app.state.mailer,
+        dpr_engine=app.state.dpr_engine,
     )
     worker = IntakeWorker(processor, settings.intake_poll_seconds)
     worker.start()

@@ -2,13 +2,19 @@ import { useState } from "react";
 import { ApiError } from "@/api/client";
 import {
   reportPdfPath,
+  useConfirmCustomerPaid,
+  useCustomerDues,
   useServiceReport,
   useServiceReportAnnexures,
   useServiceReportSummary,
   type CustomerService,
 } from "@/api/services";
 import { DocumentPreview } from "@/components/DocumentPreview";
+import { ReportPaymentDue } from "@/components/ReportPaymentDue";
 import { ReportSummarySection } from "@/components/ReportSummarySection";
+import { Button } from "@/components/ui/Button";
+import { UpiQr, upiLink } from "@/components/ui/UpiQr";
+import { UPI_ID } from "@/data/catalog";
 import { Icon } from "@/components/ui/Icon";
 import { StatusPill } from "@/components/ui/StatusPill";
 
@@ -27,6 +33,9 @@ export function AnalysisReportCard({ bdId, personId, service }: { bdId: string; 
   const [previewingPdf, setPreviewingPdf] = useState(false);
   const [showAnnexures, setShowAnnexures] = useState(false);
   const annexures = useServiceReportAnnexures(bdId, personId, service.code, enabled && showAnnexures);
+  const dues = useCustomerDues(bdId, personId);
+  const confirm = useConfirmCustomerPaid(bdId, personId);
+  const owed = dues.data?.dues.find((d) => d.code === service.code)?.amount ?? null;
   if (!enabled) return null;
 
   return (
@@ -59,6 +68,26 @@ export function AnalysisReportCard({ bdId, personId, service }: { bdId: string; 
         annexuresError={annexures.error instanceof ApiError ? annexures.error : null}
         showAnnexures={showAnnexures}
         onToggleAnnexures={() => setShowAnnexures((v) => !v)}
+        paymentDue={
+          <ReportPaymentDue amount={owed}>
+            {owed !== null && (
+              <div className="mb-3 flex flex-wrap items-center gap-4">
+                <UpiQr text={upiLink(UPI_ID, owed, `LAS ${service.name} report`)} size={140} />
+                <p className="text-xs text-muted-foreground">
+                  The customer can scan this with any UPI app (pay to {UPI_ID}); it is the same QR they see on their dashboard.
+                </p>
+              </div>
+            )}
+            <p className="text-xs text-muted-foreground">
+              You stood guarantor for this payment. Neither you nor the customer can open the report until the
+              customer pays you and you confirm it here.
+            </p>
+            <Button className="mt-2" size="sm" disabled={confirm.isPending} onClick={() => confirm.mutate([service.code])}>
+              {confirm.isPending ? "Confirming…" : "Customer has paid"}
+            </Button>
+            {confirm.isError && <p className="mt-2 text-xs text-destructive">Could not record the payment. Please try again.</p>}
+          </ReportPaymentDue>
+        }
       />
     </div>
   );

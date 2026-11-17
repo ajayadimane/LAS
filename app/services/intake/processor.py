@@ -32,7 +32,16 @@ from app.schemas.enrolment import PaymentRequest
 from app.schemas.intake import IntakeEvent
 from app.services.admin_session import AdminSession
 from app.services.bd import BdService, CustomerNotFoundError
-from app.services.documents import StoredFile, document_problem
+from app.services.documents import (
+    StoredFile,
+    custom_field_values,
+    document_problem,
+    encode_file,
+)
+from app.services.dpr_agentic.document_queue import _project_context, queue_analysis
+from app.services.dpr_agentic.report_store import get_report, get_report_pdf
+from app.services.dues import is_settled, outstanding, requeue_report_sync
+from app.services.dues import settle as dues_settle
 from app.services.enrolment import (
     DocumentNotAllowedError,
     EnrolmentService,
@@ -43,15 +52,17 @@ from app.services.enrolment import (
 )
 from app.services.intake import cases as case_store
 from app.services.intake import mail as templates
+from app.services.intake import reports as report_sync
 from app.services.intake import store
-from app.services.intake.case_data import CaseData, CaseDocument
+from app.services.intake.case_data import CaseData, CaseDocument, normalise_mobile
 from app.services.intake.cases import Case
-from app.services.intake.payment_reply import payment_choice
+from app.services.intake.payment_reply import customer_paid, payment_choice
 from app.services.intake.vendor_session import (
     IntakeNotConfiguredError,
     IntakeVendorSession,
 )
 from app.services.mailer import Mail, Mailer, MailNotConfiguredError, MailSendError
+from app.services.service_fields import ServiceFields, field_value, same
 
 logger = get_logger(__name__)
 
@@ -70,6 +81,7 @@ class IntakeProcessor:
         client: VendorClient,
         admin: AdminSession,
         mailer: Mailer,
+        dpr_engine=None,
     ) -> None:
         assert settings.intake_encryption_key is not None
         self._engine = engine
@@ -77,7 +89,12 @@ class IntakeProcessor:
         self._key = settings.intake_encryption_key.get_secret_value().encode()
         self._mailer = mailer
         self._bd = BdService(client, settings, admin, mailer)
-        self._enrolment = EnrolmentService(client, settings, self._bd)
+        self._enrolment = EnrolmentService(
+            client, settings, self._bd, dues_engine=dpr_engine or engine
+        )
+        # The DPR job registry (app/services/dpr_agentic/jobs.py); None = no
+        # analysis is queued for emailed documents.
+        self._dpr_engine = dpr_engine
         self._session = IntakeVendorSession(client, settings)
 
     async def _db(self, fn, *args, **kwargs):
@@ -103,7 +120,196 @@ class IntakeProcessor:
         ):
             await self._follow_up(case_id, what)
             counts[what] = counts.get(what, 0) + 1
+        if self._dpr_engine is not None:
+            for outcome in await self._sync_reports():
+                counts[outcome] = counts.get(outcome, 0) + 1
         return counts
+
+    # -- finished DPR reports -> wallet + BD ----------------------------------
+
+    async def _sync_reports(self) -> list[str]:
+        """Write each newly finished report back to the wallet once: status
+        "Report ready", the PDF in its report field, then email the BD."""
+        engine = self._dpr_engine
+        await asyncio.to_thread(
+            report_sync.discover,
+            engine,
+            self._settings.intake_report_sync_lookback_hours,
+        )
+        outcomes: list[str] = []
+        for item in await asyncio.to_thread(report_sync.claim_due, engine):
+            try:
+                outcome, emailed = await self._sync_report(item)
+            except Exception as exc:
+                logger.exception("report_sync_failed run_id=%s", item.run_id)
+                await asyncio.to_thread(
+                    report_sync.finish,
+                    engine,
+                    item.run_id,
+                    "FAILED",
+                    error=type(exc).__name__,
+                )
+                outcomes.append("REPORT_SYNC_FAILED")
+                continue
+            await asyncio.to_thread(
+                report_sync.finish,
+                engine,
+                item.run_id,
+                "DONE",
+                outcome=outcome,
+                bd_emailed=emailed,
+            )
+            outcomes.append(f"REPORT_{outcome}")
+        return outcomes
+
+    async def _sync_report(self, item: report_sync.ReportToSync) -> tuple[str, bool]:
+        parsed = item.person_and_code
+        if parsed is None:
+            return "NOT_A_PERSON_REPORT", False
+        person_id, code = parsed
+        try:
+            svc = self._enrolment._service(code)  # noqa: SLF001
+        except UnknownServiceError:
+            return "UNKNOWN_SERVICE", False
+        if not svc.reports:
+            return "NOT_A_REPORT_SERVICE", False
+        fields = ServiceFields.of(svc)
+        engine = self._dpr_engine
+        pdf = await asyncio.to_thread(
+            get_report_pdf, engine, item.source_reference, version=item.version
+        )
+        report = await asyncio.to_thread(
+            get_report, engine, item.source_reference, version=item.version
+        )
+        ctx = await self._session.context()
+        person, body = await self._bd.person(person_id, ctx)
+        values = custom_field_values(body)
+        who = (
+            " ".join(p for p in (person.first_name, person.last_name) if p) or person_id
+        )
+        changes = {fields.status: self._settings.service_report_ready_value}
+        if await self._payment_due(person_id, code, values, fields):
+            # Pay later, customer not paid yet: the report is locked, so its
+            # PDF is held back from the wallet; re-synced once settled.
+            await self._enrolment._write(person_id, values, changes, ctx)  # noqa: SLF001
+            owed = await outstanding(self._enrolment, engine, person_id, None, ctx)
+            amount = next((i.amount for i in owed if i.code == code), svc.fee)
+            emailed = await self._email_bd(
+                person_id,
+                person.broker_id,
+                lambda ref: templates.report_locked(
+                    ref,
+                    who,
+                    person_id,
+                    self._settings,
+                    service_name=svc.name,
+                    amount=amount,
+                ),
+            )
+            if person.email_address:
+                await self._send_plain(
+                    person.email_address,
+                    templates.report_due_customer(
+                        who, svc.name, amount, self._settings
+                    ),
+                )
+            logger.info(
+                "report_locked_customer_due person_id=%s code=%s amount=%s",
+                person_id,
+                code,
+                amount,
+            )
+            return "LOCKED_DUE", emailed
+        outcome = "STATUS_ONLY"
+        # A person only has the custom fields that existed when they were
+        # registered (vendor gap): no report field = status only.
+        if pdf and fields.report and fields.report in values:
+            changes[fields.report] = encode_file(
+                StoredFile(
+                    name=f"{svc.code}-report-{person_id}-v{item.version}.pdf",
+                    content_type="application/pdf",
+                    data=pdf,
+                )
+            )
+            outcome = "REPORT_STORED"
+        try:
+            await self._enrolment._write(person_id, values, changes, ctx)  # noqa: SLF001
+        except VendorError as exc:
+            if outcome != "REPORT_STORED" or not 400 <= exc.http_status < 500:
+                raise
+            # The PDF was refused (e.g. too large): keep the status at least.
+            logger.warning(
+                "report_pdf_refused person_id=%s status=%s code=%s",
+                person_id,
+                exc.http_status,
+                exc.error_code,
+            )
+            changes.pop(fields.report)
+            await self._enrolment._write(person_id, values, changes, ctx)  # noqa: SLF001
+            outcome = "STATUS_ONLY"
+        logger.info(
+            "report_synced person_id=%s code=%s version=%s outcome=%s",
+            person_id,
+            code,
+            item.version,
+            outcome,
+        )
+        emailed = await self._email_bd(
+            person_id,
+            person.broker_id,
+            lambda ref: templates.report_ready(
+                ref,
+                who,
+                person_id,
+                service_name=svc.name,
+                version=item.version,
+                report=report,
+                outcome=outcome,
+            ),
+        )
+        return outcome, emailed
+
+    async def _payment_due(self, person_id: str, code: str, values, fields) -> bool:
+        """Pay later and the customer has not paid yet (app/services/dues.py)."""
+        mode = field_value(values.get(fields.pay_mode))
+        if not same(mode, self._settings.payment_mode_pay_later):
+            return False
+        engine = self._dpr_engine or self._engine
+        return not await asyncio.to_thread(is_settled, engine, person_id, code)
+
+    async def _send_plain(self, to: str, mail: Mail) -> bool:
+        try:
+            await self._mailer.send(replace(mail, to=to))
+        except (MailNotConfiguredError, MailSendError):
+            return False
+        return True
+
+    async def _email_bd(self, person_id: str, broker_id, build) -> bool:
+        """`build(ref)` -> Mail. In the customer's intake thread when they
+        came by email; else to the BD's address from INTAKE_BD_SENDERS.
+        False = no address known (or the send failed)."""
+        case_id = await asyncio.to_thread(
+            report_sync.latest_case_for_person, self._engine, person_id
+        )
+        case = (
+            await self._db(case_store.load_case, case_id, self._key)
+            if case_id
+            else None
+        )
+        if case is not None:
+            await self._mail(case, build(case.ref))
+            return True
+        address = next(
+            (
+                email
+                for email, bd in self._settings.intake_bd_senders.items()
+                if broker_id and bd.casefold() == broker_id.casefold()
+            ),
+            None,
+        )
+        if address is None:
+            return False
+        return await self._send_plain(address, build(None))
 
     async def process_event(self, intake_event_id: str) -> str:
         event = await self._db(store.load_event, intake_event_id, self._key)
@@ -155,7 +361,7 @@ class IntakeProcessor:
         actions = [a for a in event.actions if a.intent in NEW_CUSTOMER_INTENTS]
         customers = [(a, c) for a in actions for c in a.customers]
         if not customers:
-            return "IGNORED", "NO_NEW_CUSTOMER"
+            return await self._existing_customer(bd_id, sender, intake_event_id, event)
         limit = self._settings.intake_max_customers_per_mail
         for index, (action, mention) in enumerate(customers[:limit]):
             data = CaseData()
@@ -171,6 +377,7 @@ class IntakeProcessor:
                 intake_event_id,
                 [a for a in event.attachments if a.attachment_id in wanted],
             )
+            data.add_refused(event.rejected_attachments)
             case = await self._db(
                 case_store.open_case,
                 origin_event_id=intake_event_id,
@@ -214,6 +421,194 @@ class IntakeProcessor:
         )
         return "IGNORED", store.UNKNOWN_SENDER_REPLIED
 
+    async def _customer_paid(self, case: Case, event: IntakeEvent) -> tuple[str, str]:
+        """The BD confirms a Pay later customer paid: unlock their reports and
+        write the held-back PDFs to the wallet on the next pass."""
+        engine = self._dpr_engine or self._engine
+        ctx = await self._session.context()
+        owed = await outstanding(
+            self._enrolment, engine, case.person_id, case.bd_id, ctx
+        )
+        settled = await asyncio.to_thread(
+            dues_settle, engine, case.person_id, [i.code for i in owed], case.bd_id
+        )
+        if settled:
+            await asyncio.to_thread(
+                requeue_report_sync, engine, case.person_id, settled
+            )
+        logger.info(
+            "customer_paid_confirmed case=%s person_id=%s settled=%s",
+            case.ref,
+            case.person_id,
+            settled,
+        )
+        await self._mail(
+            case,
+            templates.customer_paid_recorded(
+                case.ref, case.data.name or case.person_id, settled
+            ),
+            reply_to=event.event_id,
+        )
+        return "PROCESSED", f"CUSTOMER_PAID settled={len(settled)}"
+
+    async def _send_direct(self, to: str, mail: Mail, event: IntakeEvent) -> None:
+        """A reply outside any case, threaded on the BD's own mail."""
+        mail = replace(
+            mail,
+            to=to,
+            in_reply_to=event.event_id,
+            references=tuple(event.thread.references[-10:]),
+        )
+        try:
+            await self._mailer.send(mail)
+        except (MailNotConfiguredError, MailSendError) as exc:
+            logger.warning("intake_mail_not_sent direct error=%s", type(exc).__name__)
+
+    async def _existing_customer(
+        self,
+        bd_id: str,
+        bd_email: str,
+        intake_event_id: str,
+        event: IntakeEvent,
+        *,
+        case: Case | None = None,
+    ) -> tuple[str, str]:
+        """A mail about an existing customer (Phase 3): documents, more
+        services, or a status question. The customer is the finished case's,
+        else the first grounded mobile the mail names; always this BD's own."""
+        intents = {a.intent for a in event.actions}
+        mention = next(
+            (
+                (a, c)
+                for a in event.actions
+                for c in a.customers
+                if normalise_mobile(c.mobile)
+            ),
+            None,
+        )
+        person_id = (
+            case.person_id
+            if case
+            else (normalise_mobile(mention[1].mobile) if mention else None)
+        )
+        requested: list[str] = []
+        if "SELECT_SERVICES" in intents:
+            for a in event.actions:
+                requested += a.services + [x for c in a.customers for x in c.services]
+        actionable = bool(
+            event.attachments
+            or event.rejected_attachments
+            or requested
+            or intents & {"STATUS_QUERY", "SUBMIT_DOCUMENT", "SELECT_SERVICES"}
+        )
+
+        async def reply(mail: Mail) -> None:
+            if case is not None:
+                await self._mail(case, mail, reply_to=event.event_id)
+            else:
+                await self._send_direct(bd_email, mail, event)
+
+        if person_id is None:
+            if actionable:
+                await reply(templates.ask_customer(event.thread.subject))
+                return "PROCESSED", "ASKED_WHICH_CUSTOMER"
+            await reply(templates.help_text(event.thread.subject, self._settings))
+            return "PROCESSED", "HELP_SENT"
+        if not actionable:
+            if case is not None:
+                await reply(templates.status(case.ref, case.data, case.state))
+                return "PROCESSED", f"STATUS_SENT_{case.state}"
+            await reply(templates.help_text(event.thread.subject, self._settings))
+            return "PROCESSED", "HELP_SENT"
+
+        ctx = await self._session.context()
+        try:
+            person, _ = await self._bd.owned_person(person_id, bd_id, ctx)
+        except CustomerNotFoundError:
+            await reply(templates.not_your_customer(event.thread.subject, person_id))
+            return "PROCESSED", "NOT_THIS_BDS_CUSTOMER"
+        who = (
+            " ".join(p for p in (person.first_name, person.last_name) if p) or person_id
+        )
+        view = await self._enrolment.customer_services(person_id, bd_id, ctx)
+        notes: list[str] = []
+
+        if requested:
+            taken = {x.code for x in view.services if x.opted or x.requested}
+            data = CaseData(
+                existing_customer=True,
+                name=who,
+                mobile=person_id,
+                first_payment=view.first_payment,
+            )
+            data.add_services(requested, self._settings)
+            new = [c for c in data.services if c not in taken]
+            already = [c for c in data.services if c in taken]
+            notes += templates.unavailable_lines(data, self._settings)
+            if already:
+                names = {x.code: x.name for x in view.services}
+                notes.append(
+                    "Already opted: "
+                    + ", ".join(names.get(c, c) for c in already)
+                    + "."
+                )
+            if new:
+                data.services = new
+                if mention is not None:
+                    data.bank_name = mention[1].bank_name or None
+                    data.project_name = mention[1].project_name or None
+                # Documents in this mail are for the new services: kept for
+                # after their payment.
+                data.add_documents(intake_event_id, event.attachments)
+                data.add_refused(event.rejected_attachments)
+                new_case = await self._db(
+                    case_store.open_case,
+                    origin_event_id=intake_event_id,
+                    customer_index=0,
+                    bd_id=bd_id,
+                    bd_email=bd_email,
+                    data=data,
+                    key=self._key,
+                )
+                if new_case.state == "NEW":
+                    new_case.person_id = person_id
+                    await self._advance(new_case, reply_to=event.event_id)
+                return "PROCESSED", f"SERVICES_REQUESTED CASE={new_case.ref}"
+
+        uploaded: list[str] = []
+        not_uploaded: list[str] = []
+        if event.attachments:
+            staged = CaseData()
+            staged.add_documents(intake_event_id, event.attachments)
+            uploadable = [x.code for x in view.services if x.can_upload]
+            uploaded, not_uploaded = await self._upload(
+                person_id, bd_id, staged.documents, uploadable, ctx
+            )
+            if uploaded:
+                view = await self._enrolment.customer_services(person_id, bd_id, ctx)
+        refused = [
+            f"{r.filename} - {r.reason}".strip(" -") for r in event.rejected_attachments
+        ]
+        await reply(
+            templates.customer_update(
+                event.thread.subject,
+                who,
+                person_id,
+                services=view.services,
+                uploaded=uploaded,
+                not_uploaded=not_uploaded,
+                refused=refused,
+                notes=notes,
+            )
+        )
+        logger.info(
+            "intake_customer_update person_id=%s uploaded=%d not_uploaded=%d",
+            person_id,
+            len(uploaded),
+            len(not_uploaded),
+        )
+        return "PROCESSED", "CUSTOMER_UPDATE"
+
     async def _reply(
         self, case: Case, intake_event_id: str, event: IntakeEvent
     ) -> tuple[str, str]:
@@ -221,7 +616,19 @@ class IntakeProcessor:
         # the details (e.g. a taken mobile) and the BD replies with a fix.
         # Anything else (payment choices, follow-ups) is a later phase.
         if case.state == "AWAITING_PAYMENT":
-            return await self._payment_reply(case, event)
+            return await self._payment_reply(case, intake_event_id, event)
+        if (
+            case.state == "DONE"
+            and case.person_id
+            and customer_paid(event.thread.subject, event.body_text, case.ref)
+        ):
+            return await self._customer_paid(case, event)
+        if case.state == "DONE" and case.person_id:
+            # A follow-up about a customer we finished with: documents,
+            # more services or a status question.
+            return await self._existing_customer(
+                case.bd_id, case.bd_email, intake_event_id, event, case=case
+            )
         if case.state not in REOPENABLE_STATES:
             # Never silence: say where the request stands.
             await self._mail(
@@ -279,8 +686,21 @@ class IntakeProcessor:
                 reply_to=reply_to,
             )
             return
-        case.state = "REGISTERING"
         case.expires_at = None
+        if case.data.existing_customer and case.person_id:
+            # Already registered (a services request): straight to payment.
+            first = case.data.first_payment
+            await self._awaiting_payment(
+                case,
+                joining_fee=None
+                if first is None
+                else (self._settings.joining_fee if first else 0),
+                credentials_note="",
+                problems=[],
+                reply_to=reply_to,
+            )
+            return
+        case.state = "REGISTERING"
         await self._db(case_store.save_case, case, self._key)
         await self._register(case, reply_to=reply_to)
 
@@ -460,7 +880,15 @@ class IntakeProcessor:
 
     # -- Phase 2: payment and documents ----------------------------------------
 
-    async def _payment_reply(self, case: Case, event: IntakeEvent) -> tuple[str, str]:
+    async def _payment_reply(
+        self, case: Case, intake_event_id: str, event: IntakeEvent
+    ) -> tuple[str, str]:
+        before = len(case.data.documents) + len(case.data.refused_files)
+        case.data.add_documents(intake_event_id, event.attachments)
+        case.data.add_refused(event.rejected_attachments)
+        if len(case.data.documents) + len(case.data.refused_files) != before:
+            # Uploaded once the payment is recorded.
+            await self._db(case_store.save_case, case, self._key)
         choice = payment_choice(event.thread.subject, event.body_text, case.ref)
         if choice is None:
             await self._mail(
@@ -605,13 +1033,29 @@ class IntakeProcessor:
         )
 
     async def _upload_documents(self, case: Case, ctx) -> tuple[list[str], list[str]]:
-        """One document per paid service, as on the dashboard."""
-        chosen = list(case.data.services)
+        return await self._upload(
+            case.person_id,
+            case.bd_id,
+            case.data.documents,
+            list(case.data.services),
+            ctx,
+        )
+
+    async def _upload(
+        self,
+        person_id: str,
+        bd_id: str,
+        documents: list[CaseDocument],
+        chosen: list[str],
+        ctx,
+    ) -> tuple[list[str], list[str]]:
+        """One document per service in `chosen`, as on the dashboard: by the
+        document's class, or every file to the only service there is."""
         mapping = self._settings.intake_doc_class_service_map
         names = {s.code: s.name for s in self._settings.services}
         picked: dict[str, CaseDocument] = {}
         not_uploaded: list[str] = []
-        for d in case.data.documents:
+        for d in documents:
             if not d.has_content:
                 why = d.omitted_reason or "not accepted"
                 not_uploaded.append(f"{d.filename} - not received ({why})")
@@ -625,7 +1069,12 @@ class IntakeProcessor:
                 target = chosen[0] if len(chosen) == 1 else None
             if target is None:
                 not_uploaded.append(
-                    f"{d.filename} - could not tell which service it is for"
+                    f"{d.filename} - "
+                    + (
+                        "no paid service can take a document yet"
+                        if not chosen
+                        else "could not tell which service it is for"
+                    )
                 )
                 continue
             if target in picked:
@@ -645,10 +1094,10 @@ class IntakeProcessor:
                 continue
             try:
                 await self._enrolment.upload_document(
-                    case.person_id,
+                    person_id,
                     code,
                     StoredFile(name=d.filename, content_type=d.content_type, data=data),
-                    case.bd_id,
+                    bd_id,
                     ctx,
                 )
             except (DocumentNotAllowedError, UnknownServiceError) as exc:
@@ -657,8 +1106,49 @@ class IntakeProcessor:
             except VendorError as exc:
                 not_uploaded.append(f"{d.filename} - {error_details(exc)['message']}")
                 continue
-            uploaded.append(f"{d.filename} ({names.get(code, code)})")
+            note = await self._queue_analysis(person_id, bd_id, code, d, data, ctx)
+            uploaded.append(f"{d.filename} ({names.get(code, code)}){note}")
         return uploaded, not_uploaded
+
+    async def _queue_analysis(
+        self, person_id: str, bd_id: str, code: str, d: CaseDocument, data: bytes, ctx
+    ) -> str:
+        """Queue the DPR analysis of an emailed document, exactly as a
+        dashboard upload with analysis does. Returns a note for the BD."""
+        s = self._settings
+        if code not in s.intake_analyse_services:
+            return ""
+        if not (s.dpr_agentic_enabled and s.dpr_agentic_gemini_api_key):
+            return " - DPR analysis is not available right now"
+        try:
+            svc = self._enrolment._service(code)  # noqa: SLF001
+            values = await self._enrolment._values(person_id, bd_id, ctx)  # noqa: SLF001
+            status, run_id = await asyncio.to_thread(
+                queue_analysis,
+                self._dpr_engine,
+                s,
+                person_id=person_id,
+                code=code,
+                file=StoredFile(
+                    name=d.filename, content_type=d.content_type, data=data
+                ),
+                project_context=_project_context(svc, values),
+                wallet_status="STORED",
+            )
+        except Exception:  # never undo a stored document over its analysis
+            logger.exception("intake_analysis_not_queued person_id=%s", person_id)
+            return " - DPR analysis could not be started; start it from the dashboard"
+        logger.info(
+            "intake_analysis status=%s run_id=%s person_id=%s",
+            status,
+            run_id,
+            person_id,
+        )
+        return {
+            "QUEUED": " - DPR analysis started; the report appears on the dashboard",
+            "RATE_LIMITED": " - DPR analysis not started: today's limit for this "
+            "customer is reached; start it from the dashboard tomorrow",
+        }.get(status, " - DPR analysis is not available right now")
 
     async def _stop(
         self,

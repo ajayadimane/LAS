@@ -3,6 +3,8 @@ import type { ReportAnnexures, ReportSummary } from "@/api/services";
 import { Button } from "@/components/ui/Button";
 import { Icon } from "@/components/ui/Icon";
 import { StatusPill, type Tone } from "@/components/ui/StatusPill";
+import { isCustomerPaymentDue } from "@/components/ReportPaymentDue";
+import type { ReactNode } from "react";
 import { inrShort, moneyToRupees, parseFinancialNumber } from "@/lib/format";
 
 const READINESS_COPY: Record<ReportSummary["readiness_status"], { label: string; tone: Tone }> = {
@@ -36,6 +38,7 @@ export function ReportSummarySection({
   annexuresError,
   showAnnexures,
   onToggleAnnexures,
+  paymentDue,
 }: {
   summary: ReportSummary | undefined;
   summaryPending: boolean;
@@ -46,6 +49,8 @@ export function ReportSummarySection({
   annexuresError: ApiError | null;
   showAnnexures: boolean;
   onToggleAnnexures: () => void;
+  /** Shown instead of the generic "not available yet" while a Pay later customer still owes the amount. */
+  paymentDue?: ReactNode;
 }) {
   const locked = (summaryError?.body as LockedBody | undefined)?.detail;
 
@@ -55,6 +60,10 @@ export function ReportSummarySection({
 
   if (summaryError?.status === 404) {
     return <p className="mt-3 text-sm text-muted-foreground">No analysis has been run for this document yet.</p>;
+  }
+
+  if (summaryError?.status === 403 && isCustomerPaymentDue(locked?.reasons) && paymentDue) {
+    return <>{paymentDue}</>;
   }
 
   if (summaryError?.status === 403) {

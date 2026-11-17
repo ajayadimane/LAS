@@ -3,12 +3,16 @@ import {
   myReportPdfPath,
   useMyServiceReport,
   useMyServiceReportAnnexures,
+  useMyDues,
   useMyServiceReportSummary,
 } from "@/api/customer";
 import { ApiError } from "@/api/client";
 import type { CustomerService } from "@/api/services";
 import { DocumentPreview } from "@/components/DocumentPreview";
+import { ReportPaymentDue } from "@/components/ReportPaymentDue";
 import { ReportSummarySection } from "@/components/ReportSummarySection";
+import { UpiQr, upiLink } from "@/components/ui/UpiQr";
+import { UPI_ID } from "@/data/catalog";
 import { Icon } from "@/components/ui/Icon";
 import { StatusPill } from "@/components/ui/StatusPill";
 
@@ -25,6 +29,8 @@ export function CustomerAnalysisReport({ service }: { service: CustomerService }
   const [previewingPdf, setPreviewingPdf] = useState(false);
   const [showAnnexures, setShowAnnexures] = useState(false);
   const annexures = useMyServiceReportAnnexures(service.code, enabled && showAnnexures);
+  const dues = useMyDues();
+  const owed = dues.data?.dues.find((d) => d.code === service.code)?.amount ?? null;
   if (!enabled) return null;
 
   return (
@@ -57,6 +63,19 @@ export function CustomerAnalysisReport({ service }: { service: CustomerService }
         annexuresError={annexures.error instanceof ApiError ? annexures.error : null}
         showAnnexures={showAnnexures}
         onToggleAnnexures={() => setShowAnnexures((v) => !v)}
+        paymentDue={
+          <ReportPaymentDue amount={owed}>
+            {owed !== null && (
+              <div className="flex flex-wrap items-center gap-4">
+                <UpiQr text={upiLink(UPI_ID, owed, `LAS ${service.name} report`)} size={140} />
+                <div className="text-xs text-muted-foreground">
+                  <p>Scan with any UPI app. Pay to {UPI_ID}.</p>
+                  <p className="mt-1">Once your BD confirms they have received it, the report opens here automatically.</p>
+                </div>
+              </div>
+            )}
+          </ReportPaymentDue>
+        }
       />
     </div>
   );

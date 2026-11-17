@@ -11,6 +11,9 @@ Settings.services, with vendor field id `F` (e.g. GeoCheck), has:
     F_PayMode     Pay now | Pay later
     F_TxnId       the pool transfer's transaction id (pay later)
     F_Doc         the document
+    report        the finished report PDF, in the service's own
+                  `report_field_id` (DPR Analysis: DPR_ANALYSIS_Report);
+                  written by app/services/intake/processor.py:_sync_reports
 
 Only F is searchable: there are 8 search keys and 7 are taken. The others
 are created by scripts/setup_custom_fields.py, so a new service is a config
@@ -78,6 +81,7 @@ class ServiceFields:
     pay_mode: str
     txn_id: str
     doc: str
+    report: str | None = None
 
     @classmethod
     def of(cls, service: ServiceConfig) -> "ServiceFields":
@@ -88,10 +92,12 @@ class ServiceFields:
             pay_mode=f + "_PayMode",
             txn_id=f + "_TxnId",
             doc=f + "_Doc",
+            report=service.report_field_id if service.reports else None,
         )
 
     def all(self) -> tuple[str, ...]:
-        return (self.status, self.payment, self.pay_mode, self.txn_id, self.doc)
+        fields = (self.status, self.payment, self.pay_mode, self.txn_id, self.doc)
+        return fields + ((self.report,) if self.report else ())
 
 
 def in_house(settings: Settings) -> list[ServiceConfig]:

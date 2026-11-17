@@ -203,6 +203,26 @@ export interface ReportAnnexures {
   G_audit_trail: ReportAnnexureSection;
 }
 
+/** Pay later services a customer has not paid for yet. Their reports stay locked until the BD confirms. */
+export interface DueItem {
+  code: string;
+  name: string;
+  /** Whole rupees owed for this service. */
+  amount: number;
+}
+
+export interface Dues {
+  person_id: string;
+  dues: DueItem[];
+  total: number;
+}
+
+export interface ConfirmDuesResponse {
+  person_id: string;
+  /** Service codes now marked paid by the customer. */
+  settled: string[];
+}
+
 /** The service catalogue and fees, from the middleware's config. */
 export const useCatalog = () =>
   useQuery({
@@ -348,6 +368,31 @@ export const useDecline = (bdId: string, personId: string) => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: servicesKey(bdId, personId) });
       queryClient.invalidateQueries({ queryKey: ["bd", bdId, "customers"] });
+    },
+  });
+};
+
+
+/** BD: what this customer still owes for Pay later services. */
+export const useCustomerDues = (bdId: string, personId: string) =>
+  useQuery({
+    queryKey: [...servicesKey(bdId, personId), "dues"],
+    queryFn: () => api.get<Dues>(customerPath(bdId, personId, "dues")),
+  });
+
+/**
+ * BD: confirm the customer has paid what they owe (no money moves here; the
+ * QR is a placeholder). Unlocks their reports for the customer and the BD.
+ */
+export const useConfirmCustomerPaid = (bdId: string, personId: string) => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (services?: string[]) =>
+      api.post<ConfirmDuesResponse>(customerPath(bdId, personId, "dues/confirm"), { services: services ?? null }),
+    onSettled: () => {
+      // The report endpoints answer differently once unlocked.
+      queryClient.invalidateQueries({ queryKey: servicesKey(bdId, personId) });
+      queryClient.invalidateQueries({ queryKey: ["bd", bdId, "customers", personId] });
     },
   });
 };

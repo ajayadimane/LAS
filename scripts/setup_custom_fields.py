@@ -2,7 +2,8 @@
 """Create the per-service custom fields every in-house service needs.
 
 For each in-house service in Settings.services (field id F), the fields
-F_Payment, F_PayMode, F_TxnId and F_Doc (see app/services/service_fields.py),
+F_Payment, F_PayMode, F_TxnId and F_Doc, plus the report field of a service
+that produces one (`report_field_id`; see app/services/service_fields.py),
 all non-searchable and non-unique. F itself and the three summary fields
 already exist. Fields that already exist are skipped, so it is safe to run
 again, e.g. after adding a service to config.
@@ -64,6 +65,20 @@ def wanted(settings) -> list[CreateCustomFieldRequest]:
                     custom_field_id=field_id,
                     custom_field_name=field_id,
                     custom_field_description=f"LAS {service.name} {what}",
+                    custom_field_data_type="Text",
+                    is_searchable=False,
+                    is_unique=False,
+                    search_scope="NA",
+                )
+            )
+        # The finished report, for services that produce one (DPR Analysis).
+        if service.reports:
+            field_id = service.report_field_id
+            out.append(
+                CreateCustomFieldRequest(
+                    custom_field_id=field_id,
+                    custom_field_name=field_id,
+                    custom_field_description=f"LAS {service.name} report",
                     custom_field_data_type="Text",
                     is_searchable=False,
                     is_unique=False,

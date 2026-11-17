@@ -53,6 +53,11 @@ class CaseData(BaseModel):
     project_name: str | None = None
     documents: list[CaseDocument] = Field(default_factory=list)
     existing_customer: bool = False
+    # Existing customer only: nothing paid yet, so the next payment includes
+    # the joining fee. None = unknown.
+    first_payment: bool | None = None
+    # Files LAS_Email refused before storing them, as "name - reason".
+    refused_files: list[str] = Field(default_factory=list)
     # Filled once paid (Phase 2).
     paid_mode: str | None = None
     paid_amount: int | None = None
@@ -108,6 +113,12 @@ class CaseData(BaseModel):
             elif code and code not in self.unavailable_services:
                 self.unavailable_services.append(code)
 
+    def add_refused(self, rejected: list) -> None:
+        for r in rejected:
+            line = f"{r.filename} - {r.reason}".strip(" -")
+            if line and line not in self.refused_files:
+                self.refused_files.append(line)
+
     def add_documents(
         self, intake_event_id: str, attachments: list[IntakeAttachment]
     ) -> None:
@@ -155,8 +166,12 @@ class CaseData(BaseModel):
         return out
 
     def missing(self, settings: Settings) -> list[str]:
-        """What we still need, in words the BD can answer. Empty = complete."""
+        """What we still need, in words the BD can answer. Empty = complete.
+        An existing customer is already registered: only services and their
+        details are needed."""
         out: list[str] = []
+        if self.existing_customer:
+            return self._service_gaps(settings)
         first, last = split_name(self.name)
         if not first:
             out.append("customer's full name")
@@ -176,6 +191,10 @@ class CaseData(BaseModel):
             out.append("state")
         if not (self.postal_code and _PIN.match(self.postal_code)):
             out.append("6-digit PIN code")
+        return out + self._service_gaps(settings)
+
+    def _service_gaps(self, settings: Settings) -> list[str]:
+        out: list[str] = []
         if not self.services:
             names = ", ".join(s.name for s in in_house(settings))
             out.append(f"which services the customer wants ({names})")
