@@ -38,6 +38,14 @@ class ServiceConfig(BaseModel):
     field_id: str | None = None
     # Asked for when the service is chosen (user, 2026-11-05).
     details: list[ServiceDetail] = Field(default_factory=list)
+    # Produces a report (DPR analysis): the finished report PDF is written
+    # back to this person custom field and the service status becomes
+    # "Report ready" (user, 2026-11-16). None = no report.
+    report_field_id: str | None = None
+
+    @property
+    def reports(self) -> bool:
+        return bool(self.field_id and self.report_field_id)
 
 
 DEFAULT_SERVICES = [
@@ -56,6 +64,9 @@ DEFAULT_SERVICES = [
         description="Review your existing Project Report and flag gaps before "
         "you submit it.",
         field_id="DPR_Analysis",
+        # Created on the sandbox by the user, 2026-11-16, with this spelling
+        # (the other DPR Analysis fields are DPR_Analysis_*).
+        report_field_id="DPR_ANALYSIS_Report",
         details=[
             ServiceDetail(key="bank_name", label="Bank name", field_id="BankName"),
             ServiceDetail(
@@ -460,14 +471,22 @@ class Settings(BaseSettings):
     # Asking the BD for missing details: one reminder, then the case expires.
     intake_info_reminder_hours: float = Field(default=24.0, gt=0)
     intake_info_expiry_hours: float = Field(default=72.0, gt=0)
-    # Shown in the "choose payment" mail for Pay now, if set (placeholder
-    # until a real QR / payment confirmation exists).
-    intake_pay_now_upi_id: str | None = None
+    # The UPI id the Pay now QR in emails pays (app/services/intake/upi.py).
+    # Same placeholder as the frontend's UPI_ID (src/data/catalog.ts): replace
+    # both before production. None / empty = no QR in emails.
+    intake_pay_now_upi_id: str | None = "lasservices@upi"
     # Which service an emailed attachment belongs to, by LAS_Email's document
     # class. With a single chosen service every attachment goes to it.
     intake_doc_class_service_map: dict[str, str] = Field(
         default_factory=lambda: {"DPR": "DPR_ANALYSIS", "QUOTATION": "DOC_VERIFICATION"}
     )
+    # Services whose emailed document also gets its DPR analysis queued, as a
+    # dashboard upload with analysis does (needs DPR_AGENTIC_ENABLED).
+    intake_analyse_services: list[str] = Field(default_factory=lambda: ["DPR_ANALYSIS"])
+    # Finished DPR reports younger than this are written back to the wallet
+    # ("Report ready" + the PDF) and the BD is emailed, once per version.
+    # Older reports (from before the feature) are left alone.
+    intake_report_sync_lookback_hours: float = Field(default=72.0, gt=0)
     # How to reach the LAS Admin, added to the "you are not a registered BD"
     # reply if set (e.g. an email address or phone number).
     intake_admin_contact: str | None = None

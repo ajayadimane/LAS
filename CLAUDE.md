@@ -279,9 +279,37 @@ The vendor product is **iWallet**. There is no OpenAPI spec; the contract is 13 
   NEEDS_ATTENTION, never retried. Then one document per paid service
   (`INTAKE_DOC_CLASS_SERVICE_MAP`, single service = all files), DONE, "Payment recorded" mail.
   A reply to a FAILED case with changed details reopens it; replies in any other state get a
-  status mail. DPR analysis is not yet queued for emailed documents (dashboard only). Never re-enable
-  LAS_Email's own business jobs or outbox: its `partner_onboarding` registers customers in
-  iWallet directly with random address/bank values.
+  status mail.
+  **Phase 3** (existing customers, user 2026-11-16): a mail with no new customer is handled by
+  `_existing_customer` -- documents for a paid service (uploaded; a DPR also queues its analysis,
+  see below), "add service X for <mobile>" (a new case straight to payment, no re-registration,
+  no second joining fee), status questions, always this BD's own customer (else "not one of your
+  customers"), a help text for anything else; refused attachments are listed to the BD.
+  **DPR analysis for emailed DPRs**: `queue_analysis()` in `dpr_agentic/document_queue.py` (shared
+  with the dashboard upload; same staging, 5/day/customer cap, bank + project from the first
+  email); `INTAKE_ANALYSE_SERVICES`.
+  **Finished reports -> wallet** (migration 014, `processor._sync_reports`, once per report
+  version, reports < `INTAKE_REPORT_SYNC_LOOKBACK_HOURS` old): the service becomes "Report ready",
+  the PDF goes to the service's `report_field_id` (DPR Analysis: `DPR_ANALYSIS_Report`, created on
+  the sandbox 2026-11-16; only customers registered after that have the field -- vendor gap, the
+  others get status only), and the BD is emailed (in the intake thread if the customer came by
+  email, else to the `INTAKE_BD_SENDERS` address). The DPR worker itself never calls the vendor.
+  **Pay later locks the report** (migration 015, `app/services/dues.py`, user 2026-11-16): the
+  pool pays at once with the BD as guarantor but the customer still owes it. `pay_later_dues`
+  rows (DUE until the BD confirms receipt) make the report gate answer `CUSTOMER_PAYMENT_DUE` for
+  the customer AND the BD (JSON, PDF, findings, annexures alike); a Pay later service with no row
+  counts as due (fail closed). While due, only "Report ready" is written to the wallet (PDF held
+  back), the BD gets a "payment due" mail with a `LAS-PAID <ref>` button, and the customer a
+  "pay to view" mail. Unlock: BD replies `LAS-PAID <ref>` / "customer paid", or dashboard
+  `POST /bd/customers/{id}/dues/confirm`; `GET /bd/customers/{id}/dues` and `GET /customer/dues`
+  show what is owed. The held PDF is then written on the next worker pass.
+  **Pay now QR in emails** (`app/services/intake/upi.py`): the same `upi://pay` link as the
+  dashboards (`UpiQr.tsx`), drawn as an inline PNG (`Mail.inline_images`, `cid:upiqr`) in the
+  "registered" mail and both report-due mails; id = `INTAKE_PAY_NOW_UPI_ID` (placeholder
+  `lasservices@upi`, same as the frontend's `UPI_ID` -- change both together). No money moves on
+  confirmation (the QR is still a placeholder). Never re-enable LAS_Email's own business jobs or
+  outbox: its `partner_onboarding` registers customers in iWallet directly with random
+  address/bank values.
 - Service prefixes: `/IdentityAccessMgmt` (identity), `/customermgmt` (persons and
   custom field definitions), `/regularWallet` (wallet creation),
   `/walletInfoRetrieval` (all reads).

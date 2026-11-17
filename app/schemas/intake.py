@@ -98,6 +98,13 @@ class IntakeAttachment(_Model):
     content_omitted_reason: str | None = Field(default=None, max_length=40)
 
 
+class IntakeRejectedAttachment(_Model):
+    """A file LAS_Email refused before storing it (type, size, zip limits)."""
+
+    filename: str = Field(default="", max_length=255)
+    reason: str = Field(default="", max_length=300)
+
+
 class IntakeEvent(_Model):
     version: Literal[1]
     event_id: str = Field(min_length=1, max_length=998)  # the Message-ID
@@ -109,6 +116,9 @@ class IntakeEvent(_Model):
     injection_suspected: bool = False
     actions: list[IntakeAction] = Field(default_factory=list, max_length=20)
     attachments: list[IntakeAttachment] = Field(default_factory=list, max_length=50)
+    rejected_attachments: list[IntakeRejectedAttachment] = Field(
+        default_factory=list, max_length=50
+    )
 
 
 class IntakeEventAccepted(BaseModel):

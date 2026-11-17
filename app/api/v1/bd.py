@@ -1,11 +1,13 @@
 """BD dashboard routes."""
 
+import asyncio
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 
 from app.api.deps import (
+    core_db_engine,
     get_app_settings,
     get_authenticated_context,
     get_bd_service,
@@ -30,8 +32,12 @@ from app.schemas.bd import (
 )
 from app.schemas.enrolment import (
     AuthorizeRequest,
+    ConfirmDuesRequest,
+    ConfirmDuesResponse,
     CustomerServices,
     DocumentUploadResponse,
+    DueItem,
+    DuesResponse,
     PaymentRequest,
     PaymentResponse,
 )
@@ -46,6 +52,7 @@ from app.services.dpr_agentic.report_http import (
     resolve_versions,
 )
 from app.services.dpr_agentic.schemas import AnalysisResult, Finding
+from app.services.dues import outstanding, requeue_report_sync, settle
 from app.services.enrolment import (
     DocumentNotAllowedError,
     DocumentNotStoredError,
@@ -628,3 +635,66 @@ async def get_report_versions(
         not_found=_NOT_FOUND,
         unknown_service=_unknown_service,
     )
+
+
+# -- Pay later: the customer pays afterwards; the BD confirms receipt -------------
+
+
+@router.get("/customers/{person_id}/dues", response_model=DuesResponse)
+async def customer_dues(
+    person_id: str,
+    request: Request,
+    bd_id: str = Depends(get_bd_id),
+    service: EnrolmentService = Depends(get_enrolment_service),
+    ctx: VendorCallContext = Depends(get_authenticated_context),
+) -> DuesResponse:
+    """What this customer still owes for Pay later services. Their reports
+    stay locked (CUSTOMER_PAYMENT_DUE) for the customer and the BD until
+    the BD confirms the customer paid."""
+    try:
+        items = await outstanding(
+            service, core_db_engine(request), person_id, bd_id, ctx
+        )
+    except CustomerNotFoundError:
+        raise _NOT_FOUND from None
+    return DuesResponse(
+        person_id=person_id,
+        dues=[DueItem(code=i.code, name=i.name, amount=i.amount) for i in items],
+        total=sum(i.amount for i in items),
+    )
+
+
+@router.post("/customers/{person_id}/dues/confirm", response_model=ConfirmDuesResponse)
+async def confirm_customer_paid(
+    person_id: str,
+    payload: ConfirmDuesRequest,
+    request: Request,
+    bd_id: str = Depends(get_bd_id),
+    service: EnrolmentService = Depends(get_enrolment_service),
+    ctx: VendorCallContext = Depends(get_authenticated_context),
+) -> ConfirmDuesResponse:
+    """The BD confirms the customer has paid (no money moves here; the QR is
+    a placeholder until a real payment confirmation exists). Unlocks their
+    reports; the held-back report PDF is written to the wallet shortly."""
+    engine = core_db_engine(request)
+    if engine is None:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Database unavailable."
+        )
+    try:
+        items = await outstanding(service, engine, person_id, bd_id, ctx)
+    except CustomerNotFoundError:
+        raise _NOT_FOUND from None
+    due = [i.code for i in items]
+    if payload.services is not None:
+        unknown = [c for c in payload.services if c not in due]
+        if unknown:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "Nothing is owed for: " + ", ".join(unknown) + ".",
+            )
+        due = list(payload.services)
+    settled = await asyncio.to_thread(settle, engine, person_id, due, bd_id)
+    if settled:
+        await asyncio.to_thread(requeue_report_sync, engine, person_id, settled)
+    return ConfirmDuesResponse(person_id=person_id, settled=settled)

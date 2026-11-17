@@ -5,6 +5,7 @@ import type {
   AnalysisReport,
   CustomerServices,
   DocumentUploadResponse,
+  Dues,
   PaymentMode,
   PaymentResponse,
   ReportAnnexures,
@@ -119,3 +120,8 @@ export const useMyServiceReportAnnexures = (code: string, enabled: boolean) =>
     enabled,
     retry: false,
   });
+
+
+/** What I still owe for services my BD paid by Pay later; my report stays locked until my BD confirms I paid. */
+export const useMyDues = () =>
+  useQuery({ queryKey: ["customer", "dues"], queryFn: () => api.get<Dues>("customer/dues") });

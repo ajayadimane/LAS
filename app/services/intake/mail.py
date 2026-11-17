@@ -11,6 +11,7 @@ from urllib.parse import quote
 from app.core.config import ServiceConfig, Settings
 from app.services.intake.case_data import CaseData
 from app.services.intake.cases import subject_tag
+from app.services.intake.upi import qr_png, upi_link
 from app.services.mailer import Mail
 
 PAY_NOW = "PAY_NOW"
@@ -83,7 +84,16 @@ def _list(items: list[str]) -> str:
     return "<ul>" + "".join(f"<li>{escape(i)}</li>" for i in items) + "</ul>"
 
 
-def _unavailable_lines(data: CaseData, settings: Settings) -> list[str]:
+def _refused_lines(data: CaseData) -> list[str]:
+    if not data.refused_files:
+        return []
+    return [
+        "These files could not be accepted (please send them again as PDF, JPG or "
+        "PNG, at most 2 MB each): " + "; ".join(data.refused_files) + "."
+    ]
+
+
+def unavailable_lines(data: CaseData, settings: Settings) -> list[str]:
     portal = {s.code: s for s in settings.services if s.external}
     lines = []
     for code in data.unavailable_services:
@@ -114,7 +124,7 @@ def needs_info(
         if reminder
         else f"Thank you. To register {who} we still need a few details."
     )
-    notes = _unavailable_lines(data, settings)
+    notes = unavailable_lines(data, settings)
     text = "\n".join(
         [
             "Hello,",
@@ -153,6 +163,30 @@ def needs_info(
         html=html,
         auto_submitted=True,
     )
+
+
+def _upi_block(
+    settings: Settings, amount: int | None, note: str
+) -> tuple[list[str], str, tuple[tuple[str, bytes], ...]]:
+    """The same UPI QR as the dashboards, for an email: (plain-text lines,
+    HTML, inline images). All empty when no UPI id is configured. The QR is an
+    inline PNG (<img src="cid:upiqr">); the text part carries the UPI link."""
+    upi = settings.intake_pay_now_upi_id
+    if not upi:
+        return [], "", ()
+    link = upi_link(upi, amount, note)
+    due = _rupees(amount) if amount is not None else "the amount due"
+    text = [
+        f"  Scan the QR (HTML view) with any UPI app, or pay {due} to UPI id {upi}.",
+        f"  UPI link: {link}",
+    ]
+    html = (
+        '<p><img src="cid:upiqr" width="180" height="180" alt="UPI payment QR code" '
+        'style="border:1px solid #e5e7eb;border-radius:8px"><br>'
+        f"Scan with any UPI app. Pay {escape(due)} to <b>{escape(upi)}</b>. "
+        f'<a href="{escape(link)}">Open in your UPI app</a></p>'
+    )
+    return text, html, (("upiqr", qr_png(link)),)
 
 
 def _pay_link(mailbox: str, ref: str, choice: str) -> str:
@@ -202,11 +236,15 @@ def registered(
     mailbox = settings.mail_from
     pay_now = _pay_link(mailbox, ref, PAY_NOW)
     pay_later = _pay_link(mailbox, ref, PAY_LATER)
-    upi = settings.intake_pay_now_upi_id
+    upi_text, upi_html, upi_images = _upi_block(
+        settings,
+        total if joining_fee is not None else None,  # unknown fee: payer types it
+        f"LAS {data.mobile or 'customer'}",
+    )
     now_text = (
-        f"Pay now: the customer pays {_rupees(total)} to UPI {upi}; reply PAY NOW "
-        "once you have received it."
-        if upi
+        "Pay now: the customer scans the QR below and pays "
+        f"{_rupees(total)}; reply PAY NOW once you have received it."
+        if upi_images
         else f"Pay now: once the customer has paid {_rupees(total)}, reply PAY NOW."
     )
     later_text = (
@@ -222,9 +260,9 @@ def registered(
         )
         for d in data.documents
     ]
-    notes = [*problems, *_unavailable_lines(data, settings)]
+    notes = [*problems, *unavailable_lines(data, settings), *_refused_lines(data)]
     existing = (
-        f"{who} was already registered under you, so we used that registration."
+        f"{who} is already registered under you."
         if data.existing_customer
         else f"{who} is registered (customer id {data.mobile})."
     )
@@ -254,6 +292,7 @@ def registered(
             "",
             "How will the customer pay? Reply to this email with one of:",
             f"  {now_text}",
+            *upi_text,
             f"  {later_text}",
             *(
                 [
@@ -285,7 +324,8 @@ def registered(
             "<p><b>How will the customer pay?</b></p>",
             f"<p>{_button(pay_now, 'Pay now', '#1F5E46')}"
             f"{_button(pay_later, 'Pay later', '#9A5408')}</p>",
-            f"<p>{escape(now_text)}<br>{escape(later_text)}</p>",
+            f"<p>{escape(now_text)}</p>{upi_html}",
+            f"<p>{escape(later_text)}</p>",
             (
                 "<p><b>Documents received</b> (uploaded once payment is confirmed):</p>"
                 + _list(docs)
@@ -301,6 +341,7 @@ def registered(
         text=text,
         html=html,
         auto_submitted=True,
+        inline_images=upi_images,
     )
 
 
@@ -462,6 +503,7 @@ def paid(
             "",
             "No documents were attached; please upload them from the dashboard.",
         ]
+    lines += [*([""] if data.refused_files else []), *_refused_lines(data)]
     lines += ["", _FOOTER]
     html = _html(
         [
@@ -481,6 +523,7 @@ def paid(
                 if not data.documents
                 else ""
             ),
+            *[f"<p>{escape(n)}</p>" for n in _refused_lines(data)],
         ]
     )
     return Mail(
@@ -515,5 +558,278 @@ def status(ref: str, data: CaseData, state: str) -> Mail:
         subject=f"{subject_tag(ref)} Status of {who}",
         text=text,
         html=html,
+        auto_submitted=True,
+    )
+
+
+# --- existing customers (Phase 3) -------------------------------------------------
+
+
+def _reply_subject(their_subject: str, fallback: str) -> str:
+    subject = " ".join((their_subject or "").split())[:150]
+    return f"Re: {subject}" if subject else fallback
+
+
+def _plain(subject: str, lines: list[str], html_parts: list[str]) -> Mail:
+    text = "\n".join(["Hello,", "", *lines, "", _FOOTER_PLAIN])
+    return Mail(
+        to="",
+        subject=subject,
+        text=text,
+        html=_html(["<p>Hello,</p>", *html_parts]),
+        auto_submitted=True,
+    )
+
+
+def _service_rows(services) -> list[tuple[str, str]]:
+    rows = []
+    for x in services:
+        if not x.opted:
+            continue
+        parts = [x.status or "Opted", x.payment_status or "not paid"]
+        if x.document:
+            parts.append(f"document: {x.document.name}")
+        rows.append((x.name, ", ".join(parts)))
+    return rows
+
+
+def customer_update(
+    their_subject: str,
+    who: str,
+    mobile: str,
+    *,
+    services,
+    uploaded: list[str],
+    not_uploaded: list[str],
+    refused: list[str],
+    notes: list[str],
+) -> Mail:
+    """Documents received for, and/or the status of, an existing customer."""
+    rows = _service_rows(services)
+    lines = [f"About {who} ({mobile}):"]
+    html = [f"<p>About {escape(who)} ({escape(mobile)}):</p>"]
+    for title, items in (
+        ("Documents uploaded", uploaded),
+        ("Not uploaded", not_uploaded),
+        ("Could not be accepted (send PDF, JPG or PNG, at most 2 MB)", refused),
+    ):
+        if items:
+            lines += ["", f"{title}:", *[f"  - {d}" for d in items]]
+            html += [f"<p><b>{escape(title)}:</b></p>", _list(items)]
+    lines += [
+        "",
+        "Services:",
+        *([f"  {k}: {v}" for k, v in rows] or ["  none opted yet"]),
+    ]
+    html += [
+        "<p><b>Services</b></p>",
+        _table(rows) if rows else "<p>none opted yet</p>",
+    ]
+    for n in notes:
+        lines += ["", n]
+        html.append(f"<p>{escape(n)}</p>")
+    return _plain(_reply_subject(their_subject, f"Update for {who}"), lines, html)
+
+
+def ask_customer(their_subject: str) -> Mail:
+    line = (
+        "We could not tell which customer your email is about. Please reply with the "
+        "customer's 10-digit mobile number (or their full details to register a new "
+        "customer)."
+    )
+    return _plain(
+        _reply_subject(their_subject, "LAS: which customer?"),
+        [line],
+        [f"<p>{escape(line)}</p>"],
+    )
+
+
+def not_your_customer(their_subject: str, mobile: str) -> Mail:
+    line = (
+        f"The mobile number {mobile} is not one of your registered customers. To "
+        "register a new customer, send their full name, mobile number, email address, "
+        "address with PIN code and the services they want."
+    )
+    return _plain(
+        _reply_subject(their_subject, "LAS: customer not found"),
+        [line],
+        [f"<p>{escape(line)}</p>"],
+    )
+
+
+def help_text(their_subject: str, settings: Settings) -> Mail:
+    names = ", ".join(
+        s.name for s in settings.services if s.field_id and not s.external
+    )
+    lines = [
+        "By email you can:",
+        "  - register a new customer (full name, mobile, email, address with PIN code, "
+        "services);",
+        "  - add services for an existing customer (their mobile and the services);",
+        "  - send documents for an existing customer (their mobile, files attached);",
+        "  - ask for a customer's status (their mobile).",
+        f"Services: {names}.",
+        "For anything else, please use the dashboard.",
+    ]
+    return _plain(
+        _reply_subject(their_subject, "LAS: what you can do by email"),
+        lines,
+        ["<p>" + "<br>".join(escape(x) for x in lines) + "</p>"],
+    )
+
+
+# --- DPR report ready -------------------------------------------------------------
+
+_REPORT_OUTCOME = {
+    "REPORT_STORED": "The report PDF is saved on the customer's record.",
+    "STATUS_ONLY": "The report is on the dashboard (Customer > DPR Analysis > Report).",
+}
+
+
+def report_ready(
+    ref: str | None,
+    who: str,
+    mobile: str,
+    *,
+    service_name: str,
+    version: int,
+    report,
+    outcome: str,
+) -> Mail:
+    """A DPR analysis report is finished. `report` is the AnalysisResult (or
+    None); only counts and the most serious finding titles are quoted."""
+    lines = [
+        f"The {service_name} report for {who} ({mobile}) is ready (version {version})."
+    ]
+    html = [f"<p>{escape(lines[0])}</p>"]
+    if report is not None:
+        counts: dict[str, int] = {}
+        for f in report.findings:
+            counts[f.severity] = counts.get(f.severity, 0) + 1
+        order = ["critical", "high", "medium", "low", "info"]
+        summary = (
+            ", ".join(f"{counts[k]} {k}" for k in order if counts.get(k)) or "none"
+        )
+        serious = [
+            f.title for f in report.findings if f.severity in ("critical", "high")
+        ][:3]
+        state = "complete" if report.status == "completed" else "incomplete"
+        lines += ["", f"Analysis: {state}. Findings: {summary}."]
+        html.append(f"<p>Analysis: {escape(state)}. Findings: {escape(summary)}.</p>")
+        if serious:
+            lines += ["Most important:", *[f"  - {t}" for t in serious]]
+            html += ["<p><b>Most important:</b></p>", _list(serious)]
+    note = _REPORT_OUTCOME.get(outcome, _REPORT_OUTCOME["STATUS_ONLY"])
+    lines += ["", note, "Open it on the dashboard to read the full report."]
+    html.append(
+        f"<p>{escape(note)} Open it on the dashboard to read the full report.</p>"
+    )
+    subject = f"DPR report ready for {who}"
+    return Mail(
+        to="",
+        subject=f"{subject_tag(ref)} {subject}" if ref else f"LAS: {subject}",
+        text="\n".join(["Hello,", "", *lines, "", _FOOTER_PLAIN]),
+        html=_html(["<p>Hello,</p>", *html]),
+        auto_submitted=True,
+    )
+
+
+# --- Pay later: report locked until the customer pays -----------------------------
+
+PAID = "PAID"
+
+
+def _paid_link(mailbox: str, ref: str) -> str:
+    subject = quote(f"LAS-PAID {ref} {subject_tag(ref)}")
+    body = quote("The customer has paid me for the Pay later services.")
+    return f"mailto:{mailbox}?subject={subject}&body={body}"
+
+
+def report_locked(
+    ref: str | None,
+    who: str,
+    mobile: str,
+    settings: Settings,
+    *,
+    service_name: str,
+    amount: int,
+) -> Mail:
+    """To the BD: the report is ready but locked until the customer pays."""
+    lines = [
+        f"The {service_name} report for {who} ({mobile}) is ready, but it is locked: "
+        f"it was paid by Pay later and the customer still owes {_rupees(amount)}.",
+        "Neither you nor the customer can view or download it until the customer pays. "
+        "The customer has been asked to pay in their dashboard.",
+        "When you have received the payment, confirm it: reply with CUSTOMER PAID (or "
+        "use the button / the dashboard). The report is then unlocked.",
+    ]
+    link = _paid_link(settings.mail_from, ref) if ref else None
+    button = f"<p>{_button(link, 'Customer has paid', '#1F5E46')}</p>" if link else ""
+    upi_text, upi_html, upi_images = _upi_block(settings, amount, f"LAS {mobile}")
+    if upi_images:
+        lines.append(
+            "The customer can pay with the same UPI QR as the dashboard (below)."
+        )
+    return Mail(
+        to="",
+        subject=(f"{subject_tag(ref)} " if ref else "LAS: ")
+        + f"Report ready for {who} - customer payment due",
+        text="\n".join(
+            [
+                "Hello,",
+                "",
+                *[x for line in lines for x in (line, "")],
+                *upi_text,
+                "",
+                _FOOTER,
+            ]
+        ),
+        html=_html(
+            ["<p>Hello,</p>", *[f"<p>{escape(x)}</p>" for x in lines], upi_html, button]
+        ),
+        auto_submitted=True,
+        inline_images=upi_images,
+    )
+
+
+def report_due_customer(
+    who: str, service_name: str, amount: int, settings: Settings
+) -> Mail:
+    """To the customer: pay to view the report (the same UPI QR as the dashboard)."""
+    upi_text, upi_html, upi_images = _upi_block(
+        settings, amount, f"LAS {service_name} report"
+    )
+    lines = [
+        f"Dear {who},",
+        "",
+        f"Your {service_name} report is ready.",
+        f"To view or download it, please pay the amount due: {_rupees(amount)}.",
+        "Scan the QR below with any UPI app, or pay from your LAS dashboard."
+        if upi_images
+        else "Pay from your LAS dashboard (Pay to view report).",
+        "Once your BD confirms the payment, the report opens in your dashboard.",
+    ]
+    return Mail(
+        to="",
+        subject=f"Your {service_name} report is ready - payment due",
+        text="\n".join([*lines, *upi_text, "", _FOOTER_PLAIN]),
+        html=_html([*[f"<p>{escape(x)}</p>" for x in lines if x], upi_html]),
+        auto_submitted=True,
+        inline_images=upi_images,
+    )
+
+
+def customer_paid_recorded(ref: str, who: str, settled: list[str]) -> Mail:
+    line = (
+        f"Thank you. {who}'s payment is recorded and the report is unlocked: "
+        "it is on the dashboard, and is saved to the customer's record shortly."
+        if settled
+        else f"Nothing is owed by {who}: no Pay later payment is waiting."
+    )
+    return Mail(
+        to="",
+        subject=f"{subject_tag(ref)} Customer payment recorded for {who}",
+        text="\n".join(["Hello,", "", line, "", _FOOTER]),
+        html=_html([f"<p>Hello,</p><p>{escape(line)}</p>"]),
         auto_submitted=True,
     )

@@ -420,14 +420,17 @@ async def test_suspected_injection_is_ignored(processor, intake_settings, db, ma
     assert _event_status(db) == [("IGNORED", "INJECTION_SUSPECTED")]
 
 
-async def test_a_mail_with_no_new_customer_is_ignored(processor, intake_settings, db):
-    event = _event()
-    event.actions[0].intent = "STATUS_QUERY"
+async def test_a_mail_with_no_customer_and_no_request_gets_the_help_text(
+    processor, intake_settings, db, mailer
+):
+    event = _event(thread={"subject": "Hello"})
+    event.actions[0].intent = "GENERAL_QUESTION"
+    event.actions[0].customers = []
     await _receive(processor, intake_settings, event)
-    assert _event_status(db) == [("IGNORED", "NO_NEW_CUSTOMER")]
-
-
-# --- the vendor says no ----------------------------------------------------------
+    assert _event_status(db) == [("PROCESSED", "HELP_SENT")]
+    (help_mail,) = mailer.to(BD_EMAIL)
+    assert help_mail.subject == "Re: Hello"
+    assert "By email you can" in help_mail.text
 
 
 async def test_already_this_bds_customer_continues_without_registering_again(
@@ -752,6 +755,8 @@ def pay_routes(vendor, routes):
         "transfer": vendor.put(TRANSFER).mock(
             return_value=httpx.Response(200, json=TRANSFER_ACK)
         ),
+        # The person's custom fields as the vendor holds them.
+        "stored": stored,
     }
 
 
@@ -955,3 +960,537 @@ def test_new_text_cuts_quoted_history():
     assert new_text("Yes pay later\n-----Original Message-----\nPay now") == (
         "Yes pay later\n"
     )
+
+
+# --- Phase 3: mails about an existing customer -------------------------------------
+
+
+def _about(mobile: str | None, intent: str, *, subject: str = "Customer", **extra):
+    customer = {"mobile": mobile, **extra} if mobile else None
+    event = _event(customer or {}, thread={"subject": subject})
+    event.actions[0].intent = intent
+    if customer is None:
+        event.actions[0].customers = []
+    return event
+
+
+async def _paid_customer(processor, settings, db, mailer, *, with_dpr=False):
+    case, registered = await _registered(
+        processor, settings, db, mailer, with_dpr=with_dpr
+    )
+    await _receive(
+        processor,
+        settings,
+        _bd_reply(case, registered, mailer, subject=f"LAS-PAY {case.ref} PAY_NOW"),
+    )
+    (case,) = _cases(db)
+    assert case.state == "DONE"
+    return case
+
+
+async def test_status_question_lists_the_customers_services(
+    processor, intake_settings, db, mailer, pay_routes
+):
+    await _paid_customer(processor, intake_settings, db, mailer)
+    await _receive(
+        processor, intake_settings, _about(MOBILE, "STATUS_QUERY", subject="Status?")
+    )
+    assert _event_status(db)[-1] == ("PROCESSED", "CUSTOMER_UPDATE")
+    update = mailer.to(BD_EMAIL)[-1]
+    assert update.subject == "Re: Status?"
+    assert f"({MOBILE})" in update.text
+    assert "DPR Analysis: Opted, Paid" in update.text
+
+
+async def test_documents_sent_later_are_uploaded_to_the_paid_service(
+    processor, intake_settings, db, mailer, pay_routes
+):
+    await _paid_customer(processor, intake_settings, db, mailer)
+    event = _with_dpr(_about(MOBILE, "SUBMIT_DOCUMENT", subject="DPR attached"))
+    await _receive(processor, intake_settings, event)
+    update = mailer.to(BD_EMAIL)[-1]
+    assert "dpr.pdf (DPR Analysis)" in update.text
+    doc = json.loads(_written_fields(pay_routes["fields"])[-1]["DPR_Analysis_Doc"])
+    assert _b64.b64decode(doc["data"]) == DPR_PDF
+
+
+async def test_a_reply_to_a_finished_request_with_a_document_uploads_it(
+    processor, intake_settings, db, mailer, pay_routes
+):
+    case = await _paid_customer(processor, intake_settings, db, mailer)
+    done = mailer.to(BD_EMAIL)[-1]
+    reply = _with_dpr(_bd_reply(case, done, mailer, body="Here is the DPR"))
+    await _receive(processor, intake_settings, reply)
+    update = mailer.to(BD_EMAIL)[-1]
+    assert "dpr.pdf (DPR Analysis)" in update.text
+    assert update.in_reply_to == reply.event_id
+
+
+async def test_a_document_for_an_unpaid_customer_is_not_uploaded(
+    processor, intake_settings, db, mailer, pay_routes
+):
+    await _registered(processor, intake_settings, db, mailer, with_dpr=False)
+    await _receive(
+        processor, intake_settings, _with_dpr(_about(MOBILE, "SUBMIT_DOCUMENT"))
+    )
+    update = mailer.to(BD_EMAIL)[-1]
+    assert "dpr.pdf - no paid service can take a document yet" in update.text
+    assert pay_routes["fields"].call_count == 0
+
+
+async def test_more_services_for_an_existing_customer_go_straight_to_payment(
+    processor, intake_settings, db, mailer, pay_routes
+):
+    await _paid_customer(processor, intake_settings, db, mailer)
+    registrations = pay_routes["register"].call_count
+    event = _about(
+        MOBILE, "SELECT_SERVICES", subject="Add geo check", services=["GEO_CHECK"]
+    )
+    await _receive(processor, intake_settings, event)
+    assert pay_routes["register"].call_count == registrations  # not registered again
+    new_case = [c for c in _cases(db) if c.data.services == ["GEO_CHECK"]][0]
+    assert new_case.state == "AWAITING_PAYMENT"
+    assert new_case.person_id == MOBILE
+    choose = mailer.to(BD_EMAIL)[-1]
+    assert "is already registered under you" in choose.text
+    assert "Rs 500" in choose.text and "Joining fee" not in choose.text  # paid before
+
+    await _receive(
+        processor,
+        intake_settings,
+        _bd_reply(new_case, choose, mailer, subject=f"LAS-PAY {new_case.ref} PAY_NOW"),
+    )
+    assert [c for c in _cases(db) if c.ref == new_case.ref][0].state == "DONE"
+    assert _written_fields(pay_routes["fields"])[-1]["GeoCheck_Payment"] == "Paid"
+
+
+async def test_a_service_already_opted_is_said_so(
+    processor, intake_settings, db, mailer, pay_routes
+):
+    await _paid_customer(processor, intake_settings, db, mailer)
+    event = _about(MOBILE, "SELECT_SERVICES", services=["DPR_ANALYSIS"])
+    await _receive(processor, intake_settings, event)
+    assert "Already opted: DPR Analysis." in mailer.to(BD_EMAIL)[-1].text
+    assert len(_cases(db)) == 1
+
+
+async def test_a_mobile_that_is_not_this_bds_customer_is_refused(
+    processor, intake_settings, db, mailer, vendor, routes
+):
+    vendor.post(BY_PERSON_ID).mock(
+        return_value=httpx.Response(200, json={**REAL_PERSON, "brokerId.id": "11111"})
+    )
+    await _receive(processor, intake_settings, _about("9123456780", "STATUS_QUERY"))
+    assert _event_status(db)[-1] == ("PROCESSED", "NOT_THIS_BDS_CUSTOMER")
+    assert "9123456780 is not one of your registered customers" in mailer.sent[-1].text
+
+
+async def test_a_request_without_a_mobile_asks_which_customer(
+    processor, intake_settings, db, mailer
+):
+    await _receive(processor, intake_settings, _about(None, "STATUS_QUERY"))
+    assert _event_status(db)[-1] == ("PROCESSED", "ASKED_WHICH_CUSTOMER")
+    assert "10-digit mobile number" in mailer.sent[-1].text
+
+
+async def test_refused_files_are_listed_for_the_bd(
+    processor, intake_settings, db, mailer, routes
+):
+    event = _event(
+        rejected_attachments=[
+            {"filename": "setup.exe", "reason": "file type not accepted"}
+        ]
+    )
+    await _receive(processor, intake_settings, event)
+    registered = mailer.to(BD_EMAIL)[-1]
+    assert "setup.exe - file type not accepted" in registered.text
+
+
+async def test_documents_sent_while_waiting_for_payment_are_uploaded_after_it(
+    processor, intake_settings, db, mailer, pay_routes
+):
+    case, registered = await _registered(
+        processor, intake_settings, db, mailer, with_dpr=False
+    )
+    await _receive(
+        processor,
+        intake_settings,
+        _with_dpr(_bd_reply(case, registered, mailer, body="DPR attached")),
+    )
+    asked = mailer.to(BD_EMAIL)[-1]
+    assert "How will Ramesh Patil pay?" in asked.subject  # no choice in that reply
+    await _receive(
+        processor,
+        intake_settings,
+        _bd_reply(case, asked, mailer, subject=f"LAS-PAY {case.ref} PAY_NOW"),
+    )
+    assert "dpr.pdf (DPR Analysis)" in mailer.to(BD_EMAIL)[-1].text
+
+
+# --- DPR analysis for emailed documents ---------------------------------------------
+
+DPR_KEY = Fernet.generate_key().decode()
+
+
+@pytest.fixture
+async def dpr_processor(intake_settings, db, mailer):
+    """The processor with DPR analysis on, wired to the DPR job registry."""
+    s = intake_settings.model_copy(
+        update={
+            "dpr_agentic_enabled": True,
+            "dpr_agentic_gemini_api_key": SecretStr("test-gemini-key"),
+            "dpr_staging_encryption_key": SecretStr(DPR_KEY),
+        }
+    )
+    with db.begin() as conn:
+        conn.execute(
+            text(
+                "TRUNCATE dpr_upload_staging, dpr_report_artifacts, "
+                "dpr_analysis_branch_status, dpr_report_wallet_sync, "
+                "dpr_analysis_runs, pay_later_dues"
+            )
+        )
+    async with httpx.AsyncClient(base_url=VENDOR_BASE) as http:
+        client = VendorClient(http, s)
+        yield (
+            IntakeProcessor(
+                db, s, client, AdminSession(client, s), mailer, dpr_engine=db
+            ),
+            s,
+        )
+
+
+def _runs(db) -> list:
+    with db.connect() as conn:
+        return conn.execute(
+            text("SELECT run_id, source_reference, status FROM dpr_analysis_runs")
+        ).all()
+
+
+async def test_an_emailed_dpr_gets_its_analysis_queued(
+    dpr_processor, db, mailer, pay_routes
+):
+    from app.services.dpr_agentic.upload_staging import (
+        load_staged_project_context,
+        load_staged_upload,
+    )
+
+    processor, s = dpr_processor
+    await _paid_customer(processor, s, db, mailer)
+    await _receive(processor, s, _with_dpr(_about(MOBILE, "SUBMIT_DOCUMENT")))
+
+    (run,) = _runs(db)
+    assert run.status == "QUEUED"
+    assert run.source_reference == f"wallet-person-custom-field:{MOBILE}:DPR_ANALYSIS"
+    staged = load_staged_upload(db, str(run.run_id), DPR_KEY.encode())
+    assert staged.data == DPR_PDF and staged.name == "dpr.pdf"
+    # The bank and project from the first email travel with it.
+    context = load_staged_project_context(db, str(run.run_id), DPR_KEY.encode())
+    assert context == {"bank_name": "SBI", "project_name": "Dairy unit"}
+    assert "DPR analysis started" in mailer.to(BD_EMAIL)[-1].text
+
+
+async def test_a_dpr_attached_to_the_first_email_is_analysed_after_payment(
+    dpr_processor, db, mailer, pay_routes
+):
+    processor, s = dpr_processor
+    case, registered = await _registered(processor, s, db, mailer, with_dpr=True)
+    assert _runs(db) == []  # nothing analysed before it is paid for
+    await _receive(
+        processor,
+        s,
+        _bd_reply(case, registered, mailer, subject=f"LAS-PAY {case.ref} PAY_NOW"),
+    )
+    assert len(_runs(db)) == 1
+    assert "DPR analysis started" in mailer.to(BD_EMAIL)[-1].text
+
+
+async def test_the_daily_analysis_limit_is_respected(
+    dpr_processor, db, mailer, pay_routes
+):
+    processor, s = dpr_processor
+    processor._settings = s.model_copy(update={"dpr_agentic_daily_submission_limit": 1})
+    await _paid_customer(processor, processor._settings, db, mailer)
+    for name in ("one.pdf", "two.pdf"):
+        event = _with_dpr(_about(MOBILE, "SUBMIT_DOCUMENT"))
+        event.attachments[0].filename = name
+        event.attachments[0].content_base64 = _b64.b64encode(
+            DPR_PDF + name.encode()
+        ).decode()
+        event.attachments[0].size_bytes = len(DPR_PDF + name.encode())
+        event.attachments[0].sha256 = _hashlib.sha256(
+            DPR_PDF + name.encode()
+        ).hexdigest()
+        await _receive(processor, processor._settings, event)
+    assert len(_runs(db)) == 1
+    assert "today's limit for this customer is reached" in mailer.to(BD_EMAIL)[-1].text
+
+
+async def test_without_dpr_analysis_the_document_is_still_stored(
+    processor, intake_settings, db, mailer, pay_routes
+):
+    await _paid_customer(processor, intake_settings, db, mailer)
+    await _receive(
+        processor, intake_settings, _with_dpr(_about(MOBILE, "SUBMIT_DOCUMENT"))
+    )
+    text_ = mailer.to(BD_EMAIL)[-1].text
+    assert "dpr.pdf (DPR Analysis) - DPR analysis is not available right now" in text_
+    assert (
+        '"name":"dpr.pdf"'
+        in _written_fields(pay_routes["fields"])[-1]["DPR_Analysis_Doc"]
+    )
+
+
+# --- finished DPR reports -> wallet ("Report ready" + PDF) + BD email -----------------
+
+REPORT_PDF = b"%PDF-1.4 the DPR analysis report"
+
+
+def _finished_report(db, person_id: str, *, age_hours: float = 0, version: int = 1):
+    """A run whose report and PDF the DPR worker has finished."""
+    from app.services.dpr_agentic.jobs import submit
+
+    ref = f"wallet-person-custom-field:{person_id}:DPR_ANALYSIS"
+    run_id, _ = submit(
+        db,
+        service_request_id=f"{person_id}:DPR_ANALYSIS",
+        document_sha256=f"{version:064d}",
+        source_reference=ref,
+    )
+    report = {
+        "service_request_id": f"{person_id}:DPR_ANALYSIS",
+        "wallet_document_id": ref,
+        "document_sha256": "a" * 64,
+        "status": "completed",
+        "agent_outputs": {},
+        "findings": [
+            {
+                "category": "cost",
+                "severity": "high",
+                "title": "Project cost does not add up",
+                "explanation": "x",
+                "suggested_action": "y",
+            },
+            {
+                "category": "other",
+                "severity": "low",
+                "title": "Minor",
+                "explanation": "x",
+                "suggested_action": "y",
+            },
+        ],
+        "unresolved_questions": [],
+    }
+    with db.begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO dpr_report_artifacts (run_id, report, version,
+                    source_reference, snapshot_sha256, render_status,
+                    pdf_render_status, report_pdf, created_at)
+                VALUES (:run, CAST(:report AS jsonb), :version, :ref, :sha, 'RENDERED',
+                    'RENDERED', :pdf, now() - make_interval(secs => :age))
+            """),
+            {
+                "run": run_id,
+                "report": json.dumps(report),
+                "version": version,
+                "ref": ref,
+                "sha": "b" * 64,
+                "pdf": REPORT_PDF,
+                "age": age_hours * 3600,
+            },
+        )
+    return run_id
+
+
+def _sync_rows(db) -> list:
+    with db.connect() as conn:
+        return conn.execute(
+            text(
+                "SELECT status, outcome, bd_emailed, attempts "
+                "FROM dpr_report_wallet_sync"
+            )
+        ).all()
+
+
+async def test_a_finished_report_is_written_back_and_the_bd_emailed(
+    dpr_processor, db, mailer, pay_routes
+):
+    processor, s = dpr_processor
+    await _paid_customer(processor, s, db, mailer)
+    pay_routes["stored"]["DPR_ANALYSIS_Report"] = "NA"  # the field exists on them
+    writes_before = pay_routes["fields"].call_count
+    _finished_report(db, MOBILE)
+
+    counts = await processor.tick()
+    assert counts == {"REPORT_REPORT_STORED": 1}
+    written = _written_fields(pay_routes["fields"])[writes_before]
+    assert written["DPR_Analysis"] == "Report ready"
+    doc = json.loads(written["DPR_ANALYSIS_Report"])
+    assert doc["contentType"] == "application/pdf"
+    assert _b64.b64decode(doc["data"]) == REPORT_PDF
+    (case,) = _cases(db)
+    ready = mailer.to(BD_EMAIL)[-1]
+    assert ready.subject == f"[LAS-IN-{case.ref}] DPR report ready for {_who()}"
+    assert "Findings: 1 high, 1 low." in ready.text
+    assert "Project cost does not add up" in ready.text
+    assert "saved on the customer's record" in ready.text
+    assert _sync_rows(db) == [("DONE", "REPORT_STORED", True, 1)]
+    # Once per report version.
+    assert await processor.tick() == {}
+    assert pay_routes["fields"].call_count == writes_before + 1
+
+
+def _who() -> str:
+    first = REAL_PERSON.get("firstName") or ""
+    last = REAL_PERSON.get("lastName") or ""
+    return " ".join(p for p in (first, last) if p) or MOBILE
+
+
+async def test_without_a_report_field_only_the_status_is_written(
+    dpr_processor, db, mailer, pay_routes
+):
+    """Customers registered before the field existed (vendor gap)."""
+    processor, s = dpr_processor
+    await _paid_customer(processor, s, db, mailer)
+    writes_before = pay_routes["fields"].call_count
+    _finished_report(db, MOBILE)
+    assert await processor.tick() == {"REPORT_STATUS_ONLY": 1}
+    written = _written_fields(pay_routes["fields"])[writes_before]
+    assert written["DPR_Analysis"] == "Report ready"
+    assert "DPR_ANALYSIS_Report" not in written
+    assert "on the dashboard" in mailer.to(BD_EMAIL)[-1].text
+
+
+async def test_a_refused_pdf_still_marks_the_report_ready(
+    dpr_processor, db, mailer, pay_routes
+):
+    processor, s = dpr_processor
+    await _paid_customer(processor, s, db, mailer)
+    pay_routes["stored"]["DPR_ANALYSIS_Report"] = "NA"
+    writes_before = pay_routes["fields"].call_count
+    original = pay_routes["fields"].side_effect
+
+    def refuse_pdf(request):
+        if "DPR_ANALYSIS_Report" in json.loads(request.read())["customFields"]:
+            return httpx.Response(400, json=error_envelope(400, "VALUE_TOO_LONG"))
+        return original(request)
+
+    pay_routes["fields"].side_effect = refuse_pdf
+    _finished_report(db, MOBILE)
+    assert await processor.tick() == {"REPORT_STATUS_ONLY": 1}
+    assert pay_routes["stored"]["DPR_Analysis"] == "Report ready"
+    assert pay_routes["fields"].call_count == writes_before + 2
+
+
+async def test_a_dashboard_customer_report_goes_to_the_bds_address(
+    dpr_processor, db, mailer, pay_routes
+):
+    """No intake case for this customer: mailed to the BD from INTAKE_BD_SENDERS."""
+    processor, _ = dpr_processor
+    _finished_report(db, "9000000013")
+    assert await processor.tick() == {"REPORT_STATUS_ONLY": 1}
+    ready = mailer.to(BD_EMAIL)[-1]
+    assert ready.subject.startswith("LAS: DPR report ready for")
+    assert _sync_rows(db)[0].bd_emailed is True
+
+
+async def test_an_unknown_bd_is_not_emailed_but_the_wallet_is_updated(
+    dpr_processor, db, mailer, pay_routes, vendor
+):
+    processor, _ = dpr_processor
+    vendor.post(BY_PERSON_ID).mock(
+        return_value=httpx.Response(200, json={**REAL_PERSON, "brokerId.id": "11111"})
+    )
+    _finished_report(db, "9000000013")
+    assert await processor.tick() == {"REPORT_STATUS_ONLY": 1}
+    assert mailer.sent == []
+    assert _sync_rows(db) == [("DONE", "STATUS_ONLY", False, 1)]
+
+
+async def test_reports_from_before_the_feature_are_left_alone(
+    dpr_processor, db, mailer, pay_routes
+):
+    processor, _ = dpr_processor
+    _finished_report(db, "9000000013", age_hours=100)
+    assert await processor.tick() == {}
+    assert _sync_rows(db) == []
+
+
+async def test_a_vendor_outage_is_retried_later(dpr_processor, db, mailer, pay_routes):
+    processor, _ = dpr_processor
+    pay_routes["fields"].side_effect = None
+    pay_routes["fields"].mock(return_value=httpx.Response(503, content=b""))
+    _finished_report(db, "9000000013")
+    assert await processor.tick() == {"REPORT_SYNC_FAILED": 1}
+    assert _sync_rows(db)[0][:2] == ("FAILED", None)
+    assert await processor.tick() == {}  # backing off
+
+
+# --- Pay later: report locked until the customer pays ---------------------------
+
+
+async def _pay_later_customer(processor, s, db, mailer):
+    case, registered = await _registered(processor, s, db, mailer, with_dpr=False)
+    await _receive(
+        processor,
+        s,
+        _bd_reply(case, registered, mailer, subject=f"LAS-PAY {case.ref} PAY_LATER"),
+    )
+    (case,) = _cases(db)
+    assert case.state == "DONE"
+    return case
+
+
+async def test_a_pay_later_report_is_locked_until_the_customer_pays(
+    dpr_processor, db, mailer, pay_routes
+):
+    from app.services.dues import dues_for
+
+    processor, s = dpr_processor
+    case = await _pay_later_customer(processor, s, db, mailer)
+    (due,) = dues_for(db, MOBILE)
+    assert (due.service_code, due.amount, due.status) == ("DPR_ANALYSIS", 1295, "DUE")
+    pay_routes["stored"]["DPR_ANALYSIS_Report"] = "NA"
+    writes_before = pay_routes["fields"].call_count
+    _finished_report(db, MOBILE)
+
+    assert await processor.tick() == {"REPORT_LOCKED_DUE": 1}
+    written = _written_fields(pay_routes["fields"])[writes_before]
+    assert written["DPR_Analysis"] == "Report ready"
+    assert "DPR_ANALYSIS_Report" not in written  # the PDF is held back
+    locked = mailer.to(BD_EMAIL)[-1]
+    assert locked.subject.endswith("customer payment due")
+    assert "still owes Rs 1,295" in locked.text
+    assert f"LAS-PAID%20{case.ref}" in locked.html
+    to_customer = mailer.to("ramesh@example.com")[-1]
+    assert "payment due" in to_customer.subject and "Rs 1,295" in to_customer.text
+
+    # The BD confirms the customer paid.
+    paid = _bd_reply(
+        case, locked, mailer, subject=f"LAS-PAID {case.ref} [LAS-IN-{case.ref}]"
+    )
+    assert await _receive(processor, s, paid) == {
+        "PROCESSED": 1,
+        "REPORT_REPORT_STORED": 1,  # same pass: the held PDF is written now
+    }
+    assert "payment is recorded and the report is unlocked" in mailer.sent[-2].text
+    written = _written_fields(pay_routes["fields"])[-1]
+    assert (
+        _b64.b64decode(json.loads(written["DPR_ANALYSIS_Report"])["data"]) == REPORT_PDF
+    )
+    assert "DPR report ready" in mailer.to(BD_EMAIL)[-1].subject
+
+
+async def test_customer_paid_in_the_bds_own_words(
+    dpr_processor, db, mailer, pay_routes
+):
+    from app.services.dues import is_settled
+
+    processor, s = dpr_processor
+    case = await _pay_later_customer(processor, s, db, mailer)
+    done = mailer.to(BD_EMAIL)[-1]
+    await _receive(
+        processor, s, _bd_reply(case, done, mailer, body="Customer has paid me today.")
+    )
+    assert is_settled(db, MOBILE, "DPR_ANALYSIS")

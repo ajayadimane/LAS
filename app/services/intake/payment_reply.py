@@ -42,3 +42,16 @@ def payment_choice(subject: str, body: str, ref: str) -> str | None:
     if now != later:
         return PAY_NOW if now else PAY_LATER
     return None
+
+
+_PAID_SUBJECT = re.compile(r"LAS-PAID\s+([0-9A-F]{10})\b", re.I)
+_PAID_TEXT = re.compile(r"\bcustomer\s+(has\s+)?paid\b", re.I)
+
+
+def customer_paid(subject: str, body: str, ref: str) -> bool:
+    """The BD confirms a Pay later customer has paid: the button's
+    `LAS-PAID <ref>` subject, or "customer paid" in their own new words."""
+    for m in _PAID_SUBJECT.finditer(subject or ""):
+        if m.group(1).upper() == ref.upper():
+            return True
+    return bool(_PAID_TEXT.search(new_text(body)))

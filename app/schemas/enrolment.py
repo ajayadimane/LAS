@@ -201,3 +201,32 @@ class DocumentUploadResponse(BaseModel):
     code: str
     document: FileInfo
     doc_status: str = Field(description="As written to Doc_Status.")
+
+
+# -- Pay later: what the customer still owes (app/services/dues.py) ----------------
+
+
+class DueItem(BaseModel):
+    code: str
+    name: str
+    amount: int = Field(description="Whole rupees owed for this service.")
+
+
+class DuesResponse(BaseModel):
+    """Pay later services the customer has not paid for yet. Their reports
+    stay locked (reason CUSTOMER_PAYMENT_DUE) until the BD confirms."""
+
+    person_id: str
+    dues: list[DueItem]
+    total: int
+
+
+class ConfirmDuesRequest(BaseModel):
+    services: list[str] | None = Field(
+        default=None, description="Service codes the customer paid for; omit = all."
+    )
+
+
+class ConfirmDuesResponse(BaseModel):
+    person_id: str
+    settled: list[str] = Field(description="Services now marked paid by the customer.")

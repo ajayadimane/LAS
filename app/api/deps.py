@@ -208,9 +208,16 @@ def get_otp_service(
     return OtpService(client, guard, settings, bd)
 
 
+def core_db_engine(request: Request):
+    """Core LAS's own Postgres (DPR jobs, intake, pay-later dues), or None."""
+    state = request.app.state
+    return getattr(state, "dpr_engine", None) or getattr(state, "intake_engine", None)
+
+
 def get_enrolment_service(
+    request: Request,
     client: VendorClient = Depends(get_vendor_client),
     settings: Settings = Depends(get_app_settings),
     bd: BdService = Depends(get_bd_service),
 ) -> EnrolmentService:
-    return EnrolmentService(client, settings, bd)
+    return EnrolmentService(client, settings, bd, dues_engine=core_db_engine(request))

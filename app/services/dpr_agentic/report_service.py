@@ -8,6 +8,7 @@ which is the only thing that decides whether a report may be released.
 from __future__ import annotations
 
 from app.clients.vendor_client import VendorCallContext
+from app.services.dues import is_settled
 from app.services.enrolment import EnrolmentService
 from app.services.service_fields import same
 
@@ -69,6 +70,12 @@ async def _gate(
     view = enrolment._view(values, service)  # noqa: SLF001
     settings = enrolment._settings  # noqa: SLF001
     payment_verified = same(view.payment_status, settings.payment_status_paid)
+    # Pay later: the pool paid, the customer still owes it. Locked for the
+    # customer and the BD until the BD confirms the customer paid
+    # (app/services/dues.py; user, 2026-11-16).
+    customer_payment_due = same(
+        view.payment_mode, settings.payment_mode_pay_later
+    ) and not is_settled(engine, person_id, code)
 
     report_artifact_verified = False
     report = None
@@ -99,6 +106,7 @@ async def _gate(
         identity_verified=True,  # the route already authenticated this token
         authenticated_owner=True,  # the route already checked ownership of person_id
         payment_verified=payment_verified,
+        customer_payment_due=customer_payment_due,
         # Pay later always requires both consents before enrolment.py ever
         # marks a service Paid (see app/services/enrolment.py); pay now takes
         # no consent flag. So "Paid" already implies consent was satisfied.

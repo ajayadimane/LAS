@@ -10,6 +10,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
 from app.api.deps import (
+    core_db_engine,
     get_app_settings,
     get_authenticated_context,
     get_bd_service,
@@ -23,6 +24,8 @@ from app.schemas.customer import CustomerProfile
 from app.schemas.enrolment import (
     CustomerServices,
     DocumentUploadResponse,
+    DueItem,
+    DuesResponse,
     ServiceRequest,
     ServiceRequestResponse,
 )
@@ -37,6 +40,7 @@ from app.services.dpr_agentic.report_http import (
     resolve_versions,
 )
 from app.services.dpr_agentic.schemas import AnalysisResult, Finding
+from app.services.dues import outstanding
 from app.services.enrolment import (
     DocumentNotAllowedError,
     DocumentNotStoredError,
@@ -83,6 +87,30 @@ async def my_services(
         return await service.customer_services(me, None, ctx)
     except CustomerNotFoundError:
         raise _NO_RECORD from None
+
+
+@router.get("/dues", response_model=DuesResponse)
+async def my_dues(
+    request: Request,
+    me: str = Depends(require_customer),
+    service: EnrolmentService = Depends(get_enrolment_service),
+    ctx: VendorCallContext = Depends(get_authenticated_context),
+) -> DuesResponse:
+    """What I still owe for services my BD paid by Pay later. My report for
+    such a service is locked until my BD confirms I have paid."""
+    try:
+        items = await outstanding(service, core_db_engine(request), me, None, ctx)
+    except CustomerNotFoundError:
+        raise _NO_RECORD from None
+    return _dues_response(me, items)
+
+
+def _dues_response(person_id: str, items) -> DuesResponse:
+    return DuesResponse(
+        person_id=person_id,
+        dues=[DueItem(code=i.code, name=i.name, amount=i.amount) for i in items],
+        total=sum(i.amount for i in items),
+    )
 
 
 @router.post("/services/request", response_model=ServiceRequestResponse)
