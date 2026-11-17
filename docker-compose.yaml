@@ -1,59 +1,50 @@
-# LAS on the demo server: backend API, DPR worker, frontend (Vite dev server).
-#
-#   docker compose run --rm las python scripts/migrate.py   # tables, as core_owner; every deploy
-#   docker compose up -d --build
-#   docker compose logs -f
-#
-# Everything listens on 127.0.0.1 only: nginx on this host is the one public entry
-# point (/las/ -> 8110, /las-api/ -> 8109). Never change these to 0.0.0.0:
-#   - the API trusts X-Forwarded-For from nginx and must not be reachable around it;
-#   - Vite's dev server (5.4.11) has known file-read flaws. Its container also mounts
-#     only ./frontend, so the backend's .env is not even on its filesystem.
-# LAS_Email is not here: it runs under systemd (LAS_Email/deploy/README.md).
+version: '3'
 
-x-backend: &backend
-  build: .
-  image: las-backend:latest
-  network_mode: host
-  restart: always
-  env_file:
-    - .env
-  environment:
-    HOST: 127.0.0.1
-    PORT: "8109"
-    CONTEXT_PATH: /las-api
-    DPR_WORKER_AUTOSTART: "false"   # the worker is its own service below
-  volumes:
-    - /etc/timezone:/etc/timezone:ro
-    - /etc/localtime:/etc/localtime:ro
+# One container: the backend API (8109, which also runs the DPR worker as its
+# child, DPR_WORKER_AUTOSTART) and the frontend dev server (8110).
+#
+#   docker compose run --rm fraud python scripts/migrate.py   # tables; every deploy
+#   docker compose up -d --build
+#
+# Security: both ports listen on 0.0.0.0. Keep 8109 and 8110 closed in the
+# firewall so only nginx reaches them; if nginx runs on this server, change both
+# --host values to 127.0.0.1. Vite's dev server can be tricked into reading
+# files (including /las/.env), and the API trusts X-Forwarded-For from nginx.
 
 services:
-  las:
-    <<: *backend
+  fraud:
+    build: .
     container_name: las
-
-  las-dpr-worker:
-    <<: *backend
-    container_name: las-dpr-worker
-    command: ["python", "scripts/dpr_worker.py"]
-    healthcheck:
-      disable: true
-
-  las-frontend:
-    image: node:20.18.1-bookworm-slim
-    container_name: las-frontend
-    network_mode: host
+    network_mode: "host"
     restart: always
-    working_dir: /ui
+
+    env_file:
+      - .env
+
     environment:
+      # The API starts and restarts scripts/dpr_worker.py itself.
+      DPR_WORKER_AUTOSTART: "true"
+      # The frontend's paths; must match nginx and the backend's CONTEXT_PATH.
       VITE_BASE_PATH: /las
       VITE_API_BASE_PATH: /las-api
       VITE_API_PROXY_TARGET: http://127.0.0.1:8109
+
     volumes:
-      - ./frontend:/ui
-      - /etc/timezone:/etc/timezone:ro
-      - /etc/localtime:/etc/localtime:ro
+      - ./:/las/
+      - "/etc/timezone:/etc/timezone:ro"
+      - "/etc/localtime:/etc/localtime:ro"
+
     command:
-      - sh
+      - /bin/bash
       - -c
-      - npm ci --no-audit --no-fund && exec npm run dev -- --host 127.0.0.1 --port 8110 --strictPort
+      - |
+          cd /las/
+
+          uvicorn app.main:app --host 0.0.0.0 --port 8109 &
+
+          cd /las/frontend/
+          npm ci --no-audit --no-fund
+          npm run dev -- --host 0.0.0.0 --port 8110 &
+
+          # Exit when either process dies, so restart: always brings both back.
+          wait -n
