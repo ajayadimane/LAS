@@ -39,7 +39,7 @@ reaches them.** If nginx runs on this same server, change both `--host` values i
 ## 0. Before you start (one-time checks)
 
 ```bash
-docker-compose version    # Docker with the compose plugin
+docker-compose version    # Docker Compose v1 (`docker-compose`, with a hyphen)
 nginx -v                  # nginx installed
 psql --version            # PostgreSQL 14+ (else: sudo apt install postgresql)
 python3 --version         # 3.10+ (for LAS_Email)
