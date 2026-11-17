@@ -235,6 +235,14 @@ GROUP BY 1,2,3,4,5,6,7;
 CREATE UNIQUE INDEX uq_mv_ai_usage_daily
     ON mv_ai_usage_daily(day_ist, provider, model, purpose, prompt_template, prompt_version,
                          bd_key);
+-- Refreshing needs the view's owner; the app role (shared database: email_app) calls this.
+CREATE OR REPLACE FUNCTION refresh_ai_usage_daily() RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path FROM CURRENT AS $$
+BEGIN
+    REFRESH MATERIALIZED VIEW CONCURRENTLY mv_ai_usage_daily;
+END;
+$$;
+REVOKE ALL ON FUNCTION refresh_ai_usage_daily() FROM PUBLIC;
 
 -- ---------------------------------------------------------------------
 -- 11. Append-only, hash-chained audit log

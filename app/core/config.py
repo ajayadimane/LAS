@@ -171,6 +171,19 @@ class Settings(BaseSettings):
     # this run; /document-with-analysis still works (ephemeral, as before)
     # but /services/{code}/report always 503s.
     dpr_database_url: SecretStr | None = None
+    # The Postgres schema Core's tables live in. UAT/prod share one database
+    # with LAS_Email (schema "email"), so Core uses "core" there; "public"
+    # (the default) keeps a local database as it was. The connection's
+    # search_path becomes "<schema>, public" (extensions such as citext stay in
+    # public). See deploy/db/setup.sql.
+    db_schema: str = Field(default="public", pattern=r"^[a-z_][a-z0-9_]{0,62}$")
+    # Apply migrations/*.sql when the API or the DPR worker starts. Needs a
+    # role that owns the tables (the migrations recreate triggers), so UAT and
+    # prod set this false, connect as the DML-only app role, and run
+    # `python scripts/migrate.py` as the owner role on each deploy.
+    db_migrate_on_startup: bool = True
+    # The owner role's URL for scripts/migrate.py; unset = dpr_database_url.
+    db_migration_url: SecretStr | None = None
     # Symmetric key encrypting a document's bytes at rest in
     # dpr_upload_staging while it waits for scripts/dpr_worker.py. Unset =
     # analysis is never queued; /document-with-analysis still records the

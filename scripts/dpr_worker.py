@@ -58,14 +58,13 @@ from app.services.dpr_agentic.grounding import (  # noqa: E402
     purge_expired_grounding_cache,
 )
 from app.services.dpr_agentic.jobs import (  # noqa: E402
-    engine_for,
     fail_stuck_run,
     get_run,
     list_claimable,
     reap_exhausted,
     record_token_usage,
 )
-from app.services.dpr_agentic.migrate import apply_migrations  # noqa: E402
+from app.services.dpr_agentic.migrate import core_engine  # noqa: E402
 from app.services.dpr_agentic.ocr_cache import (  # noqa: E402
     PostgresOcrCache,
     purge_expired_ocr_cache,
@@ -338,8 +337,7 @@ async def run(once: bool) -> None:
     if missing:
         sys.exit(f"dpr_worker: missing required settings: {', '.join(missing)}")
 
-    engine = engine_for(settings.dpr_database_url.get_secret_value())
-    apply_migrations(engine)
+    engine = core_engine(settings)
     key = settings.dpr_staging_encryption_key.get_secret_value().encode()
     http, gemini = build_dedicated_gemini_client(settings)
     liteparse = LiteParseClient(

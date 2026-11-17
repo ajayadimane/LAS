@@ -13,8 +13,17 @@ from uuid import UUID, uuid4
 from sqlalchemy import create_engine, text
 
 
-def engine_for(database_url: str):
-    return create_engine(database_url, pool_pre_ping=True, future=True)
+def engine_for(database_url: str, schema: str | None = None):
+    """A pooled engine; `schema` (other than public) leads its search_path.
+
+    Set on the connection as well as by `ALTER ROLE ... SET search_path`
+    (deploy/db/setup.sql), so a role missing that setting still lands in the
+    right schema instead of silently creating tables in public.
+    """
+    kwargs = {}
+    if schema and schema != "public":
+        kwargs["connect_args"] = {"options": f"-c search_path={schema},public"}
+    return create_engine(database_url, pool_pre_ping=True, future=True, **kwargs)
 
 
 def submit(

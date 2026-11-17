@@ -24,8 +24,10 @@ import { StatusPill } from "@/components/ui/StatusPill";
  */
 export function CustomerAnalysisReport({ service }: { service: CustomerService }) {
   const enabled = !!service.document;
-  const query = useMyServiceReport(service.code, enabled);
   const summary = useMyServiceReportSummary(service.code, enabled);
+  // The full report only matters once the summary says it is released: a
+  // second parallel call would just repeat the same 403 and vendor lookup.
+  const query = useMyServiceReport(service.code, enabled && summary.isSuccess);
   const [previewingPdf, setPreviewingPdf] = useState(false);
   const [showAnnexures, setShowAnnexures] = useState(false);
   const annexures = useMyServiceReportAnnexures(service.code, enabled && showAnnexures);
@@ -64,7 +66,14 @@ export function CustomerAnalysisReport({ service }: { service: CustomerService }
         showAnnexures={showAnnexures}
         onToggleAnnexures={() => setShowAnnexures((v) => !v)}
         paymentDue={
-          <ReportPaymentDue amount={owed}>
+          <ReportPaymentDue
+            amount={owed}
+            checking={summary.isFetching || dues.isFetching}
+            onCheck={() => {
+              void dues.refetch();
+              void summary.refetch();
+            }}
+          >
             {owed !== null && (
               <div className="flex flex-wrap items-center gap-4">
                 <UpiQr text={upiLink(UPI_ID, owed, `LAS ${service.name} report`)} size={140} />

@@ -13,3 +13,6 @@ eval/cassettes/
 eval/manifest.local.json
 eval/ocr_cache/
 eval/grounding_cache/
+
+# Demo deploy tarballs (scripts/package_demo.sh)
+las-deploy-*.tar.gz

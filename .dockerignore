@@ -16,7 +16,10 @@ frontend/
 tests/
 api_docs/
 docs/
-scripts/
+# scripts: only the two the image runs (the worker and the migration step).
+scripts/*
+!scripts/migrate.py
+!scripts/dpr_worker.py
 deploy/
 .claude/
 CLAUDE.md

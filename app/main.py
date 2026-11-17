@@ -17,8 +17,7 @@ from app.core.config import Settings, get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging, get_logger
 from app.services.admin_session import AdminSession
-from app.services.dpr_agentic.jobs import engine_for
-from app.services.dpr_agentic.migrate import apply_migrations
+from app.services.dpr_agentic.migrate import core_engine
 from app.services.dpr_agentic.report_store import check_pdf_renderer_ready
 from app.services.dpr_agentic.worker_process import (
     start_if_enabled as start_dpr_worker_if_enabled,
@@ -120,8 +119,7 @@ def build_dpr_engine(settings: Settings):
     if not (settings.dpr_agentic_enabled and settings.dpr_database_url):
         return None
     try:
-        engine = engine_for(settings.dpr_database_url.get_secret_value())
-        apply_migrations(engine)
+        engine = core_engine(settings)
     except Exception:
         logger.exception(
             "dpr_agentic_db_unavailable -- durable job tracking and report "
@@ -145,8 +143,7 @@ def build_intake_engine(settings: Settings, dpr_engine):
     if dpr_engine is not None:
         return dpr_engine
     try:
-        engine = engine_for(settings.dpr_database_url.get_secret_value())
-        apply_migrations(engine)
+        engine = core_engine(settings)
     except Exception:
         logger.exception(
             "intake_db_unavailable -- email intake is disabled for this run"

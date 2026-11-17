@@ -37,7 +37,8 @@ async def stale_inbound_ids(deps: Deps, older_than_seconds: int = 120) -> list[i
 async def refresh_usage_rollup(deps: Deps) -> None:
     async with deps.db() as s:
         conn = await s.connection()
-        await conn.exec_driver_sql("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_ai_usage_daily")
+        # Owner-run function (migration 0021): the app role may not refresh the view itself.
+        await conn.exec_driver_sql("SELECT refresh_ai_usage_daily()")
         await s.commit()
 
 

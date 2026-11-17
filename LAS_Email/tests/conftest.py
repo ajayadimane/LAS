@@ -1,7 +1,8 @@
 """Test fixtures.
 
 A session fixture connects with TEST_DATABASE_ADMIN_URL, creates ``las_test_<random>``, runs the
-Alembic migrations into it and drops it at the end (also on failure). Tests get a session factory
+Alembic migrations into it and drops it at the end (also on failure). With DB_SCHEMA set (e.g.
+``email``, the shared-database layout) the schema is created first and everything runs inside it. Tests get a session factory
 bound to one connection inside a transaction that is rolled back (savepoints absorb the app's
 commits). Tests marked ``@pytest.mark.commits`` get real commits and truncated tables instead.
 """
@@ -22,7 +23,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from las.common.db import SessionFactory
+from las.common.db import SessionFactory, schema_connect_args
 from las.common.deps import Deps, build_fake_deps
 from las.common.settings import Settings, get_settings, to_async_url
 from las.scripts.seed import seed_reference_data
@@ -43,6 +44,13 @@ def _admin_url() -> str:
     if not url:
         pytest.exit("TEST_DATABASE_ADMIN_URL is not set (see .env.example)", returncode=2)
     return to_async_url(url)
+
+
+async def create_test_schema(conn) -> None:
+    """The DB_SCHEMA schema in a throwaway database (nothing for public)."""
+    schema = get_settings().db_schema
+    if schema != "public":
+        await conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
 
 
 def _run_migrations(url: str) -> None:
@@ -67,6 +75,10 @@ async def test_db_url(admin_url: str) -> AsyncIterator[str]:
         await c.execute(text(f'CREATE DATABASE "{name}"'))
     url = make_url(admin_url).set(database=name).render_as_string(hide_password=False)
     try:
+        test_db = create_async_engine(url, isolation_level="AUTOCOMMIT")
+        async with test_db.connect() as c:
+            await create_test_schema(c)
+        await test_db.dispose()
         await asyncio.to_thread(_run_migrations, url)
         yield url
     finally:
@@ -77,7 +89,9 @@ async def test_db_url(admin_url: str) -> AsyncIterator[str]:
 
 @pytest.fixture(scope="session")
 async def engine(test_db_url: str) -> AsyncIterator[AsyncEngine]:
-    eng = create_async_engine(test_db_url, pool_size=10, max_overflow=10)
+    eng = create_async_engine(
+        test_db_url, pool_size=10, max_overflow=10, connect_args=schema_connect_args()
+    )
     async with eng.begin() as conn, AsyncSession(bind=conn) as s:
         await seed_reference_data(s, test_bds=True)
         await s.commit()

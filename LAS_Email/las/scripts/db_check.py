@@ -1,4 +1,4 @@
-"""`make db-check`: server version and required extensions on DATABASE_URL."""
+"""`make db-check`: server version, required extensions and schema on DATABASE_URL."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import sys
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from las.common.db import schema_connect_args
 from las.common.settings import get_settings
 
 MIN_MAJOR = 14  # local dev; production (Cloud SQL) runs 16
@@ -15,7 +16,7 @@ MIN_MAJOR = 14  # local dev; production (Cloud SQL) runs 16
 
 async def _check() -> int:
     url = get_settings().database_url
-    engine = create_async_engine(url)
+    engine = create_async_engine(url, connect_args=schema_connect_args())
     ok = True
     try:
         async with engine.connect() as c:
@@ -29,15 +30,26 @@ async def _check() -> int:
                 print(
                     "note: production target is PostgreSQL 16; only 14-compatible features are used"
                 )
+            # Checked, not created: on a shared database the app role cannot create
+            # extensions; the DBA does once (Core LAS deploy/db/setup.sql).
             for ext in ("pgcrypto", "citext"):
-                try:
-                    async with c.begin_nested():  # savepoint: one failure doesn't abort the rest
-                        await c.execute(text(f"CREATE EXTENSION IF NOT EXISTS {ext}"))
+                found = (
+                    await c.execute(
+                        text("SELECT 1 FROM pg_extension WHERE extname = :e"), {"e": ext}
+                    )
+                ).scalar()
+                if found:
                     print(f"extension {ext}: ok")
-                except Exception as e:  # noqa: BLE001
-                    print(f"FAIL: cannot create extension {ext}: {e}")
+                else:
+                    print(f"FAIL: extension {ext} missing; ask the DBA to CREATE EXTENSION {ext}")
                     ok = False
-            await c.rollback()  # check only; migrations create them for real
+            schema = get_settings().db_schema
+            current = (await c.execute(text("SELECT current_schema()"))).scalar()
+            if current == schema:
+                print(f"schema {schema}: ok")
+            else:
+                print(f"FAIL: DB_SCHEMA={schema} but the current schema is {current}")
+                ok = False
     finally:
         await engine.dispose()
     return 0 if ok else 1
