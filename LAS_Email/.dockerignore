@@ -1,0 +1,8 @@
+# The image needs only requirements.lock; the code is mounted at run time.
+.venv/
+var/
+.env
+**/__pycache__/
+.pytest_cache/
+.ruff_cache/
+tests/

@@ -1,0 +1,56 @@
+version: '3'
+
+# LAS_Email on the demo server: reads las@integramicro.co.in, extracts, hands each mail to
+# Core LAS (CORE_INTAKE_URL). Plus its own Redis on 127.0.0.1:6380, so it never shares a
+# Redis database with other apps on this server.
+#
+#   docker-compose -f docker-compose.demo.yaml build
+#   docker-compose -f docker-compose.demo.yaml run --rm las-email alembic upgrade head
+#   docker-compose -f docker-compose.demo.yaml up -d
+#   docker-compose -f docker-compose.demo.yaml logs -f --tail=50
+#
+# Only ONE LAS_Email may read the mailbox: stop every other copy first.
+
+services:
+  las-email-redis:
+    image: redis:7-alpine
+    container_name: las-email-redis
+    network_mode: "host"
+    restart: always
+    command: ["redis-server", "--bind", "127.0.0.1", "--port", "6380"]
+
+  las-email:
+    build: .
+    container_name: las-email
+    network_mode: "host"
+    restart: always
+    depends_on:
+      - las-email-redis
+
+    env_file:
+      - .env
+
+    environment:
+      REDIS_URL: redis://127.0.0.1:6380/0
+
+    volumes:
+      - ./:/las-email/
+      - "/etc/timezone:/etc/timezone:ro"
+      - "/etc/localtime:/etc/localtime:ro"
+
+    command:
+      - /bin/bash
+      - -c
+      - |
+          cd /las-email/
+          mkdir -p var
+
+          # Worker + Beat (schedules: handoff to Core every 15 s, sweeps, nightly jobs).
+          celery -A las.worker.celery_app worker -B -l info -Q las --concurrency 2 \
+            --schedule var/celerybeat-schedule &
+
+          # The IMAP IDLE listener (exactly one instance).
+          python -c "from las.ingest.listener import main; main()" &
+
+          # Exit when either process dies, so restart: always brings both back.
+          wait -n

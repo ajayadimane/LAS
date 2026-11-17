@@ -212,7 +212,8 @@ def copy_email(source, target) -> None:
         for (col,) in target.execute(
             "SELECT column_name FROM information_schema.columns "
             "WHERE table_schema = 'email' AND table_name = %s "
-            "AND column_default LIKE 'nextval(%%'",
+            # nextval() defaults (serial) and IDENTITY columns: both own a sequence.
+            "AND (column_default LIKE 'nextval(%%' OR is_identity = 'YES')",
             (t,),
         ).fetchall():
             target.execute(
