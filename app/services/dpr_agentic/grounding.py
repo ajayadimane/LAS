@@ -25,8 +25,9 @@ the DPR's text. Borrower-name words are also stripped from every free-text
 field, defensively.
 
 Results are cached by the brief (FileGroundingCache for the evaluation,
-PostgresGroundingCache for the worker, 7-day TTL): the same project gets the
-same evidence within the window, and search cost is paid once.
+PostgresGroundingCache for the worker, 30-day TTL by default,
+DPR_GROUNDING_CACHE_TTL_DAYS): the same project gets the same evidence
+within the window, and search cost is paid once.
 
 Benchmarks: search figures are market evidence (Annexure D). They become
 a finding (rate per unit above the published range, should-fix, citing its
@@ -184,6 +185,57 @@ def canonical_bank(text: str | None, banned: set[str]) -> str | None:
     return _clean(text, banned)
 
 
+def verified_dpr_bank(facts) -> str | None:
+    """The bank the DPR is addressed to: its verified bank_name facts, only
+    when they all agree (a contradictory DPR names no bank)."""
+    values = {
+        f.value.strip()
+        for f in facts
+        if f.field == "bank_name" and f.verified and f.value and f.value.strip()
+    }
+    if len({v.casefold() for v in values}) != 1:
+        return None
+    return next(iter(values))
+
+
+def resolve_lending_bank(
+    facts, project_context: dict | None, default: str | None = None
+) -> tuple[str | None, str | None]:
+    """(bank, source) for the analysis: the DPR's own verified bank first,
+    then the bank given on the dashboard (BankName), then the configured
+    default (DPR_DEFAULT_LENDING_BANK, State Bank of India). source is
+    "dpr", "dashboard" or "default"; (None, None) only if the default is
+    configured empty. The report and the policy search both use this, so
+    they never name different banks."""
+    if bank := verified_dpr_bank(facts):
+        return bank, "dpr"
+    given = ((project_context or {}).get("bank_name") or "").strip()
+    if given and given.casefold() != "na":
+        return given, "dashboard"
+    if default is None:
+        from app.core.config import get_settings
+
+        default = get_settings().dpr_default_lending_bank
+    default = (default or "").strip()
+    return (default, "default") if default else (None, None)
+
+
+def lending_bank_conflict(facts, project_context: dict | None) -> str | None:
+    """A clarification when the DPR and the dashboard name different banks
+    (the DPR's wins); None when they agree or either is missing."""
+    dpr = verified_dpr_bank(facts)
+    given = ((project_context or {}).get("bank_name") or "").strip()
+    if not dpr or not given or given.casefold() == "na":
+        return None
+    if canonical_bank(dpr, set()) == canonical_bank(given, set()):
+        return None
+    return (
+        f"BANK_MISMATCH: the DPR is addressed to {dpr}, but {given} was "
+        f"chosen on the dashboard. This analysis uses {dpr}; confirm the "
+        "lender."
+    )
+
+
 _VERDICT = re.compile(
     r"\b(?:is|are|will be|would be)\s+(?:fully\s+)?eligible\b|\bapproved\b|"
     r"\bsanctioned\b|\bguaranteed approval\b",
@@ -276,9 +328,7 @@ def build_search_brief(
         for w in re.findall(r"[A-Za-z]{3,}", _fact(facts, "borrower_name") or "")
     }
     brief = {
-        "bank": canonical_bank(
-            project_context.get("bank_name") or _fact(facts, "bank_name"), banned
-        ),
+        "bank": canonical_bank(resolve_lending_bank(facts, project_context)[0], banned),
         "scheme_claimed": canonical_schemes(_fact(facts, "scheme_claimed")),
         "sector": _clean(_fact(facts, "business_sector"), banned),
         "subsector": _clean(_fact(facts, "business_subsector"), banned),

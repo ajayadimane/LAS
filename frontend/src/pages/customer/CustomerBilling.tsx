@@ -21,7 +21,7 @@ export default function CustomerBilling() {
   const p = profile.data;
   const nav: NavItem[] = [
     { label: "Dashboard", icon: "grid", onClick: () => navigate(paths.customerDashboard) },
-    { label: "Wallet", icon: "wallet", onClick: () => navigate(`${paths.customerDashboard}?open=wallet`) },
+    { label: "Service Fee Account", icon: "wallet", onClick: () => navigate(`${paths.customerDashboard}?open=wallet`) },
     { label: "Billing & invoices", icon: "receipt", active: true },
     { label: "Profile", icon: "user", onClick: () => navigate(`${paths.customerDashboard}?open=profile`) },
   ];

@@ -196,7 +196,11 @@ class Settings(BaseSettings):
     dpr_agentic_grounding_enabled: bool = True
     # Days a grounded result is reused for the same brief (bank, scheme,
     # sector, state, loan band); 0 = no cache.
-    dpr_grounding_cache_ttl_days: int = Field(default=7, ge=0, le=90)
+    dpr_grounding_cache_ttl_days: int = Field(default=30, ge=0, le=90)
+    # The bank a DPR is analysed for when neither the DPR (a verified,
+    # consistent statement) nor the dashboard's BankName names one
+    # (grounding.resolve_lending_bank). Empty = no default.
+    dpr_default_lending_bank: str = "State Bank of India"
     # LiteParse (document_pipeline/liteparse_client.py) is the primary parser
     # for PDFs and images: local text extraction + local OCR (ImageMagick +
     # Tesseract), no network call. Gemini vision above is only the fallback

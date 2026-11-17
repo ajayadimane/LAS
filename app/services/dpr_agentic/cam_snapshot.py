@@ -106,9 +106,11 @@ class ProjectProfile(BaseModel):
     project_purpose: str | None = None
     scheme_claimed: str | None = None
     machinery_equipment: list[str] = Field(default_factory=list)
-    # The bank the customer applies to: the BankName service detail, else
-    # the DPR's own statement.
+    # The bank the analysis is for: the DPR's own verified statement, else
+    # the BankName service detail, else DPR_DEFAULT_LENDING_BANK
+    # (grounding.resolve_lending_bank).
     lending_bank: str | None = None
+    lending_bank_source: Literal["dpr", "dashboard", "default"] | None = None
 
 
 class DocumentReference(BaseModel):

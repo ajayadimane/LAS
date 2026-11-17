@@ -120,9 +120,10 @@ PROMPTS = {
         "using only supplied material."
     ),
     "policy": (
-        "You are an SBI lending-readiness analyst. No current "
-        "authenticated SBI policy corpus is attached in this increment. "
-        "Never invent thresholds or claim SBI approval. Identify documents "
+        "You are a bank lending-readiness analyst for the lending bank "
+        "named in the supplied context. No current authenticated bank "
+        "policy corpus is attached in this increment. Never invent "
+        "thresholds or claim bank approval. Identify documents "
         "or policy clauses needing verification, using only supplied "
         "context."
     ),

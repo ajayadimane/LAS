@@ -183,7 +183,8 @@ def build_annexure_e(snapshot: CAMSnapshot) -> dict:
 
 
 def build_annexure_f(snapshot: CAMSnapshot) -> dict:
-    """SBI and Scheme References: lending product, relevant public policy,
+    """Bank and Scheme References (the key keeps its old "sbi" name for
+    API compatibility): lending product, relevant public policy,
     document requirements, scheme eligibility (subsidy/AIF status), source
     URLs, effective dates, retrieval dates, unverified policy areas.
 

@@ -113,8 +113,9 @@ def build_graph(
                             "no eligibility verified."
                         ),
                         unresolved_questions=[
-                            "Verify current market references and SBI product "
-                            "requirements with authoritative sources."
+                            "Verify current market references and the lending "
+                            "bank's product requirements with authoritative "
+                            "sources."
                         ],
                     ).model_dump(mode="json")
                 }
@@ -337,6 +338,13 @@ async def analyze_parallel(
         # Any role's "unavailable" notice is a run-status fact.
         if role in QUESTION_ROLES or q.startswith("ROLE_UNAVAILABLE:")
     )
+    from .grounding import lending_bank_conflict
+
+    document = outputs.get("document")
+    if mismatch := lending_bank_conflict(
+        document.document_facts if document else [], payload.project_context
+    ):
+        questions.append(mismatch)
     return AnalysisResult(
         service_request_id=payload.service_request_id,
         wallet_document_id=payload.wallet_document_id,

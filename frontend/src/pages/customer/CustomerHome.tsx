@@ -90,7 +90,7 @@ export default function CustomerHome() {
 
   const nav: NavItem[] = [
     { label: "Dashboard", icon: "grid", active: true },
-    { label: "Wallet", icon: "wallet", onClick: () => setDialog("account") },
+    { label: "Service Fee Account", icon: "wallet", onClick: () => setDialog("account") },
     { label: "Billing & invoices", icon: "receipt", onClick: () => navigate(paths.customerBilling) },
     { label: "Profile", icon: "user", onClick: () => setDialog("profile") },
   ];
@@ -106,7 +106,7 @@ export default function CustomerHome() {
             <h1 className="text-3xl font-extrabold tracking-tight">
               Welcome back{p?.first_name ? `, ${p.first_name}` : ""}
             </h1>
-            <p className="mt-2 text-sm text-muted-foreground">Track your services, documents and wallet in one place.</p>
+            <p className="mt-2 text-sm text-muted-foreground">Track your services, documents and service fee account in one place.</p>
           </div>
           <div className="flex flex-wrap gap-3">
             <Button variant="outline" className="h-11 rounded-xl" disabled title={NOT_YET}>
@@ -120,7 +120,7 @@ export default function CustomerHome() {
 
         <div className="mt-8 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
           <div className="rounded-2xl bg-navy p-6 text-navy-foreground">
-            <p className="flex items-center gap-2 text-sm font-semibold"><Icon name="wallet" /> Wallet</p>
+            <p className="flex items-center gap-2 text-sm font-semibold"><Icon name="wallet" /> Service Fee Account</p>
             <p className="mt-3 text-2xl font-extrabold tabular-nums">{balance}</p>
           </div>
           <StatCard label="Services opted" value={stat(mine.length)} />
@@ -198,7 +198,7 @@ export default function CustomerHome() {
         title={reportingService ? `${reportingService.name}: analysis report` : "Analysis report"} large>
         {reportingService && <CustomerAnalysisReport service={reportingService} />}
       </Dialog>
-      <Dialog open={dialog === "account"} onClose={() => setDialog(null)} title="Wallet">
+      <Dialog open={dialog === "account"} onClose={() => setDialog(null)} title="Service Fee Account">
         <p className="text-sm text-muted-foreground">Current balance <span className="font-bold text-foreground">{balance}</span></p>
         {wallet.data && wallet.data.locked_amount !== null && wallet.data.locked_amount > 0 && (
           <p className="text-sm text-muted-foreground">Locked {inr(wallet.data.locked_amount)}</p>

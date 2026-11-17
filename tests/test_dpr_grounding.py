@@ -89,7 +89,7 @@ def test_the_search_brief_carries_no_borrower_identity():
     }
 
 
-def test_the_upload_bank_name_wins_and_unknown_states_are_left_out():
+def test_the_dashboard_bank_is_used_when_the_dpr_names_none():
     brief = build_search_brief(FACTS[2:5], None, {"bank_name": "Canara Bank"})
     assert brief["bank"] == "Canara Bank"
     assert state_of("Plot 4, Some Village") is None
@@ -528,3 +528,82 @@ def test_benchmark_findings_are_anchored_against_downgrades():
         ],
     )
     assert (kept[0].severity, kept[0].priority) == ("medium", "should_fix")
+
+
+# -- lending bank: DPR first, then the dashboard, then the default ----------
+
+
+def verified(field, value):
+    return DocumentFact(field=field, value=value, page=1, quote=value, verified=True)
+
+
+def test_a_verified_dpr_bank_wins_over_the_dashboard():
+    from app.services.dpr_agentic.grounding import resolve_lending_bank
+
+    facts = [verified("bank_name", "Bank of Baroda")]
+    ctx = {"bank_name": "SBI"}
+    assert resolve_lending_bank(facts, ctx, "Default") == ("Bank of Baroda", "dpr")
+    assert build_search_brief(facts, None, ctx)["bank"] == "Bank of Baroda"
+
+
+def test_an_unverified_or_contradictory_dpr_bank_falls_back_to_the_dashboard():
+    from app.services.dpr_agentic.grounding import resolve_lending_bank
+
+    ctx = {"bank_name": "Canara Bank"}
+    unverified = [fact("bank_name", "Bank of Baroda")]
+    contradictory = [
+        verified("bank_name", "Bank of Baroda"),
+        verified("bank_name", "Punjab National Bank"),
+    ]
+    for facts in (unverified, contradictory):
+        assert resolve_lending_bank(facts, ctx, "X") == ("Canara Bank", "dashboard")
+
+
+def test_with_no_bank_anywhere_the_configured_default_is_used():
+    from app.services.dpr_agentic.grounding import resolve_lending_bank
+
+    for ctx in ({}, {"bank_name": "NA"}, {"bank_name": "  "}, None):
+        assert resolve_lending_bank([], ctx, "State Bank of India") == (
+            "State Bank of India",
+            "default",
+        )
+    assert resolve_lending_bank([], {}, "") == (None, None)
+    # Unset = the setting (DPR_DEFAULT_LENDING_BANK, SBI by default).
+    assert build_search_brief([], None, {})["bank"] == "State Bank of India"
+
+
+def test_a_dpr_and_dashboard_bank_mismatch_asks_to_confirm_the_lender():
+    from app.services.dpr_agentic.grounding import lending_bank_conflict
+
+    facts = [verified("bank_name", "Bank of Baroda")]
+    question = lending_bank_conflict(facts, {"bank_name": "SBI"})
+    assert question.startswith("BANK_MISMATCH:")
+    assert "Bank of Baroda" in question and "SBI" in question
+    # Same bank spelt differently, or one side missing: no question.
+    same = [verified("bank_name", "STATE BANK OF INDIA")]
+    assert lending_bank_conflict(same, {"bank_name": "SBI"}) is None
+    assert lending_bank_conflict(facts, {}) is None
+    assert lending_bank_conflict([], {"bank_name": "SBI"}) is None
+
+
+def test_the_report_names_the_same_bank_as_the_search_and_says_where_from():
+    from types import SimpleNamespace
+
+    from app.services.dpr_agentic.cam_adapter import _source_profiles
+
+    facts = [verified("bank_name", "Bank of Baroda")]
+    result = SimpleNamespace(
+        agent_outputs={"document": AgentOutput(summary="doc", document_facts=facts)},
+        service_details={"bank_name": "SBI"},
+    )
+    _, project = _source_profiles(result, None, None)
+    assert (project.lending_bank, project.lending_bank_source) == (
+        "Bank of Baroda",
+        "dpr",
+    )
+    brief = build_search_brief(facts, None, result.service_details)
+    assert brief["bank"] == project.lending_bank
+
+    result.agent_outputs = {}
+    _, project = _source_profiles(result, None, None)
+    assert (project.lending_bank, project.lending_bank_source) == ("SBI", "dashboard")

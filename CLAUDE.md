@@ -222,6 +222,11 @@ The vendor product is **iWallet**. There is no OpenAPI spec; the contract is 13 
   (verified: all 12 sandbox customers; the single-value API also returns
   `CUSTOM_FIELD_ID_NOT_EXISTS`), so they cannot choose DPR Analysis until the
   vendor backfills -- raise with vendor.
+  **Which bank the analysis uses** (user, 2026-11-16): the DPR's own
+  verified, non-contradictory `bank_name` first, then `BankName`, then
+  `DPR_DEFAULT_LENDING_BANK` (SBI) -- `grounding.resolve_lending_bank`, shared
+  by the policy search and the report (`lending_bank_source`). A DPR/dashboard
+  mismatch adds a `BANK_MISMATCH:` clarification; the DPR's bank still wins.
 - **OTP verification** (user, 2026-11-04) of the customer's mobile (SMS) and
   email, on registration and when a detail changes. A **separate service**,
   not iWallet: `POST /ibc/v1/otp/generate` `{identifier, channel: text|email}`

@@ -330,6 +330,9 @@ function OptedRow({ bdId, personId, service }: { bdId: string; personId: string;
   const status = readServiceStatus(service.status);
   const pay = readPaymentStatus(service.payment_status);
   const mode = readPaymentMode(service.payment_mode);
+  // One upload per service: once a document is in, it can only be re-uploaded if it was rejected.
+  const rejected = (service.status ?? "").trim().toUpperCase() === "REJECTED";
+  const canUpload = service.can_upload && (!doc || rejected);
 
   const onFile = (file: File | undefined) => {
     if (!file) return;
@@ -363,13 +366,13 @@ function OptedRow({ bdId, personId, service }: { bdId: string; personId: string;
             onClose={() => setPreviewing(false)} />
         </>
       )}
-      {service.can_upload && (
+      {canUpload && (
         <>
           <input ref={input} type="file" accept="application/pdf,image/jpeg,image/png" className="hidden"
             onChange={(e) => onFile(e.target.files?.[0])} />
-          <Button size="sm" variant={doc ? "outline" : "default"} className="rounded-lg" disabled={upload.isPending}
+          <Button size="sm" className="rounded-lg" disabled={upload.isPending}
             onClick={() => input.current?.click()}>
-            <Icon name="upload" /> {upload.isPending ? "Uploading…" : doc ? "Replace" : "Upload"}
+            <Icon name="upload" /> {upload.isPending ? "Uploading…" : "Upload"}
           </Button>
         </>
       )}
