@@ -11,7 +11,7 @@ import { Icon } from "@/components/ui/Icon";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { cn } from "@/lib/cn";
 import { address, fullName, phone } from "@/lib/customer";
-import { readDocStatus, readPaymentMode, readPaymentStatus } from "@/lib/customerStatus";
+import { readDocsColumn, readPaymentMode, readPaymentStatus } from "@/lib/customerStatus";
 import { initials, inr } from "@/lib/format";
 import { paths } from "@/routes";
 import { EditDetailsDialog } from "./EditDetails";
@@ -65,7 +65,7 @@ export default function CustomerPreview() {
   const name = fullName(customer);
   const pay = readPaymentStatus(customer.payment_status);
   const mode = readPaymentMode(customer.payment_mode);
-  const docs = readDocStatus(customer.doc_status);
+  const docs = readDocsColumn(customer.doc_status, customer.services);
   const n = customer.services.length;
 
   return (

@@ -67,6 +67,13 @@ class CustomerIncompleteError(ValueError):
     """The vendor's record lacks something a step needs."""
 
 
+def _short_status(value: str | None) -> str | None:
+    """A service's lifecycle value. Old records may hold a document in it;
+    that is not a status and must not bloat the list."""
+    value = field_value(value)
+    return value if value is not None and len(value) <= 64 else None
+
+
 class BdService:
     def __init__(
         self,
@@ -91,7 +98,12 @@ class BdService:
 
         def listed(test) -> list[OptedService]:
             return [
-                OptedService(code=s.code, name=s.name, fee=s.fee)
+                OptedService(
+                    code=s.code,
+                    name=s.name,
+                    fee=s.fee,
+                    status=_short_status(fields.get(s.field_id)),
+                )
                 for s in self._settings.services
                 if s.field_id and test(fields.get(s.field_id), self._settings)
             ]

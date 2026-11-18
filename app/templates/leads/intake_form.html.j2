@@ -1,0 +1,49 @@
+{% extends "_base.html.j2" %}
+{% block title %}Find an business associate executive near you{% endblock %}
+{% block content %}
+<h1>Find an business associate executive near you</h1>
+<p>We'll connect you with an Integra BA (Business Associate Executive) who works in your district.</p>
+<form method="post" action="{{ action }}">
+
+<label for="mobile">Mobile number</label>
+<input type="tel" id="mobile" name="mobile" value="{{ values.mobile or '' }}" required>
+{% if errors.get('mobile') %}<div class="err">{{ errors.get('mobile') }}</div>{% endif %}
+
+<label for="state">State</label>
+{% if states %}
+<select id="state" name="state" onchange="document.getElementById('show-districts').click()">
+<option value="">Select your state</option>
+{% for s in states %}<option value="{{ s }}" {% if s == values.state %}selected{% endif %}>{{ s }}</option>{% endfor %}
+</select>
+<button id="show-districts" type="submit" formmethod="get" formaction="{{ action }}" formnovalidate style="display:none;" aria-hidden="true" tabindex="-1">Show districts for this state</button>
+{% else %}
+<input type="text" id="state" name="state" value="{{ values.state or '' }}" placeholder="e.g. Karnataka">
+{% endif %}
+{% if errors.get('state') %}<div class="err">{{ errors.get('state') }}</div>{% endif %}
+
+<label for="district">District</label>
+{% if districts %}
+<select id="district" name="district">
+<option value="">Select your district</option>
+{% for d in districts %}<option value="{{ d }}" {% if d == values.district %}selected{% endif %}>{{ d }}</option>{% endfor %}
+</select>
+{% else %}
+<input type="text" id="district" name="district" value="{{ values.district or '' }}" placeholder="e.g. Mysuru">
+{% endif %}
+{% if errors.get('district') %}<div class="err">{{ errors.get('district') }}</div>{% endif %}
+
+<label for="pincode">PIN code (optional)</label>
+<input type="text" id="pincode" name="pincode" value="{{ values.pincode or '' }}" placeholder="e.g. 560001" inputmode="numeric" pattern="[1-9][0-9]{5}" maxlength="6">
+{% if errors.get('pincode') %}<div class="err">{{ errors.get('pincode') }}</div>{% endif %}
+
+<div class="consent">
+<p><b>Before you continue</b></p>
+<p>{{ consent_text }}</p>
+<label><input type="checkbox" name="consent" value="1" {% if values.consent %}checked{% endif %}>
+<span>I agree to share these details so a BA can contact me.</span></label>
+{% if errors.get('consent') %}<div class="err">{{ errors.get('consent') }}</div>{% endif %}
+</div>
+
+<button class="btn" type="submit">Connect me with an Business Associate Executive</button>
+</form>
+{% endblock %}

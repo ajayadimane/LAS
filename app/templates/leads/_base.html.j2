@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}LAS — Loan Advisory System{% endblock %}</title>
+<style>
+body{font-family:Arial,Helvetica,sans-serif;background:#f4f6f5;color:#222;margin:0;padding:16px}
+.card{max-width:480px;margin:0 auto;background:#fff;border-radius:8px;padding:24px;box-shadow:0 1px 3px rgba(0,0,0,.15)}
+h1{font-size:20px;margin-top:0}
+label{display:block;margin-top:14px;font-weight:bold;font-size:14px}
+select,input[type=text],input[type=tel]{width:100%;padding:8px;margin-top:4px;font-size:15px;box-sizing:border-box;border:1px solid #ccc;border-radius:4px}
+select[multiple]{height:auto}
+.err{color:#b00020;font-size:13px;margin-top:4px}
+.btn{margin-top:20px;padding:10px 18px;font-size:15px;border:none;border-radius:4px;background:#1a7f37;color:#fff;cursor:pointer}
+.btn.secondary{background:#eee;color:#222;margin-left:8px}
+.consent{font-size:13px;color:#444;background:#f8f8f8;padding:10px;border-radius:4px;margin-top:18px}
+.consent label{font-weight:normal;display:flex;gap:8px;align-items:flex-start}
+ul{padding-left:18px}
+</style>
+</head>
+<body><div class="card">{% block content %}{% endblock %}</div></body>
+</html>

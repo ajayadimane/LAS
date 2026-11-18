@@ -71,3 +71,18 @@ export function readServiceStatus(raw: string | null): { label: string; tone: To
   if (raw === null) return { label: "Not opted", tone: "neutral" };
   return SERVICE[key(raw)] ?? { label: humanise(raw), tone: "neutral" };
 }
+
+/**
+ * The BD list's "Docs uploaded" column. Doc_Status only says whether the
+ * documents are in; once a service's report is ready (its own field reads
+ * "Report ready") that is what the BD wants to see instead.
+ */
+export function readDocsColumn(
+  raw: string | null,
+  services: { status?: string | null }[],
+): Reading<DocBucket> {
+  const ready = services.filter((s) => s.status != null && key(s.status) === "REPORT_READY").length;
+  if (ready > 0 && ready === services.length) return { label: "Report ready", tone: "success", bucket: "done" };
+  if (ready > 0) return { label: `${ready} of ${services.length} reports ready`, tone: "info", bucket: "awaiting" };
+  return readDocStatus(raw);
+}

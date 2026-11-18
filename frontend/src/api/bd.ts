@@ -14,6 +14,8 @@ export interface OptedService {
   code: string;
   name: string;
   fee: number;
+  /** The service's own lifecycle value, e.g. "Report ready"; null = not set. */
+  status?: string | null;
 }
 
 export interface BdCustomer {

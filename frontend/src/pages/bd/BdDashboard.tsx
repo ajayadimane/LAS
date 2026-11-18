@@ -12,7 +12,7 @@ import { StatCard } from "@/components/ui/StatCard";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { cn } from "@/lib/cn";
 import { fullName, phone } from "@/lib/customer";
-import { readDocStatus, readPaymentMode, readPaymentStatus } from "@/lib/customerStatus";
+import { readDocsColumn, readPaymentMode, readPaymentStatus } from "@/lib/customerStatus";
 import { initials, inr } from "@/lib/format";
 import { paths } from "@/routes";
 
@@ -20,8 +20,8 @@ type Filter = "all" | "awaiting" | "not-uploaded" | "pending";
 
 const matches = (c: BdCustomer, filter: Filter) =>
   filter === "all" ||
-  (filter === "awaiting" && readDocStatus(c.doc_status).bucket === "awaiting") ||
-  (filter === "not-uploaded" && readDocStatus(c.doc_status).bucket === "not-uploaded") ||
+  (filter === "awaiting" && readDocsColumn(c.doc_status, c.services).bucket === "awaiting") ||
+  (filter === "not-uploaded" && readDocsColumn(c.doc_status, c.services).bucket === "not-uploaded") ||
   (filter === "pending" && readPaymentStatus(c.payment_status).bucket === "pending");
 
 const amount = (n: number | null) => (n === null ? "—" : inr(n));
@@ -186,7 +186,7 @@ function CustomerRow({ c }: { c: BdCustomer }) {
   const name = fullName(c);
   const pay = readPaymentStatus(c.payment_status);
   const mode = readPaymentMode(c.payment_mode);
-  const docs = readDocStatus(c.doc_status);
+  const docs = readDocsColumn(c.doc_status, c.services);
   const id = c.person_id;
 
   return (

@@ -127,14 +127,43 @@ def test_opted_services_and_statuses_are_read_from_custom_fields(client, vendor)
     customer = response.json()["customers"][0]
     # Catalogue order, with our names and fees.
     assert customer["services"] == [
-        {"code": "DPR_GENERATION", "name": "DPR Generation", "fee": 2000},
-        {"code": "GEO_CHECK", "name": "Geo Check", "fee": 500},
+        {
+            "code": "DPR_GENERATION",
+            "name": "DPR Generation",
+            "fee": 2000,
+            "status": None,
+        },
+        {"code": "GEO_CHECK", "name": "Geo Check", "fee": 500, "status": "OPTED"},
     ]
     assert customer["doc_status"] == "UPLOADED"
     assert customer["payment_status"] == "PENDING"
     assert customer["payment_mode"] == "PAY_LATER"
     # A field's value can be a whole document; it must never reach the list.
     assert big_document not in response.text
+
+
+def test_each_service_carries_its_own_status(client, vendor):
+    """The list's docs column shows "Report ready" from this, since
+    Doc_Status only says the documents are in."""
+    vendor.post(BY_BROKER_ID).mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                _person(
+                    **{
+                        "customFields.GeoCheck": "Report ready",
+                        "customFields.Doc_Status": "Uploaded",
+                    }
+                )
+            ],
+        )
+    )
+
+    customer = client.get("/api/v1/bd/customers", headers=AUTH).json()["customers"][0]
+
+    assert customer["services"] == [
+        {"code": "GEO_CHECK", "name": "Geo Check", "fee": 500, "status": "Report ready"}
+    ]
 
 
 def test_not_set_is_recognised_in_any_case_and_with_padding(client, vendor):
