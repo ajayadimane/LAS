@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { useBdCustomers, type BdCustomer } from "@/api/bd";
 import { useWalletBalance } from "@/api/wallet";
@@ -8,15 +8,19 @@ import { AppSidebar, type NavItem } from "@/components/layout/AppSidebar";
 import { Button } from "@/components/ui/Button";
 import { Icon } from "@/components/ui/Icon";
 import { Input } from "@/components/ui/Input";
-import { StatCard } from "@/components/ui/StatCard";
+import { ComingSoon } from "@/components/ui/ComingSoon";
+import { FilterChip } from "@/components/ui/FilterChip";
+import { KpiCard } from "@/components/ui/KpiCard";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { Pagination } from "@/components/ui/Pagination";
 import { StatusPill } from "@/components/ui/StatusPill";
-import { cn } from "@/lib/cn";
 import { fullName, phone } from "@/lib/customer";
 import { readDocsColumn, readPaymentMode, readPaymentStatus } from "@/lib/customerStatus";
 import { initials, inr } from "@/lib/format";
 import { paths } from "@/routes";
 
 type Filter = "all" | "awaiting" | "not-uploaded" | "pending";
+type FilterTone = "navy" | "info" | "warning" | "danger";
 
 const matches = (c: BdCustomer, filter: Filter) =>
   filter === "all" ||
@@ -26,14 +30,16 @@ const matches = (c: BdCustomer, filter: Filter) =>
 
 const amount = (n: number | null) => (n === null ? "—" : inr(n));
 
-// Sidebar entries other than Dashboard have no screen yet (none in the demo either).
+// Sidebar entries other than Dashboard have no screen yet: shown, but disabled.
 const NAV: NavItem[] = [
   { label: "Dashboard", icon: "grid", active: true },
-  { label: "Customers", icon: "users" },
-  { label: "Reports", icon: "report" },
-  { label: "Billing & invoices", icon: "receipt" },
-  { label: "Commission", icon: "coins" },
+  { label: "Customers", icon: "users", disabled: true },
+  { label: "Reports", icon: "report", disabled: true },
+  { label: "Billing & invoices", icon: "receipt", disabled: true },
+  { label: "Commission", icon: "coins", disabled: true },
 ];
+
+const PAGE_SIZE = 5;
 
 export default function BdDashboard() {
   const navigate = useNavigate();
@@ -42,6 +48,7 @@ export default function BdDashboard() {
   const wallet = useWalletBalance(session.userId);
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
 
   const customers = useMemo(() => query.data?.customers ?? [], [query.data]);
   const counts = useMemo(
@@ -65,11 +72,15 @@ export default function BdDashboard() {
     );
   }, [customers, filter, search]);
 
-  const chips: Array<[Filter, string]> = [
-    ["all", `All (${counts.all})`],
-    ["awaiting", `Docs awaiting report (${counts.awaiting})`],
-    ["not-uploaded", `Docs not uploaded (${counts["not-uploaded"]})`],
-    ["pending", `Payment pending (${counts.pending})`],
+  // Back to page 1 whenever the view changes; the vendor has no paging, so this is client-side.
+  useEffect(() => setPage(1), [filter, search]);
+  const pageRows = visible.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  const chips: Array<[Filter, string, FilterTone]> = [
+    ["all", "All", "navy"],
+    ["awaiting", "Docs awaiting report", "info"],
+    ["not-uploaded", "Docs not uploaded", "warning"],
+    ["pending", "Payment pending", "danger"],
   ];
 
   const stat = (n: number) => (query.isPending ? "–" : n);
@@ -78,78 +89,81 @@ export default function BdDashboard() {
     <div className="flex min-h-full flex-col bg-background lg:flex-row">
       <AppSidebar roleLabel="BD workspace" userName="Business Developer" userPhone={`ID ${session.userId}`} items={NAV} onSignOut={clearSession} />
 
-      <main className="min-w-0 flex-1 px-4 py-8 sm:px-6 lg:px-10 lg:py-10">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <h1 className="text-3xl font-extrabold tracking-tight">Your customers</h1>
-            <p className="mt-2 text-sm text-muted-foreground">Track every customer from onboarding to report delivery.</p>
-          </div>
-          <div className="flex flex-wrap gap-3">
-            <Button variant="outline" className="h-11 rounded-xl" disabled title="Not available yet">
-              <Icon name="download" /> Get reports
-            </Button>
-            <Button className="h-11 rounded-xl" onClick={() => navigate(paths.bdAddCustomer)}>
-              <Icon name="plus" /> Add new customer
-            </Button>
-          </div>
+      <main className="min-w-0 flex-1 px-4 py-8 sm:px-6 lg:px-10 lg:py-8">
+        <PageHeader
+          title="Welcome back"
+          subtitle={<span className="mt-1 inline-block rounded-md bg-muted px-2 py-0.5 text-xs font-semibold text-foreground">BD ID: {session.userId}</span>}
+          actions={
+            <>
+              <ComingSoon>
+                <Button variant="outline" disabled className="h-10 rounded-full border-danger-foreground/40 bg-danger/40 text-danger-foreground">
+                  <Icon name="bell" /> Escalation
+                </Button>
+              </ComingSoon>
+              <ComingSoon>
+                <Button variant="outline-primary" disabled className="h-10 rounded-full">
+                  <Icon name="download" /> Get reports
+                </Button>
+              </ComingSoon>
+            </>
+          }
+        />
+
+        <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-3">
+          <KpiCard label="Total Customers Onboarded" value={stat(counts.all)} tone="warning" icon="usercheck"
+            caption="All active client portfolios" dot />
+          <KpiCard label="Awaiting Your Authorization" value={stat(counts.requests)} tone="info" icon="shieldcheck"
+            caption="Requires BD sign-off" dot />
+          <KpiCard
+            label="Total Service Fee Collected"
+            tone="success"
+            icon="rupee"
+            value={wallet.isPending ? "–" : wallet.isError ? <span className="text-xl">Unavailable</span> : amount(wallet.data.available_amount)}
+            caption={
+              wallet.isError ? (
+                <button className="underline" onClick={() => wallet.refetch()}>Retry</button>
+              ) : wallet.data ? (
+                <>
+                  Available · Total {amount(wallet.data.total_amount)}
+                  {!!wallet.data.locked_amount && ` · locked ${amount(wallet.data.locked_amount)}`}
+                </>
+              ) : null
+            }
+            action={
+              <ComingSoon>
+                <span className="flex items-center gap-1 whitespace-nowrap text-sm font-semibold opacity-60">View Account <Icon name="right" className="h-3.5 w-3.5" /></span>
+              </ComingSoon>
+            }
+          />
         </div>
 
-        <div className="mt-8 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <StatCard label="Customers onboarded" value={stat(counts.all)} />
-          <StatCard label="Awaiting your authorization" value={stat(counts.requests)} tone="info" />
-          <StatCard label="Payment pending" value={stat(counts.pending)} tone="warning" />
-          <div className="rounded-2xl bg-primary p-5 text-primary-foreground">
-            <div className="flex items-start justify-between gap-2">
-              <p className="text-sm font-semibold">Service Fee Account</p>
-              {wallet.isError && (
-                <button className="text-xs underline opacity-80 hover:opacity-100" onClick={() => wallet.refetch()}>
-                  Retry
-                </button>
-              )}
-            </div>
-            <p className="mt-2 text-2xl font-extrabold tracking-tight">
-              {wallet.isPending ? "–" : wallet.isError ? "Unavailable" : amount(wallet.data.available_amount)}
-            </p>
-            {wallet.data && (
-              <p className="text-xs opacity-80">
-                Available · total {amount(wallet.data.total_amount)}
-                {!!wallet.data.locked_amount && ` · locked ${amount(wallet.data.locked_amount)}`}
-              </p>
-            )}
-            <div className="mt-4 flex flex-wrap gap-2">
-              <Button size="sm" variant="ghost" disabled title="Not available yet"
-                className="rounded-lg border border-primary-foreground/50 bg-transparent text-primary-foreground hover:bg-primary-foreground/10">
-                View account
-              </Button>
-            </div>
-          </div>
+        <div className="my-6 flex justify-center">
+          <Button size="lg" className="cta-pop" onClick={() => navigate(paths.bdAddCustomer)}>
+            <Icon name="plus" /> Add New Customer
+          </Button>
         </div>
 
-        <section className="mt-6 overflow-hidden rounded-2xl border bg-card">
-          <div className="flex flex-wrap items-center gap-2 p-5">
-            {chips.map(([value, label]) => (
-              <button key={value} onClick={() => setFilter(value)}
-                className={cn("rounded-full border px-4 py-2 text-xs font-semibold transition-colors",
-                  filter === value ? "border-navy bg-navy text-navy-foreground" : "bg-card hover:bg-muted")}>
-                {label}
-              </button>
+        <section className="overflow-hidden rounded-2xl border bg-card shadow-card">
+          <div className="flex flex-wrap items-center gap-2.5 p-5">
+            {chips.map(([value, label, tone]) => (
+              <FilterChip key={value} label={label} count={query.isPending ? undefined : counts[value]} tone={tone}
+                active={filter === value} onClick={() => setFilter(value)} />
             ))}
-            <div className="relative min-w-[220px] flex-1 lg:ml-auto">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"><Icon name="search" /></span>
-              <Input className="h-10 bg-muted/50 pl-9" placeholder="Search name or phone" value={search}
+            <div className="min-w-[180px] flex-1 lg:ml-auto">
+              <Input icon="search" className="h-10 bg-muted/50" placeholder="Search name or phone…" value={search}
                 onChange={(e) => setSearch(e.target.value)} aria-label="Search customers" />
             </div>
           </div>
 
           <div className="overflow-x-auto">
             <table className="w-full min-w-[820px] text-sm">
-              <thead className="border-y bg-muted/60 text-left text-xs font-semibold text-muted-foreground">
+              <thead className="bg-accent/70 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                 <tr>
-                  <th className="px-5 py-4">Name</th>
+                  <th className="px-6 py-4">Name</th>
                   <th className="px-5 py-4">Services opted</th>
                   <th className="px-5 py-4">Payment status</th>
                   <th className="px-5 py-4">Docs uploaded</th>
-                  <th className="px-5 py-4">Actions</th>
+                  <th className="px-6 py-4 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
@@ -170,11 +184,12 @@ export default function BdDashboard() {
                 ) : visible.length === 0 ? (
                   <Message>No customers match this view.</Message>
                 ) : (
-                  visible.map((c) => <CustomerRow key={c.person_id ?? fullName(c)} c={c} />)
+                  pageRows.map((c) => <CustomerRow key={c.person_id ?? fullName(c)} c={c} />)
                 )}
               </tbody>
             </table>
           </div>
+          <Pagination page={page} pageSize={PAGE_SIZE} total={visible.length} onPage={setPage} noun="customers" />
         </section>
       </main>
     </div>
@@ -190,10 +205,10 @@ function CustomerRow({ c }: { c: BdCustomer }) {
   const id = c.person_id;
 
   return (
-    <tr>
-      <td className="px-5 py-4">
+    <tr className="even:bg-muted/30">
+      <td className="px-6 py-4">
         <div className="flex items-center gap-3">
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-bold">{initials(name)}</span>
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border bg-muted text-xs font-bold">{initials(name)}</span>
           <div>
             <p className="font-bold">{name}</p>
             <p className="text-xs text-muted-foreground">{phone(c)}</p>
@@ -202,8 +217,8 @@ function CustomerRow({ c }: { c: BdCustomer }) {
       </td>
       <td className="px-5 py-4">
         <div className="flex items-center gap-2.5">
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-navy text-sm font-bold text-navy-foreground">{c.services.length}</span>
-          <span className="text-xs text-muted-foreground">{c.services.map((s) => s.name).join(", ") || "None yet"}</span>
+          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-navy text-xs font-bold text-navy-foreground">{c.services.length}</span>
+          <span className="text-sm">{c.services.map((s) => s.name).join(" + ") || <span className="text-muted-foreground">None yet</span>}</span>
         </div>
         {c.requests.length > 0 && (
           <button className="mt-2" onClick={() => navigate(paths.bdCustomer(id!))} disabled={!id}>
@@ -217,12 +232,14 @@ function CustomerRow({ c }: { c: BdCustomer }) {
         <StatusPill tone={pay.tone}>{pay.label}</StatusPill>
         {mode && <p className="mt-1 text-xs text-muted-foreground">{mode}</p>}
       </td>
-      <td className="px-5 py-4"><StatusPill tone={docs.tone}>{docs.label}</StatusPill></td>
-      <td className="px-5 py-4">
+      <td className="px-5 py-4"><StatusPill tone={docs.tone} dot>{docs.label}</StatusPill></td>
+      <td className="px-6 py-4">
         {id && (
-          <div className="flex items-center gap-4">
-            <button className="font-medium text-primary hover:underline" onClick={() => navigate(paths.bdCustomer(id))}>Preview</button>
-            <button aria-label={`Edit ${name}`} className="rounded p-1 hover:bg-muted" onClick={() => navigate(`${paths.bdCustomer(id)}?edit=1`)}>
+          <div className="flex items-center justify-end gap-3">
+            <button className="flex items-center gap-1.5 rounded-lg px-2 py-1 font-medium hover:bg-muted" onClick={() => navigate(paths.bdCustomer(id))}>
+              <Icon name="eye" /> Preview
+            </button>
+            <button aria-label={`Edit ${name}`} className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" onClick={() => navigate(`${paths.bdCustomer(id)}?edit=1`)}>
               <Icon name="pencil" />
             </button>
           </div>

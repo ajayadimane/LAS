@@ -12,7 +12,8 @@ const tones = {
 export function Notice({ tone, className, children }: { tone: keyof typeof tones; className?: string; children: ReactNode }) {
   return (
     <div role={tone === "success" || tone === "info" ? "status" : "alert"}
-      className={cn("mt-6 rounded-xl px-4 py-3 text-sm font-medium", tones[tone], className)}>
+      // A caller margin (e.g. "mt-0") replaces the default; cn() does not merge conflicting classes.
+      className={cn(/(^|\s)m[tyb]?-/.test(className ?? "") ? "" : "mt-6", "rounded-xl px-4 py-3 text-sm font-medium", tones[tone], className)}>
       {children}
     </div>
   );

@@ -36,11 +36,13 @@ export function CustomerAnalysisReport({ service }: { service: CustomerService }
   if (!enabled) return null;
 
   return (
-    <div className="rounded-2xl border p-5">
+    <div className="overflow-hidden rounded-2xl border bg-card p-5 sm:px-7">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <Icon name="report" className="h-4 w-4 text-muted-foreground" />
-          <p className="text-sm font-bold">{service.name}: analysis report</p>
+        <div className="flex items-center gap-3">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-primary/15 bg-accent text-accent-foreground">
+            <Icon name="chart" className="h-5 w-5" />
+          </span>
+          <p className="font-bold">{service.name} Report</p>
         </div>
         {query.data && (
           <StatusPill tone={query.data.status === "completed" ? "success" : "warning"}>

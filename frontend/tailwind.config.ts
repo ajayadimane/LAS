@@ -6,7 +6,7 @@ const tokens = [
   "background", "foreground", "card", "primary", "primary-foreground", "secondary", "secondary-foreground",
   "muted", "muted-foreground", "accent", "accent-foreground", "destructive", "border", "input", "ring",
   "navy", "navy-foreground", "navy-muted", "info", "info-foreground", "warning", "warning-foreground",
-  "success", "success-foreground", "neutral", "neutral-foreground",
+  "success", "success-foreground", "neutral", "neutral-foreground", "danger", "danger-foreground", "surface",
 ];
 
 export default {
@@ -17,6 +17,10 @@ export default {
         sans: ['"Plus Jakarta Sans"', "ui-sans-serif", "system-ui", "-apple-system", "Segoe UI", "Roboto", "sans-serif"],
       },
       borderRadius: { lg: "0.75rem", xl: "1rem", "2xl": "1.25rem", "3xl": "1.5rem" },
+      boxShadow: {
+        card: "0 1px 2px oklch(var(--foreground) / 0.04), 0 4px 16px oklch(var(--foreground) / 0.05)",
+        cta: "0 6px 16px oklch(var(--primary) / 0.28)",
+      },
       colors: Object.fromEntries(tokens.map((k) => [k, `oklch(var(--${k}) / <alpha-value>)`])),
     },
   },
