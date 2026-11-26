@@ -11,6 +11,7 @@ from urllib.parse import quote
 from app.core.config import ServiceConfig, Settings
 from app.services.intake.case_data import CaseData
 from app.services.intake.cases import subject_tag
+from app.services.intake.leads import form_link
 from app.services.intake.upi import qr_png, upi_link
 from app.services.mailer import Mail
 
@@ -26,6 +27,7 @@ _OMITTED = {
     "CHECKSUM_MISMATCH": "could not be read",
 }
 
+GREEN = "#1a7f37"
 _FOOTER_PLAIN = "This is an automated message from LAS."
 _FOOTER = (
     "This is an automated message from LAS. Reply to this email to answer; "
@@ -382,26 +384,88 @@ def expired(ref: str, data: CaseData) -> Mail:
     )
 
 
-def not_registered(their_subject: str, settings: Settings) -> Mail:
-    """The reply to an authenticated sender who is not a registered BD."""
-    contact = (
-        f" ({settings.intake_admin_contact})" if settings.intake_admin_contact else ""
+def not_registered(
+    their_subject: str, settings: Settings, sender: str = ""
+) -> Mail:
+    """The reply to an authenticated sender who is not a registered BD.
+
+    The same lead-capture mail LAS_Email used to send (its template T36): what
+    LAS does, the services and fees, and a button to the details form
+    (a signed link to the form served by this app, see `leads.form_link`;
+    without it the sender is asked to reply with their state, district and
+    mobile number).
+    """
+    link = form_link(settings, sender)
+    services = [s for s in settings.services if s.name]
+    intro = (
+        "Thank you for contacting LAS, the Loan Advisory System by Integra Micro.",
+        "We help farmers and rural businesses prepare a strong loan application "
+        "before it reaches the bank. Most loan files get delayed or returned "
+        "because the project report is incomplete, a document is missing, or the "
+        "credit score comes as a surprise. We help you fix that early.",
     )
-    message = (
-        "You are not a registered BD. Please contact the LAS Admin"
-        f"{contact} to register as a BD."
+    fees = (
+        f"Fees: a one-time joining fee of Rs {settings.joining_fee:,} for new "
+        "customers, plus the service fee shown above."
     )
-    subject = " ".join((their_subject or "").split())[:150]
-    text = "\n".join(["Hello,", "", message, "", _FOOTER_PLAIN])
+    step = (
+        "Next step: tell us your state, district and mobile number, we'll connect "
+        "you with a business associate executive near you for further assistance."
+    )
+    privacy = (
+        "Your details are shared only with the business associate executive for "
+        "your district. We never ask for Aadhaar, PAN or bank details by email."
+    )
+    lines = [
+        f"{x.name}{': ' + x.description if x.description else ''} "
+        f"(Fee: {_rupees(x.fee)})"
+        for x in services
+    ]
+    text_parts = ["Dear Sir/Madam,", "", *intro, "", "How we can help"]
+    text_parts += [f"- {line}" for line in lines]
+    text_parts += ["", fees, "", step]
+    if link:
+        text_parts += ["", f"Connect me with a Business Associate Executive: {link}"]
+    text_parts += [
+        "",
+        privacy,
+        "",
+        "Regards,",
+        "LAS Team, Integra Micro",
+        "",
+        _FOOTER_PLAIN,
+    ]
+
+    items = "".join(
+        f"<li><strong>{escape(x.name)}</strong>"
+        + (f": {escape(x.description)}" if x.description else "")
+        + f" (Fee: {escape(_rupees(x.fee))})</li>"
+        for x in services
+    )
+    button = (
+        f"<p>{_button(link, 'Connect me with a Business Associate Executive', GREEN)}"
+        "</p>"
+        f'<p style="font-size:13px;color:#555">If the button does not work, copy this '
+        f'link into your browser:<br><a href="{escape(link)}">{escape(link)}</a></p>'
+        if link
+        else ""
+    )
     html = (
         '<div style="font-family:Arial,sans-serif;font-size:14px;color:#1f2937;'
-        f'line-height:1.5"><p>Hello,</p><p>{escape(message)}</p>'
+        'line-height:1.5"><p>Dear Sir/Madam,</p>'
+        f"<p>{escape(intro[0])}</p><p>{escape(intro[1])}</p>"
+        f"<p><strong>How we can help</strong></p><ul>{items}</ul>"
+        f"<p>{escape(fees)}</p><p><strong>Next step:</strong> "
+        f"{escape(step.removeprefix('Next step: '))}</p>{button}"
+        f'<p style="font-size:13px;color:#555">{escape(privacy)}</p>'
+        "<p>Regards,<br>LAS Team, Integra Micro</p>"
         f'<p style="color:#6b7280;font-size:12px">{escape(_FOOTER_PLAIN)}</p></div>'
     )
+    subject = " ".join((their_subject or "").split())[:150]
     return Mail(
         to="",
-        subject=f"Re: {subject}" if subject else "LAS: not a registered BD",
-        text=text,
+        subject=f"Re: {subject}" if subject else "LAS: Planning an agri loan?",
+        text="\n".join(text_parts),
         html=html,
         auto_submitted=True,
     )

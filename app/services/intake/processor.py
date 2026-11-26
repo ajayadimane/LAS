@@ -404,7 +404,7 @@ class IntakeProcessor:
         if await self._db(store.replied_to_unknown_sender_recently, sender):
             return "IGNORED", "UNKNOWN_SENDER"
         mail = replace(
-            templates.not_registered(event.thread.subject, self._settings),
+            templates.not_registered(event.thread.subject, self._settings, sender),
             to=sender,
             in_reply_to=event.event_id,
             references=tuple(event.thread.references[-10:]),

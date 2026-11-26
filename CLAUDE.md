@@ -279,8 +279,11 @@ The vendor product is **iWallet**. There is no OpenAPI spec; the contract is 13 
   vendor 409 continues only if the person is this BD's; 5xx = NEEDS_ATTENTION, never retried.
   Ends in AWAITING_PAYMENT with a "Pay now / Pay later" mailto mail, which also carries the
   customer's user id + temporary password (user, 2026-11-16; never stored with the case). An
-  authenticated sender not in `INTAKE_BD_SENDERS` gets "You are not a registered BD. Please
-  contact the LAS Admin to register as a BD." at most once a day; LAS_Email forwards such mail
+  authenticated sender not in `INTAKE_BD_SENDERS` gets the old LAS_Email lead-capture reply
+  (what LAS does, services + fees, "Connect me with a Business Associate Executive" button to
+  a signed, single-use form page of ours, `app/api/leads_web.py` + `services/intake/leads.py`; mobile, state,
+  district, PIN, consent; saved in `intake_leads` (migration 016) and emailed to `INTAKE_LEAD_NOTIFY_EMAIL`;
+  needs `INTAKE_PUBLIC_BASE_URL`, unset = no button; no BD routing, the admin routes by hand; user 2026-11-18) at most once a day; LAS_Email forwards such mail
   without extraction, and never forwards a sender failing SPF/DKIM/DMARC. **Phase 2 done** (verified live
   2026-11-16: Pay later reply -> Rs 1,295 pool transfer, txn 7528005146682114048, test
   customer 9531477342): the choice is read deterministically

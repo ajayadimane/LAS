@@ -15,6 +15,9 @@
   --warning: 0.94 0.06 80; --warning-foreground: 0.5 0.12 55;
   --success: 0.93 0.06 160; --success-foreground: 0.45 0.1 160;
   --neutral: 0.945 0.006 250; --neutral-foreground: 0.5 0.02 250;
+  --danger: 0.95 0.03 15; --danger-foreground: 0.52 0.17 20;
+  /* Mint fill for inputs and tinted panels (Figma redesign). */
+  --surface: 0.965 0.012 165;
   color-scheme: light;
 }
 
@@ -31,6 +34,7 @@
     --warning: 0.32 0.06 70; --warning-foreground: 0.88 0.1 85;
     --success: 0.3 0.06 160; --success-foreground: 0.85 0.1 160;
     --neutral: 0.28 0.02 255; --neutral-foreground: 0.75 0.02 250;
+    --danger: 0.3 0.07 20; --danger-foreground: 0.85 0.09 20; --surface: 0.25 0.03 200;
     color-scheme: dark;
   }
 }
@@ -47,6 +51,7 @@
   --warning: 0.32 0.06 70; --warning-foreground: 0.88 0.1 85;
   --success: 0.3 0.06 160; --success-foreground: 0.85 0.1 160;
   --neutral: 0.28 0.02 255; --neutral-foreground: 0.75 0.02 250;
+    --danger: 0.3 0.07 20; --danger-foreground: 0.85 0.09 20; --surface: 0.25 0.03 200;
   color-scheme: dark;
 }
 
@@ -69,6 +74,14 @@
   button:focus-visible, label:focus-within > .check, .btn:focus-within { outline: 2px solid oklch(var(--ring)); outline-offset: 2px; }
   .check { width: 1rem; height: 1rem; accent-color: oklch(var(--primary)); flex-shrink: 0; }
   .otp { letter-spacing: 0.6em; }
+  /* Frosted card on the sign-in backdrop. */
+  .glass { background: oklch(var(--card) / 0.86); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+  .signin-backdrop {
+    background:
+      radial-gradient(60% 70% at 25% 45%, oklch(var(--primary) / 0.9), transparent 70%),
+      linear-gradient(135deg, oklch(var(--primary) / 0.85) 0%, oklch(var(--primary) / 0.55) 40%, oklch(var(--navy)) 100%);
+    background-color: oklch(var(--navy));
+  }
   .filepick::file-selector-button {
     margin-right: .75rem; border: 0; border-radius: .5rem; padding: .4rem .75rem; font: inherit; font-size: .75rem; font-weight: 600;
     background: oklch(var(--muted)); color: oklch(var(--foreground)); cursor: pointer;
@@ -80,13 +93,26 @@
   .toast { animation: toast-in .2s ease-out; }
   .dialog { animation: pop .16s ease-out; max-height: calc(100% - 2rem); overflow-y: auto; }
   .drawer { animation: slide .18s ease-out; padding-top: env(safe-area-inset-top, 0px); }
+  /* A call to action that pops in on load, then floats gently; springs on hover / press.
+     The float moves `translate`, so it composes with the hover `transform`. */
+  .btn.cta-pop {
+    animation: cta-pop .5s cubic-bezier(.34, 1.56, .64, 1) .15s backwards,
+      cta-float 4s ease-in-out .65s infinite;
+    transition: transform .18s cubic-bezier(.34, 1.56, .64, 1), box-shadow .18s ease-out, background-color .15s;
+  }
+  .cta-pop:hover:not(:disabled) { transform: translateY(-2px) scale(1.04); }
+  .cta-pop:active:not(:disabled) { transform: scale(.96); }
+  .cta-pop:hover { animation-play-state: running, paused; }
 }
 
 @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
 @keyframes pop { from { opacity: 0; transform: scale(.97); } }
 @keyframes slide { from { transform: translateX(-100%); } }
+@keyframes cta-pop { from { opacity: 0; transform: scale(.6); } }
+@keyframes cta-float { 50% { translate: 0 -6px; } }
 
 @media (prefers-reduced-motion: reduce) {
-  .toast, .dialog, .drawer { animation: none; }
+  .toast, .dialog, .drawer, .btn.cta-pop { animation: none; }
+  .cta-pop:hover:not(:disabled), .cta-pop:active:not(:disabled) { transform: none; }
   * { transition: none !important; }
 }

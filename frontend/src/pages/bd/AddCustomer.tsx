@@ -1,15 +1,20 @@
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { useCreateCustomer, useCreateLogin, useOpenWallet, type CreateCustomerInput } from "@/api/bd";
 import { ApiError } from "@/api/client";
 import { proves, useOtpSettings, type OtpProof } from "@/api/otp";
 import { useSession } from "@/auth/AuthContext";
+import { useCustomerServices } from "@/api/services";
+import { AnalysisReportCard } from "@/components/AnalysisReport";
 import { OtpVerify } from "@/components/OtpVerify";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
 import { Icon } from "@/components/ui/Icon";
 import { Input } from "@/components/ui/Input";
 import { Notice } from "@/components/ui/Notice";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { SectionCard } from "@/components/ui/SectionCard";
+import { StepBadge, Stepper } from "@/components/ui/Stepper";
 import { useToast } from "@/components/ui/Toast";
 import { copyText } from "@/lib/format";
 import { paths } from "@/routes";
@@ -19,6 +24,10 @@ import { ServicesPayment } from "./ServicesPayment";
  * Adding a customer is: register the person, open their wallet, create their
  * login (all in one middleware call). Services unlock once the wallet is open;
  * opting, payment and documents are in ServicesPayment.
+ *
+ * Shown as a four-step wizard: details, services & payment, uploads, analysis.
+ * The step is page state, not in the URL: the temporary password lives only
+ * in this page's memory, and a reload of a later step would lose it.
  * The login's temporary password is shown once, here; it is never stored.
  * The mobile number and email are each verified by OTP before saving.
  */
@@ -29,6 +38,8 @@ const EMPTY: Form = {
   first_name: "", last_name: "", mobile_number: "", email_address: "",
   street_address: "", city: "", state_province: "", postal_code: "",
 };
+
+const STEPS = ["Customer details", "Services & docs", "Uploads", "Analysis"];
 
 const digits = (s: string) => s.replace(/\D/g, "");
 
@@ -127,6 +138,14 @@ export default function AddCustomer() {
       onSuccess: (res) => toast(res.already_exists ? "This customer already has a login" : "Login created", "success"),
     });
 
+  const services = useCustomerServices(session.userId, walletReady ? personId : null);
+  const paid = services.data?.services.filter((sv) => sv.opted) ?? [];
+  const withDocs = paid.filter((sv) => sv.document);
+  // How far the wizard may go: services need the wallet, uploads a paid service, analysis a document.
+  const reachable = !walletReady ? 1 : paid.length === 0 ? 2 : withDocs.length === 0 ? 3 : 4;
+  const [step, setStep] = useState(1);
+  const go = (n: number) => { setStep(n); window.scrollTo({ top: 0, behavior: "smooth" }); };
+
   // An already-registered customer: finish whatever steps are missing.
   const finishSetup = (id: string) =>
     openWallet.mutate(id, { onSuccess: () => retryLogin(id) });
@@ -135,28 +154,32 @@ export default function AddCustomer() {
   return (
     <div className="min-h-full bg-background px-4 py-10 sm:px-6">
       <div className="mx-auto w-full max-w-[980px]">
-        <button onClick={() => navigate(paths.bdDashboard)}
-          className="flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground">
-          <Icon name="left" /> Customers / Add new customer
-        </button>
-        <h1 className="mt-6 text-3xl font-extrabold tracking-tight">Add new customer</h1>
+        <PageHeader
+          title="Add New Customer"
+          subtitle="Complete the customer onboarding process."
+          onBack={() => navigate(paths.bdDashboard)}
+          backLabel="Back to customers"
+          actions={<StepBadge current={step} total={STEPS.length} />}
+        />
+        <Stepper className="mt-6" steps={STEPS} current={step} reachable={reachable} onSelect={go} />
 
         {/* 1. Customer details */}
-        <form onSubmit={onSave} noValidate className="mt-8 rounded-3xl border bg-card p-6 sm:p-7">
-          <StepTitle n={1} done={personId !== null}>Customer details</StepTitle>
-
-          <fieldset disabled={locked} className="mt-6 grid grid-cols-1 gap-5 disabled:opacity-70 md:grid-cols-2">
+        {step === 1 && (
+        <form onSubmit={onSave} noValidate className="mt-6">
+          <SectionCard step={1} title="Customer details"
+            subtitle="Provide the primary borrower's personal identification and residential address.">
+          <fieldset disabled={locked} className="grid grid-cols-1 gap-5 disabled:opacity-70 md:grid-cols-2">
             <Field label="First name" required htmlFor="ac-first" error={show("first_name")}>
-              <Input id="ac-first" className="h-12" placeholder="Enter first name" autoComplete="off"
+              <Input id="ac-first" icon="user" className="h-12 bg-surface" placeholder="Enter first name" autoComplete="off"
                 value={form.first_name} onChange={set("first_name")} />
             </Field>
             <Field label="Last name" htmlFor="ac-last" error={show("last_name")}>
-              <Input id="ac-last" className="h-12" placeholder="Enter last name" autoComplete="off"
+              <Input id="ac-last" icon="user" className="h-12 bg-surface" placeholder="Enter last name" autoComplete="off"
                 value={form.last_name} onChange={set("last_name")} />
             </Field>
             <Field label="Mobile number" required htmlFor="ac-mob" error={show("mobile_number")}>
-              <div className="field-wrap flex h-12 items-center rounded-xl border border-input bg-card">
-                <span className="pl-3 pr-2 text-sm text-muted-foreground">+91</span>
+              <div className="field-wrap flex h-12 items-center rounded-xl border border-input bg-surface">
+                <span className="flex items-center gap-2 pl-3.5 pr-2 text-sm text-muted-foreground"><Icon name="phone" /> +91</span>
                 <input id="ac-mob" inputMode="numeric" placeholder="98765 43210" autoComplete="off"
                   className="h-full w-full rounded-r-xl bg-transparent pr-3 text-sm outline-none placeholder:text-muted-foreground"
                   value={form.mobile_number}
@@ -171,7 +194,7 @@ export default function AddCustomer() {
               )}
             </Field>
             <Field label="Email ID" required htmlFor="ac-email" error={show("email_address")}>
-              <Input id="ac-email" type="email" className="h-12" placeholder="name@example.com" autoComplete="off"
+              <Input id="ac-email" type="email" icon="mail" className="h-12 bg-surface" placeholder="name@example.com" autoComplete="off"
                 value={form.email_address} onChange={set("email_address")} />
               {otpRequired && (
                 <OtpVerify channel="email" purpose="register" value={form.email_address} personId={mobile}
@@ -183,21 +206,21 @@ export default function AddCustomer() {
               )}
             </Field>
             <Field label="Street address" required htmlFor="ac-street" error={show("street_address")} className="md:col-span-2">
-              <Input id="ac-street" className="h-12" placeholder="House no., street, area"
+              <Input id="ac-street" icon="mappin" className="h-12 bg-surface" placeholder="House no., street, area"
                 value={form.street_address} onChange={set("street_address")} />
             </Field>
             <Field label="City" required htmlFor="ac-city" error={show("city")}>
-              <Input id="ac-city" className="h-12" placeholder="Bengaluru" value={form.city} onChange={set("city")} />
+              <Input id="ac-city" icon="mappin" className="h-12 bg-surface" placeholder="Bengaluru" value={form.city} onChange={set("city")} />
             </Field>
             <Field label="State" required htmlFor="ac-state" error={show("state_province")}>
-              <Input id="ac-state" className="h-12" placeholder="Karnataka" value={form.state_province} onChange={set("state_province")} />
+              <Input id="ac-state" icon="mappin" className="h-12 bg-surface" placeholder="Karnataka" value={form.state_province} onChange={set("state_province")} />
             </Field>
             <Field label="Postal code" required htmlFor="ac-pin" error={show("postal_code")}>
-              <Input id="ac-pin" inputMode="numeric" className="h-12" placeholder="560001"
+              <Input id="ac-pin" inputMode="numeric" icon="hash" className="h-12 bg-surface" placeholder="560001"
                 value={form.postal_code} onChange={set("postal_code")} />
             </Field>
             <Field label="Country" htmlFor="ac-country">
-              <Input id="ac-country" className="h-12" value="India (IN)" disabled />
+              <Input id="ac-country" icon="globe" className="h-12 bg-muted" value="India (IN)" disabled />
             </Field>
           </fieldset>
 
@@ -222,7 +245,7 @@ export default function AddCustomer() {
           {personId && walletReady && (
             <Notice tone="success">
               {create.data ? `${name} is registered and their service fee account is open.` : "Service fee account opened for the existing customer."}
-              {" "}Choose services below.
+              {" "}Continue to choose services.
             </Notice>
           )}
 
@@ -254,27 +277,69 @@ export default function AddCustomer() {
             </Notice>
           )}
 
-          {personId === null && (
-            <div className="mt-6 flex flex-wrap items-center justify-end gap-3">
-              {submitted && Object.keys(errors).length > 0 && (
-                <p className="mr-auto text-xs text-destructive">Fix the highlighted fields to continue.</p>
-              )}
-              <Button variant="outline" className="h-11 rounded-xl" onClick={() => navigate(paths.bdDashboard)}>Cancel</Button>
-              <Button type="submit" className="h-11 rounded-xl" disabled={create.isPending}>
-                {create.isPending ? "Saving customer…" : <>Save customer <Icon name="right" /></>}
+          <div className="mt-7 flex flex-wrap items-center justify-end gap-3 border-t pt-6">
+            {personId === null ? (
+              <>
+                {submitted && Object.keys(errors).length > 0 && (
+                  <p className="mr-auto text-xs text-destructive">Fix the highlighted fields to continue.</p>
+                )}
+                <Button variant="outline" className="h-11 rounded-xl px-6" onClick={() => navigate(paths.bdDashboard)}>Cancel</Button>
+                <Button type="submit" size="lg" disabled={create.isPending}>
+                  {create.isPending ? "Saving customer…" : <>Save customer <Icon name="right" /></>}
+                </Button>
+              </>
+            ) : (
+              <Button size="lg" disabled={!walletReady} onClick={() => go(2)}>
+                Continue to services <Icon name="right" />
               </Button>
-            </div>
-          )}
+            )}
+          </div>
+          </SectionCard>
         </form>
+        )}
 
-        <ServicesPayment bdId={session.userId} personId={walletReady ? personId : null} step={2} />
+        {step === 2 && (
+          <div className="mt-6">
+            <ServicesPayment bdId={session.userId} personId={walletReady ? personId : null} step={2}
+              onGoToUploads={() => go(3)} />
+          </div>
+        )}
+
+        {step === 3 && (
+          <div className="mt-6">
+            <ServicesPayment bdId={session.userId} personId={walletReady ? personId : null} step={3} view="uploads" />
+          </div>
+        )}
+
+        {step === 4 && personId && (
+          <div className="mt-6 space-y-5">
+            {withDocs.length === 0 ? (
+              <SectionCard step={4} title="Analysis" subtitle="Upload a document to start its analysis." />
+            ) : (
+              withDocs.map((sv) => <AnalysisReportCard key={sv.code} bdId={session.userId} personId={personId} service={sv} />)
+            )}
+          </div>
+        )}
 
         {personId && (
           <div className="mt-6 flex flex-wrap justify-end gap-3">
-            <Button variant="outline" className="h-11 rounded-xl" onClick={() => navigate(paths.bdDashboard)}>Back to customers</Button>
+            {step > 1 && (
+              <Button variant="outline" className="h-11 rounded-xl" onClick={() => go(step - 1)}>
+                <Icon name="left" /> Back
+              </Button>
+            )}
+            {step >= 2 && step < STEPS.length && (
+              <Button variant="outline-primary" className="h-11 rounded-xl" disabled={reachable <= step} onClick={() => go(step + 1)}>
+                Next: {STEPS[step]} <Icon name="right" />
+              </Button>
+            )}
             <Button className="h-11 rounded-xl" onClick={() => navigate(paths.bdCustomer(personId))}>View customer <Icon name="right" /></Button>
           </div>
         )}
+
+        <p className="mt-8 flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
+          <Icon name="lock" className="h-3.5 w-3.5 text-primary" /> 256-bit encrypted bank-grade data transmission &amp; LAS regulatory compliant
+        </p>
       </div>
     </div>
   );
@@ -314,17 +379,6 @@ function Credentials({ userId, password, emailedTo, emailError }: {
           password is shown only once and is not stored anywhere.
         </p>
       </div>
-    </div>
-  );
-}
-
-function StepTitle({ n, done, children }: { n: number; done?: boolean; children: ReactNode }) {
-  return (
-    <div className="flex items-center gap-3">
-      <span className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-sm font-bold text-primary-foreground">
-        {done ? <Icon name="check" className="h-4 w-4" /> : n}
-      </span>
-      <h2 className="text-lg font-bold">{children}</h2>
     </div>
   );
 }

@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI
 
+from app.api import leads_web
 from app.api.v1 import dpr_analysis, health, intake
 from app.api.v1.router import api_router
 from app.clients.otp_client import OtpClient, build_otp_http_client
@@ -201,6 +202,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(dpr_analysis.router, prefix=prefix)
     # Service-to-service (LAS_Email), also off the dashboard's /api/v1.
     app.include_router(intake.router, prefix=prefix)
+    # Public lead form opened from the "not a registered BD" reply.
+    app.include_router(leads_web.router, prefix=prefix)
     return app
 
 

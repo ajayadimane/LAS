@@ -10,6 +10,12 @@ class OptedService(BaseModel):
     code: str = Field(examples=["DPR_ANALYSIS"])
     name: str = Field(examples=["DPR Analysis"])
     fee: int = Field(description="Whole rupees, from our config.")
+    status: str | None = Field(
+        default=None,
+        description="The service's own lifecycle value (e.g. 'Report ready'); "
+        "null when not set.",
+        examples=["Docs uploaded"],
+    )
 
 
 class BdCustomer(BaseModel):

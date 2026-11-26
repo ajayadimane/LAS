@@ -507,6 +507,15 @@ class Settings(BaseSettings):
     # How to reach the LAS Admin, added to the "you are not a registered BD"
     # reply if set (e.g. an email address or phone number).
     intake_admin_contact: str | None = None
+    # The lead-capture reply ("not a registered BD") links to a details form
+    # served by this app. The link needs the address the sender can reach us on
+    # (e.g. https://las.example.com; the context path is added) and
+    # INTAKE_ENCRYPTION_KEY to sign it. Unset = no button: the sender is asked
+    # to reply with state, district and mobile.
+    intake_public_base_url: str | None = None
+    intake_lead_link_hours: float = Field(default=168.0, gt=0)
+    # Submitted lead details are emailed here (the LAS Admin).
+    intake_lead_notify_email: str | None = None
 
     @field_validator("intake_bd_senders")
     @classmethod

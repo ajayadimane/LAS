@@ -11,7 +11,7 @@ import { AppSidebar, type NavItem } from "@/components/layout/AppSidebar";
 import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
 import { Icon } from "@/components/ui/Icon";
-import { StatCard } from "@/components/ui/StatCard";
+import { ComingSoon } from "@/components/ui/ComingSoon";
 import { StatusPill, type Tone } from "@/components/ui/StatusPill";
 import { useToast } from "@/components/ui/Toast";
 import { UpiQr, upiLink } from "@/components/ui/UpiQr";
@@ -20,6 +20,7 @@ import { cn } from "@/lib/cn";
 import { address, fullName, phone } from "@/lib/customer";
 import { readPaymentMode } from "@/lib/customerStatus";
 import { inr, inrShort } from "@/lib/format";
+import { serviceIcon } from "@/lib/serviceIcons";
 import { paths } from "@/routes";
 
 /**
@@ -32,7 +33,6 @@ import { paths } from "@/routes";
  */
 
 const STEPS = ["Upload", "Approval", "Analysis", "Report"];
-const NOT_YET = "Not available yet";
 
 /** How far along the four steps a service is, from its lifecycle field. */
 const PROGRESS: Record<string, number> = { OPTED: 0, DOCS_UPLOADED: 1, APPROVED: 2, REPORT_READY: 4 };
@@ -79,10 +79,9 @@ export default function CustomerHome() {
   const [reportingService, setReportingService] = useState<CustomerService | null>(null);
 
   const mine = state.data?.services.filter((s) => s.opted || s.requested) ?? [];
-  const awaitingReport = mine.filter((s) => statusKey(s.status) === "DOCS_UPLOADED").length;
-  // Pay later services: LAS paid from the pool and the customer owes it back.
-  const paymentDue = mine.filter((s) => s.opted && isPayLater(s)).length;
-  const stat = (n: number) => (state.isPending ? "–" : n);
+  const catalog = useCatalog();
+  // A service picked from the "Our Services" grid opens the dialog on it.
+  const [preselect, setPreselect] = useState<CatalogService | null>(null);
 
   const p = profile.data;
   const name = p ? fullName(p) : "";
@@ -100,35 +99,48 @@ export default function CustomerHome() {
       <AppSidebar roleLabel="Customer" userName={name || "Customer"} userPhone={p ? phone(p) : `ID ${session.userId}`}
         items={nav} onSignOut={clearSession} />
 
-      <main className="min-w-0 flex-1 px-4 py-8 sm:px-6 lg:px-10 lg:py-10">
+      <main className="min-w-0 flex-1 px-4 pb-24 pt-8 sm:px-6 lg:px-10 lg:pt-10">
         <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <h1 className="text-3xl font-extrabold tracking-tight">
-              Welcome back{p?.first_name ? `, ${p.first_name}` : ""}
+          <div className="min-w-0">
+            <span className="inline-flex items-center gap-2 rounded-full bg-accent px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-accent-foreground">
+              <span className="h-1.5 w-1.5 rounded-full bg-primary" aria-hidden="true" /> Customer portal / Loan advisor service
+            </span>
+            <h1 className="mt-2 text-3xl font-extrabold tracking-tight sm:text-4xl">
+              Welcome{p?.first_name ? ` ${p.first_name}` : " back"}
             </h1>
-            <p className="mt-2 text-sm text-muted-foreground">Track your services, documents and service fee account in one place.</p>
           </div>
-          <div className="flex flex-wrap gap-3">
-            <Button variant="outline" className="h-11 rounded-xl" disabled title={NOT_YET}>
-              <Icon name="message" /> Feedback & grievance
-            </Button>
-            <Button className="h-11 rounded-xl" onClick={() => setDialog("new")} disabled={!state.data}>
-              <Icon name="plus" /> Choose new service
-            </Button>
-          </div>
+          <button onClick={() => setDialog("account")} aria-label="Open Service Fee Account"
+            className="w-44 rounded-xl bg-gradient-to-br from-primary to-navy p-3 text-left text-primary-foreground shadow-cta transition-transform hover:-translate-y-0.5">
+            <span className="flex items-center gap-1.5 text-[10px] opacity-80"><Icon name="wallet" className="h-3 w-3" /> LAS ID {session.userId}</span>
+            <span className="mt-0.5 block text-xs font-bold">Service Fee Account</span>
+            <span className="mt-2 block text-[9px] uppercase tracking-wider opacity-70">Available balance</span>
+            <span className="block text-lg font-extrabold tabular-nums">{balance}</span>
+          </button>
         </div>
 
-        <div className="mt-8 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <div className="rounded-2xl bg-navy p-6 text-navy-foreground">
-            <p className="flex items-center gap-2 text-sm font-semibold"><Icon name="wallet" /> Service Fee Account</p>
-            <p className="mt-3 text-2xl font-extrabold tabular-nums">{balance}</p>
+        <div className="mt-4 flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 className="flex flex-wrap items-center gap-2 text-xl font-bold">
+              Our Services <span className="rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">Mandatory &amp; Add-ons</span>
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">Choose advisory and verification services tailored for your loan application.</p>
           </div>
-          <StatCard label="Services opted" value={stat(mine.length)} />
-          <StatCard label="Awaiting report" value={stat(awaitingReport)} tone="info" />
-          <StatCard label="Payment due" value={stat(paymentDue)} tone="warning" />
+          {catalog.data && (
+            <StatusPill tone="info" icon="sparkle">{catalog.data.services.length} options available</StatusPill>
+          )}
         </div>
 
-        <section className="mt-8 overflow-hidden rounded-2xl border bg-card">
+        <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {catalog.isPending && <p className="text-sm text-muted-foreground">Loading services…</p>}
+          {catalog.isError && <p className="text-sm text-destructive">{catalog.error.message}</p>}
+          {catalog.data?.services.map((c) => (
+            <ServiceCard key={c.code} service={c} state={mine.find((m) => m.code === c.code)}
+              disabled={!state.data || state.data.payment_in_progress}
+              onChoose={() => { setPreselect(c); setDialog("new"); }} />
+          ))}
+        </div>
+
+        <section className="mt-8 overflow-hidden rounded-2xl border bg-card shadow-card">
           <div className="flex flex-wrap items-center justify-between gap-2 px-5 py-5">
             <h2 className="text-lg font-bold">My services</h2>
             <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -137,7 +149,7 @@ export default function CustomerHome() {
           </div>
           <div className="overflow-x-auto">
             <table className="w-full min-w-[860px] text-sm">
-              <thead className="border-y bg-muted/60 text-left text-xs font-semibold text-muted-foreground">
+              <thead className="border-y bg-accent/70 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                 <tr>
                   <th className="px-5 py-4">Service</th>
                   <th className="px-5 py-4">Documents</th>
@@ -173,10 +185,19 @@ export default function CustomerHome() {
             </p>
           )}
         </section>
+
+        <div className="fixed bottom-6 right-6 z-20">
+          <ComingSoon>
+            <Button variant="outline" disabled className="h-11 rounded-full px-5 shadow-card disabled:opacity-80">
+              <Icon name="message" /> Feedback &amp; grievance
+            </Button>
+          </ComingSoon>
+        </div>
       </main>
 
       {state.data && (
-        <NewServiceDialog open={dialog === "new"} onClose={() => setDialog(null)} services={state.data.services}
+        <NewServiceDialog key={preselect?.code ?? "list"} initial={preselect} open={dialog === "new"}
+          onClose={() => { setDialog(null); setPreselect(null); }} services={state.data.services}
           firstPayment={state.data.first_payment} blocked={state.data.payment_in_progress} bdId={p?.broker_id ?? null} />
       )}
       <Dialog open={dialog === "profile"} onClose={() => setDialog(null)} title="Profile">
@@ -206,6 +227,56 @@ export default function CustomerHome() {
       </Dialog>
     </div>
   );
+}
+
+/** One catalogue service in the "Our Services" grid; opted ones show their status. */
+function ServiceCard({ service: c, state, disabled, onChoose }: {
+  service: CatalogService;
+  state: CustomerService | undefined;
+  disabled: boolean;
+  onChoose: () => void;
+}) {
+  const taken = !!state;
+  const status = state ? serviceStatus(state) : null;
+  const inner = (
+    <>
+      <div className="flex items-start justify-between gap-2">
+        <span className={cn("flex h-11 w-11 items-center justify-center rounded-xl border",
+          taken ? "border-primary bg-primary text-primary-foreground" : "bg-card text-accent-foreground")}>
+          <Icon name={serviceIcon(c.code)} className="h-5 w-5" />
+        </span>
+        {taken && <StatusPill tone="success" icon="checkcircle" className="mr-auto ml-2 mt-2.5">Opted</StatusPill>}
+        <span aria-hidden="true" className={cn("flex h-5 w-5 items-center justify-center rounded-md border",
+          taken ? "border-primary bg-primary text-primary-foreground" : "bg-card")}>
+          {taken && <Icon name="check" className="h-3.5 w-3.5" />}
+        </span>
+      </div>
+      <p className="mt-3 flex flex-wrap items-center gap-2 text-lg font-bold">
+        {c.name}
+        {status && <StatusPill tone={status.tone}>{status.label}</StatusPill>}
+      </p>
+      <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{c.description}</p>
+      <div className="mt-auto flex items-end justify-between gap-2 border-t pt-3">
+        <div>
+          <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Service fee</p>
+          <p className="text-xs text-muted-foreground">
+            {taken ? "Included in workflow" : c.external ? "On partner portal" : "One-time payment"}
+          </p>
+        </div>
+        <span className={cn("text-xl font-extrabold tabular-nums", taken && "text-accent-foreground")}>{inrShort(c.fee)}</span>
+      </div>
+    </>
+  );
+  const box = cn("flex min-h-[13rem] flex-col gap-0 rounded-2xl border p-4 pt-3.5 text-left transition-colors",
+    taken ? "border-primary/60 bg-accent shadow-card" : "bg-gradient-to-br from-accent/60 to-card hover:border-primary/40");
+
+  if (taken) return <div className={box}>{inner}</div>;
+  if (c.external) {
+    return c.portal_url
+      ? <a href={c.portal_url} target="_blank" rel="noopener noreferrer" className={box}>{inner}</a>
+      : <div className={box}>{inner}</div>;
+  }
+  return <button type="button" className={cn(box, "disabled:opacity-60")} disabled={disabled} onClick={onChoose}>{inner}</button>;
 }
 
 function ServiceRow({ service: s, onViewReport }: { service: CustomerService; onViewReport: () => void }) {
@@ -294,7 +365,9 @@ function ServiceRow({ service: s, onViewReport }: { service: CustomerService; on
   );
 }
 
-function NewServiceDialog({ open, onClose, services, firstPayment, blocked, bdId }: {
+function NewServiceDialog({ initial, open, onClose, services, firstPayment, blocked, bdId }: {
+  /** Open straight on this service (picked from the grid). */
+  initial?: CatalogService | null;
   open: boolean;
   onClose: () => void;
   services: CustomerService[];
@@ -305,7 +378,7 @@ function NewServiceDialog({ open, onClose, services, firstPayment, blocked, bdId
   const toast = useToast();
   const catalog = useCatalog();
   const request = useRequestServices();
-  const [chosen, setChosen] = useState<CatalogService | null>(null);
+  const [chosen, setChosen] = useState<CatalogService | null>(initial ?? null);
   const [mode, setMode] = useState<PaymentMode | null>(null);
   const [consent, setConsent] = useState(false);
   const [details, setDetails] = useState<ServiceDetails>({});

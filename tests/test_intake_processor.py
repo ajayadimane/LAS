@@ -361,10 +361,9 @@ async def test_unknown_sender_is_told_to_contact_the_las_admin(
     assert reply.subject == "Re: Loan enquiry"
     assert reply.in_reply_to == event.event_id
     assert reply.auto_submitted
-    assert (
-        "You are not a registered BD. Please contact the LAS Admin to register as a BD."
-        in reply.text
-    )
+    assert "Thank you for contacting LAS" in reply.text
+    assert "How we can help" in reply.text
+    assert "state, district and mobile number" in reply.text
     assert _cases(db) == []
     assert routes["login"].call_count == 0
 

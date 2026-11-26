@@ -1,35 +1,35 @@
 # LAS: demo deployment
 
 Everything runs on one demo server, behind its existing nginx. Core LAS runs with Docker Compose
-(`docker-compose.yaml` in the code's root); email intake (LAS_Email) runs under systemd.
+(`docker-compose.yaml` in the code's root); email intake (LAS_Email) too, from
+`LAS_Email/docker-compose.demo.yaml`.
 
 ```
-Browser ─► https://<demo-host>/las/      ─► nginx ─► las-frontend (Vite dev server, 127.0.0.1:8110)
-        └► https://<demo-host>/las-api/  ─► nginx ─► las (backend API, 127.0.0.1:8109)
+Browser ─► https://<demo-host>/las/      ─► nginx ─► container las: Vite dev server (:8110)
+        └► https://<demo-host>/las-api/  ─► nginx ─► container las: backend API (:8109)
                                                       ├► iWallet vendor (https://10.10.20.153:8080)
                                                       ├► Postgres (127.0.0.1:5432, schema core)
                                                       └► Zoho SMTP (all mail to BDs/customers)
-las-dpr-worker (same image as las) ─► Postgres + Gemini   (DPR analysis, PDF reports)
+DPR worker (child process of the API) ─► Postgres + Gemini   (DPR analysis, PDF reports)
 
-Zoho mailbox (IMAP) ─► LAS_Email (systemd: las-ingest, las-worker, las-beat; Redis, ClamAV)
+Zoho mailbox (IMAP) ─► las-email (worker + beat + IMAP listener) + las-email-redis (:6380)
                          ├► Postgres (schema email) + Gemini
                          └► http://127.0.0.1:8109/las-api/internal/v1/intake/events  (never via nginx)
 ```
 
 | Part | What it is | Where |
 |---|---|---|
-| `las` | Backend API (FastAPI), Docker | `/opt/las`, settings `/opt/las/.env` |
-| `las-dpr-worker` | DPR analysis worker: same image, no HTTP | same |
-| `las-frontend` | The UI from source (`npm run dev`), Node 20 container | `/opt/las/frontend` |
-| LAS_Email | Email intake, Python venv + systemd | `/opt/las-email`, settings `/opt/las-email/.env` |
+| Container `las` (compose service `fraud`) | Backend API (uvicorn, 8109), the DPR worker it starts, and the UI from source (`npm run dev`, 8110). The code is mounted from the host. | `/opt/las`, settings `/opt/las/.env` |
+| `las-email`, `las-email-redis` | Email intake (LAS_Email), Docker; code mounted | `LAS_Email/`, settings `LAS_Email/.env` |
 | Database | One Postgres database `las_demo`: schema `core` (Core), `email` (LAS_Email) | Local Postgres |
 
-**All three containers listen on 127.0.0.1 only; nginx is the one public entry point.** Never
-change them to `0.0.0.0` or publish 8109/8110 in the firewall:
+**Ports 8109 and 8110 listen on `0.0.0.0`: keep them closed in the firewall so only nginx
+reaches them.** If nginx runs on this same server, change both `--host` values in
+`docker-compose.yaml` to `127.0.0.1` instead. Why:
 - the API trusts `X-Forwarded-For` from nginx and must not be reachable around it;
-- the Vite dev server (5.4.11) has known file-read flaws. Its container mounts only `frontend/`,
-  so the backend's `.env` is not on its filesystem, but it should still never face the internet
-  directly. Building the UI (`npm run build`, served as static files) removes this risk entirely.
+- the Vite dev server (5.4.11) has known file-read flaws, and the container mounts the whole code
+  folder, `.env` included. Building the UI (`npm run build`, served as static files) removes this
+  risk entirely.
 
 > **Only one LAS_Email may read the mailbox.** Before starting it here (step 7), stop every other
 > copy (the developer's machine included). Two readers process the same mail twice and send the
@@ -40,10 +40,9 @@ change them to `0.0.0.0` or publish 8109/8110 in the firewall:
 ## 0. Before you start (one-time checks)
 
 ```bash
-docker compose version    # Docker with the compose plugin
+docker-compose version    # Docker Compose v1 (`docker-compose`, with a hyphen)
 nginx -v                  # nginx installed
 psql --version            # PostgreSQL 14+ (else: sudo apt install postgresql)
-python3 --version         # 3.10+ (for LAS_Email)
 sudo ss -ltnp | grep -E ':8109|:8110|:5432'   # 8109, 8110 must be free; 5432 = Postgres
 ```
 
@@ -122,12 +121,13 @@ python3 -c "import base64,os; print(base64.urlsafe_b64encode(os.urandom(32)).dec
 openssl rand -hex 32     # run twice: INTAKE_API_KEY, OTP_TOKEN_SECRET
 ```
 
-`HOST`, `PORT`, `CONTEXT_PATH` and `DPR_WORKER_AUTOSTART` are set in `docker-compose.yaml`;
-anything in `.env` for them is overridden. The rest:
+`DPR_WORKER_AUTOSTART` and the frontend's `VITE_*` paths are set in `docker-compose.yaml`;
+the ports are in its command. The rest:
 
 ```
 ENVIRONMENT=demo
 LOG_LEVEL=INFO
+CONTEXT_PATH=/las-api
 DASHBOARD_SIGN_IN_URL=https://<demo-host>/las/signin
 
 # Vendor. The vendor's certificate is for *.workflo.ai, not the IP, so TLS
@@ -152,7 +152,7 @@ DB_SCHEMA=core
 DB_MIGRATE_ON_STARTUP=false
 DB_MIGRATION_URL=postgresql+psycopg://core_owner:<core_owner password>@127.0.0.1:5432/las_demo
 
-# DPR analysis (the las-dpr-worker container)
+# DPR analysis (the worker the API starts)
 DPR_AGENTIC_ENABLED=true
 DPR_AGENTIC_GEMINI_API_KEY=<from dev team>
 DPR_AGENTIC_GEMINI_MODEL=gemini-3.8-flash
@@ -188,28 +188,31 @@ sandbox money** from the pool account.
 
 ## 5. Start Core LAS (Docker Compose)
 
+The base image `python3.10-tar-ubuntu-20.04` must already exist on the server (`docker images`).
+
 ```bash
 cd /opt/las
-sudo docker compose build
+sudo docker-compose build
 
 # Create/upgrade the tables (as core_owner). Every deploy; safe to repeat.
-sudo docker compose run --rm las python scripts/migrate.py
+sudo docker-compose run --rm fraud python scripts/migrate.py
 
-sudo docker compose up -d
+sudo docker-compose up -d
 ```
 
-This starts `las`, `las-dpr-worker` and `las-frontend`, each with `restart: always`. The frontend
-container runs `npm ci` first, so give it a minute.
+This starts the container `las` (`restart: always`). On every start it runs `npm ci` for the
+frontend first, so give it a minute. The API starts the DPR worker itself and restarts it if it
+crashes; if either the API or the dev server stops, the whole container restarts.
 
 Check:
 
 ```bash
-sudo docker compose ps                              # las (healthy) after ~30 s; the other two Up
+sudo docker-compose ps                              # las: Up
 curl http://127.0.0.1:8109/las-api/health           # {"status":"ok",...,"environment":"demo"}
 curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8110/las/   # 200
-sudo docker compose logs las | grep -i -E "error|schema|intake" | tail
-sudo docker compose logs las-dpr-worker | tail      # no "missing settings" error
-sudo docker compose logs las-frontend | tail        # "VITE v5.4.11 ready"
+sudo docker-compose logs | grep -i -E "error|schema|intake" | tail
+sudo docker-compose logs | grep dpr_worker | tail   # "dpr_worker_autostarted", no "missing_settings"
+sudo docker-compose logs | grep -i vite | tail      # "VITE v5.4.11 ready"
 ```
 
 ---
@@ -233,64 +236,50 @@ curl -s -o /dev/null -w "%{http_code}\n" https://<demo-host>/las-api/internal/v1
 
 ## 7. Email intake (LAS_Email)
 
-LAS_Email's own runbook is `/opt/las/LAS_Email/deploy/README.md`. Follow its steps 1, 2 and 4
-with these demo specifics. Its step 3 (database) is replaced by what is below.
+LAS_Email runs in Docker too, from `LAS_Email/` (its own `Dockerfile` and
+`docker-compose.demo.yaml`): one container with the Celery worker + Beat and the IMAP listener,
+plus its own Redis on `127.0.0.1:6380`. The demo uses the stand-in virus scanner and document
+parser (`AV_SCANNER=fake`, `DOCUMENT_PARSER=fake`, as on the developer's machine), so no ClamAV,
+Tesseract or LibreOffice is needed. Not for production.
 
-**Code:** instead of `git clone`, copy it out of the zip:
+> **Only one LAS_Email may read the mailbox, and only one Core may run email intake.** Both
+> services share the database: stop LAS_Email **and** the backend on the developer's machine
+> before starting them here.
 
-```bash
-sudo useradd -r -m -d /opt/las-email las 2>/dev/null || true
-sudo cp -r /opt/las/LAS_Email/. /opt/las-email/ && sudo chown -R las:las /opt/las-email
+**1. Settings: `LAS_Email/.env`.** Copy the developer's `LAS_Email/.env` privately (it holds the
+IMAP app password, the Gemini key and the file-store key), then change one line:
+
 ```
-
-**`/opt/las-email/.env`**, in addition to what its README lists:
-
-```
-DATABASE_URL=postgresql+asyncpg://email_app:<email_app password>@127.0.0.1:5432/las_demo
-DB_SCHEMA=email
-MIGRATION_DATABASE_URL=postgresql+asyncpg://email_owner:<email_owner password>@127.0.0.1:5432/las_demo
 CORE_INTAKE_URL=http://127.0.0.1:8109/las-api/internal/v1/intake/events
-CORE_INTAKE_API_KEY=<the backend's INTAKE_API_KEY>
 ```
 
-**Tables, then reference data without the test BDs:**
+`REDIS_URL` is set by the compose file. `CORE_INTAKE_API_KEY` must equal the backend's
+`INTAKE_API_KEY`. The database lines (`email_app` / `email_owner` on `10.10.20.35`) stay as they are.
+
+**2. Stored mail.** Copy the developer's `LAS_Email/var/objects/` to the same place on the
+server (encrypted mail and attachments; readable only with the `.env`'s `LOCAL_STORE_KEY_B64`).
+
+**3. Backend settings for intake** (`/las` `.env`, then `docker-compose down && docker-compose up -d`
+in the backend folder): `INTAKE_ENABLED=true`, `INTAKE_API_KEY`, `INTAKE_ENCRYPTION_KEY` (the
+same value as the developer's, or stored events cannot be read), `INTAKE_BD_SENDERS`,
+`INTAKE_VENDOR_USER_ID`, `INTAKE_VENDOR_PASSWORD`, `SMTP_PASSWORD`.
+
+**4. Build and start:**
 
 ```bash
-cd /opt/las-email
-sudo -u las make db-check migrate
-sudo -u las .venv/bin/las-seed --no-test-bds
+cd <backend folder>/LAS_Email
+docker-compose -f docker-compose.demo.yaml build
+docker-compose -f docker-compose.demo.yaml run --rm las-email alembic upgrade head   # no-op if current
+docker-compose -f docker-compose.demo.yaml up -d
+docker-compose -f docker-compose.demo.yaml logs -f --tail=50
 ```
 
-**The BDs** (the same list as the backend's `INTAKE_BD_SENDERS`; `ibkart_bd_code` = the BD id):
+Good: `celery@... ready`, `Connected to redis://127.0.0.1:6380/0`, tasks
+`core_intake_handoff ... succeeded`, no repeating `imap_reconnect`.
 
-```bash
-psql "postgresql://email_app:<email_app password>@127.0.0.1:5432/las_demo" -c \
- "INSERT INTO bd_partners (ibkart_bd_code, full_name, email, mobile) VALUES ('<bd id>', '<name>', '<bd email>', '<mobile>');"
-```
-
-**The mailbox checkpoint**, so mail already handled on the developer's machine is not handled again.
-On the developer's machine, **after stopping its LAS_Email**:
-
-```bash
-psql <dev database> -c "SELECT mailbox, folder, uidvalidity, last_uid FROM email.mailbox_checkpoints;"
-```
-
-On the demo server, insert the same values:
-
-```bash
-psql "postgresql://email_app:<email_app password>@127.0.0.1:5432/las_demo" -c \
- "INSERT INTO mailbox_checkpoints (mailbox, folder, uidvalidity, last_uid) VALUES ('<mailbox>', '<folder>', <uidvalidity>, <last_uid>);"
-```
-
-Then start the services (its README step 4) and watch the first minute:
-
-```bash
-sudo systemctl enable --now las-worker las-beat las-ingest
-journalctl -u las-ingest -u las-worker -f
-```
-
-The demo database starts empty: intake cases opened on the developer's machine do not exist here,
-so a BD's reply to an old case is treated as a new mail.
+**BDs.** A sender is acted on only if they are in **both** lists: LAS_Email's `bd_partners`
+table and the backend's `INTAKE_BD_SENDERS` (`ibkart_bd_code` = the BD id). Anyone else who
+passes SPF/DKIM gets "You are not a registered BD" once a day.
 
 ---
 
@@ -303,7 +292,7 @@ so a BD's reply to an old case is treated as a new mail.
 | Sign in as a BD | Customer list loads |
 | Open a customer page, press F5 | Page reloads (not a 404) |
 | Upload a DPR with analysis (a customer with DPR Analysis paid) | Analysis shows progress, then the report; the PDF downloads |
-| A BD in `INTAKE_BD_SENDERS` emails `las@integramicro.co.in` "status of <customer mobile>" | A reply within a minute or two; `journalctl -u las-worker` shows the handoff delivered |
+| A BD in `INTAKE_BD_SENDERS` emails `las@integramicro.co.in` "status of <customer mobile>" | A reply within a minute or two; `docker-compose -f docker-compose.demo.yaml logs` (in `LAS_Email/`) shows `core_intake_delivered` |
 
 ---
 
@@ -311,20 +300,25 @@ so a BD's reply to an old case is treated as a new mail.
 
 ```bash
 sudo -u postgres pg_dump -Fc las_demo > /var/backups/las_demo_$(date +%Y%m%d%H%M).dump   # first, always
-sudo docker tag las-backend:latest las-backend:previous                                    # for rollback
+sudo cp -a /opt/las /opt/las.previous                                                       # for rollback
 cd /opt/las && sudo unzip -oq <new las-code.zip> -d /opt/las      # keeps .env (not in the zip)
-sudo docker compose build
-sudo docker compose run --rm las python scripts/migrate.py
-sudo docker compose up -d
+sudo docker-compose build                                         # only rebuilds if requirements.txt changed
+sudo docker-compose run --rm fraud python scripts/migrate.py
+sudo docker-compose restart
 ```
 
-`up -d` recreates whatever changed, frontend included (it re-reads `frontend/` on start).
+The code is mounted, not baked into the image, so a restart picks up the new code.
 
-LAS_Email, if it changed: copy `/opt/las/LAS_Email/.` over `/opt/las-email/` (its `.env` is not
-in the zip, so it is kept), then `sudo -u las make install migrate` and
-`sudo systemctl restart las-worker las-beat las-ingest`.
+LAS_Email (unzipped with the rest; its `.env` and `var/` are kept): in `LAS_Email/`,
+`docker-compose -f docker-compose.demo.yaml build` (only rebuilds if `requirements.lock` changed),
+`... run --rm las-email alembic upgrade head`, then `... restart las-email`.
 
-**A setting changed** (`.env`): `sudo docker compose up -d --force-recreate las las-dpr-worker`.
+**A setting changed** (`.env`): `sudo docker-compose down && sudo docker-compose up -d`.
+
+**Never `up --force-recreate` with docker-compose 1.29.2:** with a newer Docker Engine it crashes
+with `KeyError: 'ContainerConfig'` while recreating. Always `down`, then `up -d` (same for
+`-f docker-compose.demo.yaml` in `LAS_Email/`). If a crash left a container named
+`<id>_las`, remove it with `docker rm -f <name>`.
 A plain `docker restart` does not re-read `.env`.
 
 ---
@@ -332,12 +326,10 @@ A plain `docker restart` does not re-read `.env`.
 ## 10. Rollback
 
 ```bash
-sudo docker tag las-backend:previous las-backend:latest
-sudo docker compose up -d --no-build --force-recreate las las-dpr-worker
+sudo docker-compose down
+sudo mv /opt/las /opt/las.failed && sudo mv /opt/las.previous /opt/las
+cd /opt/las && sudo docker-compose up -d --build
 ```
-
-For the frontend, unzip the previous `las-code.zip` over `/opt/las` and
-`sudo docker compose restart las-frontend`.
 
 Migrations only add things, so the previous image normally runs on the newer tables. If it does
 not, restore the dump taken before the update (`pg_restore --clean -d las_demo <dump>`).
@@ -348,9 +340,9 @@ not, restore the dump taken before the update (`pg_restore --clean -d las_demo <
 
 | Symptom | Likely cause / fix |
 |---|---|
-| `502 Bad Gateway` on `/las/` | `las-frontend` not up yet (`npm ci` still running) or failed: `docker compose logs las-frontend`. |
-| `502 Bad Gateway` on `/las-api/...` | `las` not running: `docker compose ps`, `docker compose logs las`. |
-| `las-frontend` restarts with `npm` network errors | The server cannot reach `registry.npmjs.org` (step 0). |
+| `502 Bad Gateway` on `/las/` | The dev server is not up yet (`npm ci` still running) or failed: `docker-compose logs`. |
+| `502 Bad Gateway` on `/las-api/...` | The API is not running: `docker-compose ps`, `docker-compose logs`. |
+| The container keeps restarting with `npm` network errors | The server cannot reach `registry.npmjs.org` (step 0). |
 | `/las/` blank page, or assets 404 | `VITE_BASE_PATH` is not `/las` (set in `docker-compose.yaml`), or `/las/` in nginx has a trailing slash on `proxy_pass`. |
 | Browser console: websocket errors | The `Upgrade`/`Connection` lines are missing from `/las/` in nginx. Harmless, but noisy. |
 | `404` on `/las-api/health`, container up | `CONTEXT_PATH` is not `/las-api`. |
@@ -360,10 +352,10 @@ not, restore the dump taken before the update (`pg_restore --clean -d las_demo <
 | Adding a customer fails with `ADMIN_...` | `VENDOR_ADMIN_USER_ID` / `VENDOR_ADMIN_PASSWORD` wrong. |
 | Log says `SchemaNotReady`; DPR or intake features off | Migrations not run: the `scripts/migrate.py` line in step 5. |
 | `password authentication failed for user core_app` | Password in `DPR_DATABASE_URL` differs from step 3. Fix `.env`, or `ALTER ROLE core_app PASSWORD '...'`. |
-| DPR stays "queued" | `docker compose logs las-dpr-worker`: missing `DPR_*` settings, or Gemini unreachable. |
-| BD gets no reply to an email | `journalctl -u las-ingest -u las-worker`. Handoff `REJECTED`/`401`: `CORE_INTAKE_API_KEY` ≠ `INTAKE_API_KEY`. Sender not in both BD lists: they get "not a registered BD". |
+| DPR stays "queued" | `docker-compose logs \| grep dpr_worker`: `missing_settings` (a `DPR_*` setting), or Gemini unreachable. |
+| BD gets no reply to an email | `docker-compose -f docker-compose.demo.yaml logs` (in `LAS_Email/`). Handoff `REJECTED`/`401`: `CORE_INTAKE_API_KEY` ≠ `INTAKE_API_KEY`. Sender not in both BD lists: they get "not a registered BD". |
 | BDs get every reply twice | Two LAS_Email copies read the mailbox. Stop the other one. |
-| A container keeps restarting | `docker compose logs <name>`: usually a typo in `.env`. |
+| A container keeps restarting | `docker-compose logs <name>`: usually a typo in `.env`. |
 
-Logs: `docker compose logs -f`, `journalctl -u las-ingest -u las-worker -u las-beat -f`,
+Logs: `docker-compose logs -f`, `docker-compose -f docker-compose.demo.yaml logs` (in `LAS_Email/`),
 `/var/log/nginx/error.log`.
