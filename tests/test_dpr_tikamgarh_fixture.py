@@ -40,6 +40,8 @@ def test_fixture_passes_all_13_verification_checks_with_zero_issues():
 
 
 def test_fixture_dscr_matches_the_golden_case():
+    # A snapshot frozen before 2026-11-25: the first-year DSCR is stored
+    # under its old name, average_dscr (see cam_snapshot.FinancialRatios).
     snapshot = _load()
     assert snapshot.financial_ratios.average_dscr.computed_value == Decimal("1.97")
 

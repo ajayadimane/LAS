@@ -183,7 +183,7 @@ def select_context(role: str, inp: Any, prior: dict, calculated_facts: list[dict
         identity_lines = []
         identity_pattern = re.compile(
             r"\b(?:mr\.?|mrs\.?|shri|smt\.?|applicant|borrower|promoter|"
-            r"proprietor|quotation|name of the|project location)\b", re.I
+            r"proprietor|quotation|name of the|project location|model)\b", re.I
         )
         for p in ordered:
             matches = [line.strip()[:240] for line in p.text.splitlines()

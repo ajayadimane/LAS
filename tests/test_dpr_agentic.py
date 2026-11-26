@@ -9,7 +9,12 @@ from app.core.config import Settings
 from app.main import create_app
 from app.services.dpr_agentic.financial_schema import ProjectFinancials
 from app.services.dpr_agentic.orchestrator import PROMPTS, analyze, verify_evidence
-from app.services.dpr_agentic.schemas import AgentOutput, AnalysisInput, Finding
+from app.services.dpr_agentic.schemas import (
+    AgentOutput,
+    AnalysisInput,
+    ChecklistAnswer,
+    Finding,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -38,6 +43,11 @@ class FakeLLM:
     async def generate(self, prompt, context):
         self.calls.append((prompt, context))
         return AgentOutput(
+            # Answer the checklist, or generate_role asks again.
+            checks=[
+                ChecklistAnswer(check_id=c["id"], status="ok")
+                for c in context.get("checklist", [])
+            ],
             summary="checked",
             findings=[
                 Finding(

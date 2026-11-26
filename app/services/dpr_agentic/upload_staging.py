@@ -96,3 +96,37 @@ def delete_staged_upload(engine, run_id: str) -> None:
             text("DELETE FROM dpr_upload_staging WHERE run_id=:run_id"),
             {"run_id": run_id},
         )
+
+
+def delete_staged_upload_if_terminal(engine, run_id: str) -> bool:
+    """Deletes a run's staged bytes only once the run is COMPLETED or FAILED.
+    The worker's own cleanup goes through this, so a worker that lost the
+    claim race, or handed its run back on shutdown, never deletes the bytes
+    another attempt still needs."""
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("""
+                DELETE FROM dpr_upload_staging s
+                USING dpr_analysis_runs r
+                WHERE s.run_id = :run_id AND r.run_id = s.run_id
+                  AND r.status IN ('COMPLETED', 'FAILED')
+                RETURNING s.run_id
+            """),
+            {"run_id": run_id},
+        ).scalar_one_or_none()
+    return row is not None
+
+
+def purge_terminal_staging(engine) -> int:
+    """Sweeps staged bytes left behind for runs that already finished (a
+    worker crash between finish() and its cleanup). Nothing staged may
+    outlive processing."""
+    with engine.begin() as conn:
+        return conn.execute(
+            text("""
+                DELETE FROM dpr_upload_staging s
+                USING dpr_analysis_runs r
+                WHERE r.run_id = s.run_id
+                  AND r.status IN ('COMPLETED', 'FAILED')
+            """)
+        ).rowcount

@@ -1148,6 +1148,8 @@ class IntakeProcessor:
             "QUEUED": " - DPR analysis started; the report appears on the dashboard",
             "RATE_LIMITED": " - DPR analysis not started: today's limit for this "
             "customer is reached; start it from the dashboard tomorrow",
+            "ALREADY_ANALYSED": " - this DPR was already analysed; its report is "
+            "on the dashboard",
         }.get(status, " - DPR analysis is not available right now")
 
     async def _stop(

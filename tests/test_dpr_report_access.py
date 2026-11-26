@@ -613,7 +613,7 @@ def test_report_summary_endpoint_returns_readiness_and_counts(
         "requested_loan",
         "promoter_contribution",
         "funding_gap",
-        "average_dscr",
+        "first_year_dscr",
     }
 
 

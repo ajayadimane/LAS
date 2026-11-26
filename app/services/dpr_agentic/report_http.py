@@ -288,9 +288,11 @@ async def resolve_summary(
                 if snapshot.means_of_finance.funding_gap
                 else None
             ),
-            "average_dscr": (
-                ratios.average_dscr.model_dump(mode="json")
-                if ratios.average_dscr
+            # A report frozen before 2026-11-25 stored this same figure as
+            # `average_dscr` (it never was an average).
+            "first_year_dscr": (
+                first_year.model_dump(mode="json")
+                if (first_year := ratios.first_year_dscr or ratios.average_dscr)
                 else None
             ),
         },

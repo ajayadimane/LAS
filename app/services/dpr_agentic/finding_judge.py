@@ -23,7 +23,7 @@ Pure functions; no LLM, no I/O.
 
 from __future__ import annotations
 
-from .finding_rules import priority_for_narrative
+from .finding_rules import priority_for_narrative, raise_priority_from
 from .schemas import Finding, Verdict
 
 _SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
@@ -41,6 +41,10 @@ def assign_ids(findings: list[Finding]) -> list[Finding]:
 
 def _absorb(target: Finding, duplicate: Finding) -> None:
     target.merged_duplicate_count += duplicate.merged_duplicate_count
+    if _anchor_rank(duplicate) < 2:
+        # A checklist item folded into a calculated finding keeps its
+        # must-fix; a free-form duplicate never re-rates an anchor.
+        raise_priority_from(target, [duplicate])
     if _SEVERITY_RANK.get(duplicate.severity, 9) < _SEVERITY_RANK.get(
         target.severity, 9
     ):
@@ -119,6 +123,48 @@ def apply_verdicts(
 # finding (same category, compatible page) to count as a restatement: it was
 # asked for issues no candidate covers, so the bar for "new" is high.
 RESTATEMENT_SIMILARITY = 0.5
+# A verifier addition on the same page as a kept finding, sharing this much
+# of their title + explanation words, restates it. Measured on every saved
+# eval run (2026-11-25): at 0.2 or more nearly every pair is the same issue
+# reworded ("No advance bookings or tie-ups with local farmers" / "No proof
+# that customers will buy your service or product", both page 28); below
+# about 0.15 the closest same-page finding is usually a different issue.
+RESTATEMENT_PAGE_SIMILARITY = 0.2
+# Fewer content words than this says too little to compare.
+MIN_RESTATEMENT_WORDS = 8
+
+
+def _content_words(f: Finding) -> set[str]:
+    from .finding_consolidation import title_words
+
+    return title_words(f"{f.title} {f.explanation}")
+
+
+def _same_page_restatement(kept: list[Finding], n: Finding) -> Finding | None:
+    """The kept finding on `n`'s page that `n` most likely restates, or
+    None. The verifier was asked only for issues no candidate covers, yet
+    adds a median of 9 per run, most of them restatements in new words."""
+    if n.evidence_page is None:
+        return None
+    mine = _content_words(n)
+    if len(mine) < MIN_RESTATEMENT_WORDS:
+        return None
+    best, best_score = None, 0.0
+    rank = _SEVERITY_RANK.get(n.severity, 9)
+    for k in kept:
+        if k.evidence_page != n.evidence_page:
+            continue
+        # Never into a milder finding: it keeps its own rating, so a more
+        # severe issue folded into it would vanish (as in consolidate()).
+        if rank < _SEVERITY_RANK.get(k.severity, 9):
+            continue
+        theirs = _content_words(k)
+        if len(theirs) < MIN_RESTATEMENT_WORDS:
+            continue
+        score = len(mine & theirs) / max(1, len(mine | theirs))
+        if score > best_score:
+            best, best_score = k, score
+    return best if best_score >= RESTATEMENT_PAGE_SIMILARITY else None
 
 
 def absorb_restatements(kept: list[Finding], new: list[Finding]) -> list[Finding]:
@@ -126,14 +172,15 @@ def absorb_restatements(kept: list[Finding], new: list[Finding]) -> list[Finding
     into it (seen live: kept "Total Absence of Working Capital Allocation..."
     plus new "Zero Working Capital Provisioning..."). Returns kept + the
     genuinely new findings; inputs are not modified."""
-    from .checklists import TOPIC_TERMS
+    from .checklists import TOPIC_PRECEDENCE, TOPIC_TERMS
     from .finding_consolidation import title_similarity
 
     out = [f.model_copy(deep=True) for f in kept]
     for n in new:
         # A checklist finding of the same topic, whatever the category: the
         # item's fixed title and priority win.
-        target = next(
+        # Most specific item first when several match (checklists.py).
+        target = min(
             (
                 k
                 for k in out
@@ -141,7 +188,8 @@ def absorb_restatements(kept: list[Finding], new: list[Finding]) -> list[Finding
                 and not n.check_id
                 and TOPIC_TERMS[k.check_id].search(n.title)
             ),
-            None,
+            key=lambda k: TOPIC_PRECEDENCE.get(k.check_id, len(TOPIC_PRECEDENCE)),
+            default=None,
         )
         if target is not None:
             _absorb(target, n)
@@ -160,6 +208,8 @@ def absorb_restatements(kept: list[Finding], new: list[Finding]) -> list[Finding
             ),
             None,
         )
+        if target is None:
+            target = _same_page_restatement(out, n)
         if target is None:
             out.append(n.model_copy(deep=True))
         else:

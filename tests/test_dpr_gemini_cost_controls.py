@@ -54,3 +54,14 @@ def test_truncated_response_is_rejected():
     except GeminiAgentError:
         return
     raise AssertionError("Unexpectedly accepted truncated JSON")
+
+
+def test_thinking_levels_follow_the_2026_11_17_ab():
+    """Risk at LOW matched MEDIUM within run-to-run noise; sector at LOW
+    turned capacity/running-cost issues into "ok", so it stays MEDIUM.
+    Change these only with a new A/B on the eval set (scripts/dpr_eval.py)."""
+    from app.services.dpr_agentic.gemini import _ROLE_THINKING_LEVEL
+
+    assert _ROLE_THINKING_LEVEL["risk"] == "LOW"
+    for role in ("finance", "sector", "verifier"):
+        assert _ROLE_THINKING_LEVEL[role] == "MEDIUM"

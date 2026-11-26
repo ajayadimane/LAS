@@ -3,6 +3,7 @@ deterministic."""
 
 import base64
 import json
+import re
 import time
 from contextvars import ContextVar
 
@@ -58,8 +59,15 @@ _ROLE_THINKING_LEVEL = {
     "policy": "LOW",
     "research": "LOW",
     "finance": "MEDIUM",
+    # A/B on the 15-DPR eval, 2026-11-17 (MEDIUM vs LOW, runs
+    # 20261117T104112Z / 20261117T113700Z). Risk at LOW: checklist answers
+    # agreed 90% with MEDIUM (unchanged roles agreed 88-93% run to run),
+    # same findings, ~3.7k fewer output tokens per DPR -- kept. Sector at
+    # LOW agreed only 80% and turned 7 capacity / running-cost "issue"
+    # answers into "ok", with 24% fewer findings: more lenient exactly
+    # where it matters, so sector stays MEDIUM.
     "sector": "MEDIUM",
-    "risk": "MEDIUM",
+    "risk": "LOW",
     "verifier": "MEDIUM",
     "correction": "LOW",
 }
@@ -109,6 +117,49 @@ class GeminiTruncatedError(GeminiAgentError):
     reasoning can leave almost nothing for the answer itself."""
 
 
+class GeminiRunawayNumberError(GeminiAgentError):
+    """The model got stuck writing one number -- seen live on a repayment
+    schedule (eval 2026-11-25): `177589.00000000003000...` with zeros until
+    the token cap, on both attempts (10k and 20k tokens). Retried at the
+    same cap (a bigger one only buys more zeros) with RUNAWAY_RETRY_NOTE."""
+
+
+# A structured call stops as soon as the model writes this many zeros in a
+# row (Gemini's stopSequences), instead of running on to the token cap. No
+# figure in a DPR has 30 consecutive zeros.
+RUNAWAY_STOP_SEQUENCE = "0" * 30
+# Any one digit repeated this often is a runaway number, whether the stop
+# sequence cut it short or it ran into the cap.
+_RUNAWAY_NUMBER = re.compile(r"(\d)\1{29,}")
+RUNAWAY_RETRY_NOTE = (
+    "\n\nYour previous answer got stuck repeating digits inside one number. "
+    "Write every number in plain decimal form with at most 5 digits after "
+    "the decimal point, and no trailing zeros."
+)
+# Set by _structured() for a retry after GeminiRunawayNumberError.
+_SYSTEM_PROMPT_SUFFIX: ContextVar[str] = ContextVar(
+    "dpr_system_prompt_suffix", default=""
+)
+
+
+def _is_runaway(text: str, finish_reason: str | None) -> bool:
+    """True when a structured response was cut off inside a runaway number:
+    the stop sequence fired (finish STOP, but the text ends mid-number and
+    is not valid JSON), or the cap was hit with a long digit run."""
+    if _RUNAWAY_NUMBER.search(text):
+        return True
+    if finish_reason not in (None, "STOP"):
+        return False
+    stripped = text.rstrip()
+    if not stripped or not stripped[-1].isdigit():
+        return False
+    try:
+        json.loads(stripped)
+    except ValueError:
+        return True
+    return False
+
+
 # Set by _structured() for a retry after GeminiTruncatedError, so the
 # retried request asks for a larger output budget instead of repeating the
 # identical request into the identical cap.
@@ -124,6 +175,12 @@ MAX_OUTPUT_TOKENS_CEILING = 32768
 # Only tokens actually generated are billed, so headroom costs nothing
 # unless used.
 _THINKING_ALLOWANCE = {"LOW": 4096, "MEDIUM": 8192, "HIGH": 16384}
+# Roles whose thinking regularly overruns their level's allowance. Seen in
+# the 15-DPR eval of 2026-11-13: finance truncated at 6,144 + 8,192 on 3 of
+# 15 DPRs (22k-27k output billed for the pair), and the retry re-sent the
+# whole prompt and re-did all the thinking. Starting higher avoids paying
+# twice; unused headroom is not billed.
+_ROLE_THINKING_ALLOWANCE = {"finance": 12288}
 
 
 class GeminiTransportError(GeminiAgentError):
@@ -678,11 +735,15 @@ class GeminiAgentClient:
         *,
         tools: list[dict] | None = None,
         candidate_out: dict | None = None,
+        stop_runaway_numbers: bool = True,
     ) -> str:
         """`response_schema` None: plain text (a grounded search call --
         structured output is not combined with the search tool). `tools`:
         e.g. [{"google_search": {}}]. `candidate_out` receives the raw
-        candidate (for its groundingMetadata)."""
+        candidate (for its groundingMetadata). `stop_runaway_numbers`: cut a
+        structured answer off at RUNAWAY_STOP_SEQUENCE (off for OCR, which
+        must copy a page exactly)."""
+        system_prompt += _SYSTEM_PROMPT_SUFFIX.get()
         request = {
             "systemInstruction": {"parts": [{"text": system_prompt}]},
             "contents": [{"role": "user", "parts": parts}],
@@ -691,6 +752,8 @@ class GeminiAgentClient:
         if response_schema is not None:
             request["generationConfig"]["responseMimeType"] = "application/json"
             request["generationConfig"]["responseSchema"] = response_schema
+            if stop_runaway_numbers:
+                request["generationConfig"]["stopSequences"] = [RUNAWAY_STOP_SEQUENCE]
         if tools:
             request["tools"] = tools
         if self.model.startswith("gemini-3"):
@@ -752,6 +815,18 @@ class GeminiAgentClient:
                     "search_queries": search_queries,
                 }
             )
+        text = "".join(
+            p.get("text", "")
+            for p in (candidate.get("content") or {}).get("parts") or []
+        )
+        if (
+            response_schema is not None
+            and stop_runaway_numbers
+            and _is_runaway(text, finish_reason)
+        ):
+            raise GeminiRunawayNumberError(
+                f"Gemini got stuck in a runaway number: {finish_reason}"
+            )
         # Stop incomplete/truncated structured JSON before it silently
         # propagates into the CAM financial snapshot.
         if finish_reason and finish_reason != "STOP":
@@ -777,7 +852,11 @@ class GeminiAgentClient:
             _ROLE_OUTPUT_CAP.get(CURRENT_ROLE.get() or "", self.max_output_tokens),
         )
         if self.model.startswith("gemini-3"):
-            visible += _THINKING_ALLOWANCE.get(self._thinking_level(), 8192)
+            level_allowance = _THINKING_ALLOWANCE.get(self._thinking_level(), 8192)
+            visible += max(
+                level_allowance,
+                _ROLE_THINKING_ALLOWANCE.get(CURRENT_ROLE.get() or "", 0),
+            )
         return min(visible * _OUTPUT_CAP_MULTIPLIER.get(), MAX_OUTPUT_TOKENS_CEILING)
 
     async def _post_with_retries(self, request: dict) -> httpx.Response:
@@ -839,15 +918,20 @@ class GeminiAgentClient:
         failures were already retried inside _post_with_retries."""
         last_exc: Exception | None = None
         multiplier = 1
+        suffix = ""
         for attempt in range(1, self.content_attempts + 1):
             token = _OUTPUT_CAP_MULTIPLIER.set(multiplier)
+            suffix_token = _SYSTEM_PROMPT_SUFFIX.set(suffix)
             try:
                 return parse(await call())
             except (httpx.HTTPError, GeminiTransportError):
                 raise
             except _CONTENT_ERRORS as exc:
                 last_exc = exc
-                if isinstance(exc, GeminiTruncatedError):
+                if isinstance(exc, GeminiRunawayNumberError):
+                    # Same cap: more room only means more repeated digits.
+                    suffix = RUNAWAY_RETRY_NOTE
+                elif isinstance(exc, GeminiTruncatedError):
                     # Same request into the same cap would truncate again.
                     multiplier *= 2
                 if attempt < self.content_attempts:
@@ -860,11 +944,14 @@ class GeminiAgentClient:
                         # Class name only for parse errors: a ValidationError
                         # message can quote model output.
                         str(exc)
-                        if isinstance(exc, GeminiTruncatedError)
+                        if isinstance(
+                            exc, (GeminiTruncatedError, GeminiRunawayNumberError)
+                        )
                         else type(exc).__name__,
                         multiplier,
                     )
             finally:
+                _SYSTEM_PROMPT_SUFFIX.reset(suffix_token)
                 _OUTPUT_CAP_MULTIPLIER.reset(token)
         assert last_exc is not None
         raise last_exc
@@ -1008,7 +1095,9 @@ class GeminiAgentClient:
                 }
             }
             return await self._structured(
-                lambda: self._call_with_parts(OCR_SYSTEM_PROMPT, [part], OCR_SCHEMA),
+                lambda: self._call_with_parts(
+                    OCR_SYSTEM_PROMPT, [part], OCR_SCHEMA, stop_runaway_numbers=False
+                ),
                 lambda text: json.loads(text).get("text", ""),
             )
         except (

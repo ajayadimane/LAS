@@ -90,6 +90,34 @@ def run_cost_usd(usage: RunUsage, prices: GeminiPrices) -> Decimal:
     return cost.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
 
 
+def usage_by_role(
+    usage_log: list[dict], prices: GeminiPrices | None
+) -> dict[str, dict]:
+    """{role: totals} for one run, cost included when rates are configured,
+    for the run row (usage_by_role, migration 016). Token counts only."""
+    by_role: dict[str, list[dict]] = {}
+    for u in usage_log:
+        by_role.setdefault(u.get("role") or "unknown", []).append(u)
+    out: dict[str, dict] = {}
+    for role, calls in sorted(by_role.items()):
+        usage = sum_usage(calls)
+        row = {
+            "calls": usage.gemini_calls,
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "thinking_tokens": usage.thinking_tokens,
+            "cached_tokens": usage.cached_tokens,
+            "search_queries": usage.search_queries,
+            "truncated_calls": sum(
+                1 for c in calls if c.get("finish_reason") not in (None, "STOP")
+            ),
+        }
+        if prices is not None:
+            row["cost_usd"] = str(run_cost_usd(usage, prices))
+        out[role] = row
+    return out
+
+
 def to_inr(cost_usd: Decimal, usd_to_inr: float | None) -> Decimal | None:
     if usd_to_inr is None:
         return None

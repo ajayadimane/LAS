@@ -11,6 +11,7 @@ import operator
 from typing import Annotated, TypedDict
 
 from .context_router import select_context, verifier_judge_context
+from .financial_calc import calculation_versions
 from .finding_consolidation import consolidate
 from .finding_judge import absorb_restatements, apply_verdicts, assign_ids
 from .orchestrator import (
@@ -143,10 +144,19 @@ def build_graph(
                 **prior,
                 "verifier": {**prior["verifier"], "findings": state.get("judged", [])},
             }
+        from .checklists import code_checklist_answers
+        from .financial_schema import ProjectFinancials
+
         output = await generate_role(
             llm,
             name,
             select_context(name, inp, prior, state.get("calculated_facts", [])),
+            code_checklist_answers(
+                name,
+                ProjectFinancials.model_validate(state["financials"])
+                if state.get("financials")
+                else None,
+            ),
         )
         verified = verify_evidence(output, pages)
         return {"outputs": {name: verified.model_dump(mode="json")}}
@@ -366,4 +376,5 @@ async def analyze_parallel(
             if k in ("bank_name", "project_name")
         },
         gemini_model=getattr(llm, "model", None),
+        calculation_versions=calculation_versions(),
     )

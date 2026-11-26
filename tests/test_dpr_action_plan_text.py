@@ -124,7 +124,8 @@ def test_the_action_plan_prints_the_finding_text():
     )
     [row] = build_action_plan(snap)["rows"]
     assert row["why"] == "Revenue may be overstated by a third"
-    assert (row["dpr"], row["should_be"]) == ("₹ 2,500 an acre", "₹ 2,000 an acre")
+    # Plain sentences, not the raw quote and terse target (2026-11-25).
+    assert (row["found"], row["todo"]) == ("x", "y")
 
 
 def test_documents_table_uses_the_report_only_answers():

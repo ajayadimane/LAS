@@ -21,6 +21,7 @@ first value is year 1, as everywhere else.
 Pure functions; no LLM, no I/O.
 """
 
+
 from __future__ import annotations
 
 import re
@@ -29,22 +30,58 @@ from dataclasses import dataclass
 
 from .context_router import page_sections
 
+_PRINCIPAL = re.compile(r"principal", re.I)
+_INSTALMENT = re.compile(r"instal+ment|\bemi\b", re.I)
+_INTEREST = re.compile(r"interest", re.I)
+_LOAN_REPAYMENT = re.compile(
+    r"repayment\s+of\s+(?:the\s+)?(?:term\s+)?loan|loan\s+repayment|"
+    r"repayment\s+of\s+tl",
+    re.I,
+)
+
+# 1.1.0 (2026-11-25): instalment labels naming interest are the instalment;
+#   "-" in a DSCR row is no figure; page unit legends; rows far off the
+#   model's lakh figures dropped.
+CALCULATION_VERSION = "1.1.0"
+
+
+def _debt_service_field(label: str) -> str | None:
+    """principal_repayment / total_instalment for a debt-service row label.
+
+    Decided on everything the label says, not its first keyword: a label
+    naming principal *and* interest ("Instalment (Principal + Interest)",
+    "Loan repayment incl. interest") is the whole instalment -- read as
+    principal it turned a correct DSCR into a "leaves out interest" finding.
+    "Principal instalment" (principal, no interest) is principal."""
+    has_interest = bool(_INTEREST.search(label))
+    if _PRINCIPAL.search(label):
+        return "total_instalment" if has_interest else "principal_repayment"
+    if _INSTALMENT.search(label):
+        return "total_instalment"
+    if _LOAN_REPAYMENT.search(label):
+        return "total_instalment" if has_interest else "principal_repayment"
+    return None
+
+
+class _DebtServiceLabel:
+    """Pattern-like adapter, so the decision above sits in the same ordered
+    label table as the plain patterns."""
+
+    def __init__(self, field: str) -> None:
+        self.field = field
+
+    def search(self, label: str) -> bool:
+        return _debt_service_field(label) == self.field
+
+
 # Order matters: the first matching pattern names the row.
 _LABELS: tuple[tuple[str, re.Pattern], ...] = (
     (
         "stated_dscr",
         re.compile(r"\bd\.?\s*s\.?\s*c\.?\s*r\b|debt\s+service\s+coverage", re.I),
     ),
-    ("principal_repayment", re.compile(r"principal", re.I)),
-    ("total_instalment", re.compile(r"instal+ment|\bemi\b", re.I)),
-    (
-        "principal_repayment",
-        re.compile(
-            r"repayment\s+of\s+(?:the\s+)?(?:term\s+)?loan|loan\s+repayment|"
-            r"repayment\s+of\s+tl",
-            re.I,
-        ),
-    ),
+    ("total_instalment", _DebtServiceLabel("total_instalment")),
+    ("principal_repayment", _DebtServiceLabel("principal_repayment")),
     (
         "interest_on_term_loan",
         re.compile(r"interest\s+on\s+(?:the\s+)?(?:term\s+loan|tl)\b", re.I),
@@ -67,19 +104,51 @@ MIN_YEARS = 3
 @dataclass(frozen=True)
 class YearlyRow:
     field: str
-    values: tuple[float, ...]
+    values: tuple[float | None, ...]
     page: int
+    # Lakh per printed unit, from the page's own legend ("Rs in '000" ->
+    # 0.01, "in crores" -> 100); None when the page names no such unit.
+    unit_in_lakh: float | None = None
 
 
-def _parse_number(token: str) -> float:
+# A table's unit legend. Only thousands and crores are read: lakh needs no
+# conversion, and rupees are recognised by size (RUPEE_ROW_THRESHOLD) --
+# prose on the same page often says "lakh" while the table is in rupees.
+_THOUSANDS = re.compile(
+    r"(?:in|rs\.?|₹|inr|amount)\s*(?:in\s*)?['’‘`]\s*000|in\s+thousands?\b", re.I
+)
+_CRORES = re.compile(
+    r"(?:rs\.?|₹|inr|amount|figures?|all)\s*(?:are\s+)?in\s+crores?\b|"
+    r"\(\s*(?:rs\.?|₹|inr)?\s*in\s+crores?\s*\)",
+    re.I,
+)
+
+
+def _page_unit_in_lakh(text: str) -> float | None:
+    thousands, crores = bool(_THOUSANDS.search(text)), bool(_CRORES.search(text))
+    if thousands == crores:  # neither, or both (ambiguous)
+        return None
+    return 0.01 if thousands else 100.0
+
+
+def _parse_number(token: str) -> float | None:
+    """A dash is "nothing printed": nil for a money row (see _fill_dashes),
+    but no figure at all for a ratio -- a DSCR of "-" in a moratorium year
+    is not a DSCR of 0."""
     if token == "-":
-        return 0.0
+        return None
     negative = token.startswith("(") and token.endswith(")")
     value = float(token.strip("()").replace(",", ""))
     return -value if negative else value
 
 
-def _split(line: str) -> tuple[str, list[float]] | None:
+def _fill_dashes(field: str, values: list[float | None]) -> list[float | None]:
+    if field == "stated_dscr":
+        return values
+    return [0.0 if v is None else v for v in values]
+
+
+def _split(line: str) -> tuple[str, list[float | None]] | None:
     tokens = line.split()
     values: list[str] = []
     while tokens and _NUMBER.match(tokens[-1]):
@@ -90,7 +159,9 @@ def _split(line: str) -> tuple[str, list[float]] | None:
     return label, [_parse_number(v) for v in values]
 
 
-def _drop_total_column(values: list[float]) -> list[float]:
+def _drop_total_column(values: list[float | None]) -> list[float | None]:
+    if None in values:
+        return values
     if len(values) > MIN_YEARS and abs(sum(values[:-1]) - values[-1]) <= 0.02 * max(
         1.0, abs(values[-1])
     ):
@@ -119,14 +190,17 @@ def parse_yearly_rows(pages: list) -> dict[str, YearlyRow]:
                 (f for f, pattern in labels if pattern.search(split[0])), None
             )
             if field is not None:
-                rows.append((field, _drop_total_column(split[1])))
+                rows.append(
+                    (field, _drop_total_column(_fill_dashes(field, split[1])))
+                )
         if not rows:
             continue
+        unit = _page_unit_in_lakh(page.text)
         common = Counter(len(v) for _, v in rows).most_common(1)[0][0]
         for field, values in rows:
             if len(values) == common:
                 found.setdefault(field, set()).add(
-                    YearlyRow(field, tuple(values), page.page)
+                    YearlyRow(field, tuple(values), page.page, unit)
                 )
     out = {}
     for field, candidates in found.items():
@@ -151,13 +225,40 @@ _MONEY_FIELDS = (
 
 
 def _in_lakh(row: YearlyRow) -> YearlyRow:
-    if row.field in _MONEY_FIELDS and max(abs(v) for v in row.values) >= (
-        RUPEE_ROW_THRESHOLD
-    ):
-        return YearlyRow(
-            row.field, tuple(round(v / 100_000, 2) for v in row.values), row.page
-        )
-    return row
+    if row.field not in _MONEY_FIELDS:
+        return row
+    if max(abs(v) for v in row.values) >= RUPEE_ROW_THRESHOLD:
+        factor = 1 / 100_000  # rupees, whatever the page says
+    elif row.unit_in_lakh is not None:
+        factor = row.unit_in_lakh
+    else:
+        return row
+    return YearlyRow(
+        row.field,
+        tuple(round(v * factor, 2) for v in row.values),
+        row.page,
+        row.unit_in_lakh,
+    )
+
+
+# A code-read money row is dropped when it is this many times larger or
+# smaller than the model's lakh figures for the same years: that is a unit
+# misread (thousands, crores), not a reading difference -- the model's own
+# misreadings (principal vs full instalment) stay well inside it.
+UNIT_MISMATCH_FACTOR = 5.0
+
+
+def _agrees_with_model(fin, row: YearlyRow) -> bool:
+    model = {y.year: getattr(y, row.field, None) for y in fin.years}
+    ratios = sorted(
+        v / model[i]
+        for i, v in enumerate(row.values, start=1)
+        if v and model.get(i)
+    )
+    if not ratios:
+        return True  # nothing to compare against
+    median = ratios[len(ratios) // 2]
+    return 1 / UNIT_MISMATCH_FACTOR <= median <= UNIT_MISMATCH_FACTOR
 
 
 def apply_yearly_rows(fin, rows: dict[str, YearlyRow]):
@@ -170,6 +271,13 @@ def apply_yearly_rows(fin, rows: dict[str, YearlyRow]):
     if not rows:
         return fin
     rows = {field: _in_lakh(row) for field, row in rows.items()}
+    rows = {
+        field: row
+        for field, row in rows.items()
+        if field not in _MONEY_FIELDS or _agrees_with_model(fin, row)
+    }
+    if not rows:
+        return fin
     instalment, principal = (
         rows.get("total_instalment"),
         rows.get("principal_repayment"),

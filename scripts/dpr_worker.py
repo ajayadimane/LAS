@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
+import signal
 import sys
 import time
 from datetime import datetime, timezone
@@ -77,12 +79,15 @@ from app.services.dpr_agentic.run_cost import (  # noqa: E402
     run_cost_usd,
     sum_usage,
     to_inr,
+    usage_by_role,
 )
 from app.services.dpr_agentic.schemas import AnalysisInput, SourcePage  # noqa: E402
 from app.services.dpr_agentic.upload_staging import (  # noqa: E402
     delete_staged_upload,
+    delete_staged_upload_if_terminal,
     load_staged_project_context,
     load_staged_upload,
+    purge_terminal_staging,
 )
 from app.services.dpr_agentic.worker import run_claimed_analysis  # noqa: E402
 
@@ -171,6 +176,15 @@ async def process_one(
     run_id_token = CURRENT_RUN_ID.set(run_id)
     usage_log: list[dict] = []
     usage_token = CURRENT_RUN_USAGE.set(usage_log)
+    # Whether this attempt claimed the run. Everything that touches the run
+    # afterwards (usage, failing it, cleanup) depends on it: a worker that
+    # lost the claim race must leave the winner's run alone.
+    claimed = False
+
+    def mark_claimed() -> None:
+        nonlocal claimed
+        claimed = True
+
     try:
         await run_claimed_analysis(
             engine,
@@ -187,7 +201,11 @@ async def process_one(
                 if settings.dpr_grounding_cache_ttl_days > 0
                 else None
             ),
+            on_claimed=mark_claimed,
         )
+        if not claimed:
+            logger.info("dpr_run_not_claimed run_id=%s", run_id)
+            return
         logger.info(
             "dpr_run_completed run_id=%s duration_ms=%d",
             run_id,
@@ -213,17 +231,17 @@ async def process_one(
         # never kill the poll loop.
         #
         # run_claimed_analysis() marks the run FAILED itself for any error
-        # from claim() onward -- but an error raised while *building* this
-        # very call (e.g. a misconfigured `settings` missing an attribute
-        # this function reads as a keyword argument, below) happens before
-        # claim() ever runs, so the run is never touched and stays QUEUED
-        # forever, retried identically by every poll cycle (confirmed via
+        # from claim() onward (or leaves it to its new owner on a lost
+        # lease) -- but an error raised while *building* this very call
+        # (e.g. a misconfigured `settings` missing an attribute this function
+        # reads as a keyword argument, above) happens before claim() ever
+        # runs, so the run is never touched and stays QUEUED forever,
+        # retried identically by every poll cycle (confirmed via
         # test_dpr_log_safety.py's SimpleNamespace settings fixture, which
-        # reproduced exactly this). fail_stuck_run() is the backstop: it
-        # terminal-fails a QUEUED-or-RUNNING run regardless of lease state,
-        # and is a safe no-op if finish() already marked it FAILED or
-        # COMPLETED.
-        fail_stuck_run(engine, run_id, type(exc).__name__)
+        # reproduced exactly this). fail_stuck_run() is the backstop, for
+        # unclaimed runs only: it never touches a run under a live lease.
+        if not claimed:
+            fail_stuck_run(engine, run_id, type(exc).__name__)
         logger.warning(
             "dpr_run_failed run_id=%s duration_ms=%d error=%s",
             run_id,
@@ -231,68 +249,79 @@ async def process_one(
             type(exc).__name__,
         )
     finally:
-        # Logged regardless of success/failure -- a config error that fails
-        # the run before any Gemini call just reports zero, a failure partway
-        # through (e.g. a bad role) still reports whatever was spent getting
-        # there. Full end-to-end total for this run, from the first call
-        # (classification/vision/financial extraction) through the last
-        # orchestrator role; the PDF render itself calls no LLM, so this is
-        # also the total for upload-to-report-ready. Per-call detail is the
-        # dpr_gemini_call log line in gemini.py, already emitted as each call
-        # happens -- this is the one-line rollup for the whole run.
-        usage = sum_usage(usage_log)
-        # The cost at the configured rates (run_cost.py); never allowed to
-        # stop the token totals being stored.
-        cost_usd = cost_inr = prices = None
-        usd_to_inr = getattr(settings, "dpr_usd_to_inr", None)
-        try:
-            prices = prices_from_settings(settings)
-            if prices is not None:
-                cost_usd = run_cost_usd(usage, prices)
-                cost_inr = to_inr(cost_usd, usd_to_inr)
-        except Exception:  # noqa: BLE001
-            logger.warning("dpr_run_cost_failed run_id=%s", run_id, exc_info=True)
-        logger.info(
-            "dpr_run_token_usage run_id=%s gemini_calls=%d total_prompt_tokens=%d "
-            "total_completion_tokens=%d total_tokens=%d thinking_tokens=%d "
-            "cached_tokens=%d search_queries=%d cost_usd=%s cost_inr=%s",
-            run_id,
-            usage.gemini_calls,
-            usage.prompt_tokens,
-            usage.completion_tokens,
-            usage.total_tokens,
-            usage.thinking_tokens,
-            usage.cached_tokens,
-            usage.search_queries,
-            cost_usd,
-            cost_inr,
-        )
-        # Persisted (migrations 008, 013) so the totals and the cost are
-        # queryable per run, not just grep-able in logs. Unconditional: the
-        # run has already reached its terminal state by this point (finish()
-        # or fail_stuck_run() above already ran), so there's no lease/status
-        # race to guard against here.
-        record_token_usage(
-            engine,
-            run_id,
-            gemini_calls=usage.gemini_calls,
-            prompt_tokens=usage.prompt_tokens,
-            completion_tokens=usage.completion_tokens,
-            total_tokens=usage.total_tokens,
-            thinking_tokens=usage.thinking_tokens,
-            cached_tokens=usage.cached_tokens,
-            search_queries=usage.search_queries,
-            gemini_model=getattr(gemini, "model", None),
-            cost_usd=cost_usd,
-            cost_inr=cost_inr,
-            usd_to_inr=usd_to_inr if cost_inr is not None else None,
-            price_rates=price_rates(prices) if cost_usd is not None else None,
-        )
+        if claimed:
+            _record_usage(engine, run_id, usage_log, gemini, settings)
         CURRENT_RUN_USAGE.reset(usage_token)
         CURRENT_RUN_ID.reset(run_id_token)
-    # Terminal either way (run_claimed_analysis's claim() already succeeded,
-    # so finish() always ran): the staged bytes are never needed again.
-    delete_staged_upload(engine, run_id)
+    # Only once the run is COMPLETED or FAILED: a run handed back to the
+    # queue, or held by another worker, still needs its staged bytes.
+    delete_staged_upload_if_terminal(engine, run_id)
+
+
+def _record_usage(engine, run_id: str, usage_log, gemini, settings) -> None:
+    # Logged for every attempt this worker claimed, success or failure -- one
+    # that fails before any Gemini call just reports zero, a failure partway
+    # through (e.g. a bad role) still reports whatever was spent getting
+    # there. Full end-to-end total for this run, from the first call
+    # (classification/vision/financial extraction) through the last
+    # orchestrator role; the PDF render itself calls no LLM, so this is
+    # also the total for upload-to-report-ready. Per-call detail is the
+    # dpr_gemini_call log line in gemini.py, already emitted as each call
+    # happens -- this is the one-line rollup for the whole run.
+    usage = sum_usage(usage_log)
+    # The cost at the configured rates (run_cost.py); never allowed to
+    # stop the token totals being stored.
+    cost_usd = cost_inr = prices = by_role = None
+    usd_to_inr = getattr(settings, "dpr_usd_to_inr", None)
+    try:
+        prices = prices_from_settings(settings)
+        if prices is not None:
+            cost_usd = run_cost_usd(usage, prices)
+            cost_inr = to_inr(cost_usd, usd_to_inr)
+    except Exception:  # noqa: BLE001
+        logger.warning("dpr_run_cost_failed run_id=%s", run_id, exc_info=True)
+    try:
+        by_role = usage_by_role(usage_log, prices)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "dpr_run_usage_by_role_failed run_id=%s", run_id, exc_info=True
+        )
+    logger.info(
+        "dpr_run_token_usage run_id=%s gemini_calls=%d total_prompt_tokens=%d "
+        "total_completion_tokens=%d total_tokens=%d thinking_tokens=%d "
+        "cached_tokens=%d search_queries=%d cost_usd=%s cost_inr=%s",
+        run_id,
+        usage.gemini_calls,
+        usage.prompt_tokens,
+        usage.completion_tokens,
+        usage.total_tokens,
+        usage.thinking_tokens,
+        usage.cached_tokens,
+        usage.search_queries,
+        cost_usd,
+        cost_inr,
+    )
+    # Persisted (migrations 008, 013, 016) so the totals and the cost are
+    # queryable per run, not just grep-able in logs. Added onto earlier
+    # attempts' usage (jobs.record_token_usage); only ever called for an
+    # attempt this worker claimed.
+    record_token_usage(
+        engine,
+        run_id,
+        gemini_calls=usage.gemini_calls,
+        prompt_tokens=usage.prompt_tokens,
+        completion_tokens=usage.completion_tokens,
+        total_tokens=usage.total_tokens,
+        thinking_tokens=usage.thinking_tokens,
+        cached_tokens=usage.cached_tokens,
+        search_queries=usage.search_queries,
+        gemini_model=getattr(gemini, "model", None),
+        cost_usd=cost_usd,
+        cost_inr=cost_inr,
+        usd_to_inr=usd_to_inr if cost_inr is not None else None,
+        price_rates=price_rates(prices) if cost_usd is not None else None,
+        usage_by_role=by_role,
+    )
 
 
 async def poll_once(
@@ -313,6 +342,12 @@ async def poll_once(
         purge_expired_grounding_cache(engine)
     except Exception:
         logger.warning("dpr_grounding_cache_purge_failed", exc_info=True)
+    try:
+        swept = purge_terminal_staging(engine)
+        if swept:
+            logger.info("dpr_staging_swept rows=%d", swept)
+    except Exception:
+        logger.warning("dpr_staging_sweep_failed", exc_info=True)
     for reaped in reap_exhausted(engine):
         delete_staged_upload(engine, reaped)
         logger.warning("dpr_run_attempts_exhausted run_id=%s", reaped)
@@ -354,6 +389,15 @@ async def run(once: bool) -> None:
         POLL_SECONDS,
         settings.dpr_agentic_vision_enabled,
     )
+    # SIGTERM (systemd stop, worker_process.stop(), a deploy) cancels the
+    # main task instead of killing the process outright: the run in progress
+    # is handed back to the queue (worker.run_claimed_analysis -> release())
+    # and its usage so far recorded, rather than sitting RUNNING until its
+    # 30-minute lease expires and losing one of its four attempts.
+    loop = asyncio.get_running_loop()
+    main_task = asyncio.current_task()
+    with contextlib.suppress(NotImplementedError):  # not on Windows
+        loop.add_signal_handler(signal.SIGTERM, main_task.cancel)
     try:
         while True:
             claimed = await poll_once(
@@ -375,7 +419,8 @@ def main() -> int:
         "--once", action="store_true", help="run a single poll cycle, then exit"
     )
     args = parser.parse_args()
-    asyncio.run(run(args.once))
+    with contextlib.suppress(asyncio.CancelledError, KeyboardInterrupt):
+        asyncio.run(run(args.once))
     return 0
 
 

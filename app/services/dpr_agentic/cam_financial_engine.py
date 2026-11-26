@@ -28,7 +28,11 @@ from enum import Enum
 from .cam_snapshot import CalculationTrace
 
 TWO_PLACES = Decimal("0.01")
-CALCULATION_VERSION = "1.0.0"
+# Bumped whenever a formula's result changes, so Annexure G's "calculation
+# version" identifies the arithmetic a stored report used.
+# 1.1.0 (2026-11-25): no tax on a loss (scenarios, debt-service break-even);
+#   fractional moratoria; DSCR and break-even on the first repaying year.
+CALCULATION_VERSION = "1.1.0"
 
 
 def _q(value: Decimal, places: Decimal = TWO_PLACES) -> Decimal:
@@ -58,7 +62,9 @@ class LoanTerms:
     principal: Decimal
     annual_rate_pct: Decimal
     tenor_years: int
-    moratorium_years: int = 0
+    # May be fractional: a 6-month moratorium is 0.5, and its first year
+    # repays half a year's principal.
+    moratorium_years: Decimal | int = 0
     # Equal-principal amortization (principal/repayment-years each year,
     # interest on the opening balance) is the only schedule implemented. It
     # is what the Tikamgarh golden case's own figures reproduce exactly
@@ -79,17 +85,21 @@ class AmortizationYear:
 
 
 def equal_principal_amortization_schedule(terms: LoanTerms) -> list[AmortizationYear]:
-    repayment_years = terms.tenor_years - terms.moratorium_years
+    moratorium = Decimal(str(terms.moratorium_years))
+    repayment_years = Decimal(terms.tenor_years) - moratorium
     schedule: list[AmortizationYear] = []
     if repayment_years <= 0:
         return schedule
     balance = terms.principal
-    annual_principal = terms.principal / Decimal(repayment_years)
+    annual_principal = terms.principal / repayment_years
     rate = terms.annual_rate_pct / Decimal(100)
     for year in range(1, terms.tenor_years + 1):
         opening = balance
         interest = _q(opening * rate)
-        if year <= terms.moratorium_years:
+        # Share of this year spent repaying: 0 inside the moratorium, a
+        # fraction in the year it ends part-way (0.5 years -> half), else 1.
+        repaying = min(max(Decimal(year) - moratorium, Decimal(0)), Decimal(1))
+        if repaying == 0:
             schedule.append(
                 AmortizationYear(
                     year, _q(opening), Decimal("0.00"), interest, _q(opening)
@@ -99,7 +109,7 @@ def equal_principal_amortization_schedule(terms: LoanTerms) -> list[Amortization
         is_final_year = year == terms.tenor_years
         # The last year absorbs rounding so the schedule closes to exactly
         # zero rather than leaving a residual paisa from repeated rounding.
-        principal = _q(opening) if is_final_year else _q(annual_principal)
+        principal = _q(opening) if is_final_year else _q(annual_principal * repaying)
         closing = _q(opening - principal)
         schedule.append(
             AmortizationYear(year, _q(opening), principal, interest, closing)
@@ -252,8 +262,12 @@ def debt_service_threshold_breakeven(
 
     Solved algebraically (linear in `units`), not by search: PBT(units) =
     units*(price-variable) - other_fixed_cost - depreciation - interest;
-    PAT(units) = PBT(units) * (1 - tax_rate) (only valid while PBT > 0 --
-    flagged NOT_COMPUTABLE outside that range, never silently clamped).
+    PAT(units) = PBT(units) * (1 - tax_rate) while PBT > 0, and = PBT (no
+    tax on a loss) otherwise. So the equation is piecewise: the taxed
+    solution holds only if its PBT is positive; else the untaxed one.
+    Under the CADS definition that adds back interest, DSCR = 1 often needs
+    a loss (whenever depreciation exceeds principal), and taxing that loss
+    as a credit made the break-even look reachable at fewer units.
     """
     contribution = price_per_unit - variable_cost_per_unit
     debt_service = principal_due + interest_due
@@ -291,7 +305,10 @@ def debt_service_threshold_breakeven(
         return not_computable_trace(
             formula, inputs, "Tax rate of 100% or more makes this unsolvable."
         )
-    units = ((debt_service - add_back) / retained + other_fixed) / contribution
+    # PBT needed at break-even: PAT = debt_service - add_back.
+    pat_needed = debt_service - add_back
+    pbt_needed = pat_needed / retained if pat_needed > 0 else pat_needed
+    units = (pbt_needed + other_fixed) / contribution
     if units < 0:
         return not_computable_trace(
             formula,
@@ -430,7 +447,7 @@ def _scenario(
     interest_due: Decimal,
 ) -> ScenarioResult:
     pbt = _q(pbt_dpr_as_written - cost_delta)
-    tax = _q(pbt * tax_rate)
+    tax = _q(max(pbt, Decimal(0)) * tax_rate)  # a loss pays no tax
     pat = _q(pbt - tax)
     trace = dscr(
         net_profit=pat,

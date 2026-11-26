@@ -29,6 +29,24 @@ import re
 from .schemas import Finding
 
 _SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+PRIORITY_RANK = {"must_fix": 0, "should_fix": 1, "good_to_fix": 2}
+
+
+def raise_priority_from(target: Finding, others: list[Finding]) -> None:
+    """A merge never lowers a priority: `target` takes the highest priority
+    (and its rule) among `others` when that is above its own. Seen: a
+    checklist must-fix merged into a should-fix calculated finding, and the
+    must-fix disappeared."""
+    best = min(
+        (f for f in others if f.priority in PRIORITY_RANK),
+        key=lambda f: PRIORITY_RANK[f.priority],
+        default=None,
+    )
+    if best is None:
+        return
+    current = PRIORITY_RANK.get(target.priority or "", 99)
+    if PRIORITY_RANK[best.priority] < current:
+        target.priority, target.priority_rule = best.priority, best.priority_rule
 
 # Categories a human reviewing the DPR itself would call a *defect* in the
 # document: an error, inconsistency or omission. Everything else is treated
@@ -130,7 +148,8 @@ def priority_for_calculation(
     """Priority for a finding built from a financial_calc.CalculationResult.
     Returns (priority, explanation_of_which_rule_fired)."""
     year_one_insolvent = (
-        check.startswith("dscr_year_1")
+        # Exact: "dscr_year_10".."dscr_year_19" also start with "dscr_year_1".
+        check == "dscr_year_1"
         and computed_value is not None
         and computed_value < 1.0
     )

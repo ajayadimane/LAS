@@ -176,7 +176,8 @@ def _engine_derived_fields(
     engine = CamEngineOutputs.model_validate(result.cam_engine_outputs)
     ratios = FinancialRatios(
         dscr_definition_used=DscrDefinition.PAT_DEP_INTEREST,
-        average_dscr=engine.dscr_pat_dep_interest,
+        # The engine's DSCR is the first repaying year's, not an average.
+        first_year_dscr=engine.dscr_pat_dep_interest,
         dscr_pat_dep_only=engine.dscr_pat_dep,
         breakeven_accounting=engine.breakeven_accounting,
         breakeven_operating_cashflow=engine.breakeven_operating_cashflow,
@@ -189,7 +190,7 @@ def _engine_derived_fields(
         interest = Decimal(engine.year1_interest_due)
         repayment_schedule.append(
             RepaymentPeriod(
-                year=1,
+                year=engine.debt_service_year or 1,
                 principal_due=Money(amount=principal, unit="lakh"),
                 interest_due=Money(amount=interest, unit="lakh"),
                 total_debt_service=Money(amount=principal + interest, unit="lakh"),

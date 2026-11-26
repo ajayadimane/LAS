@@ -49,6 +49,7 @@ def build_annexure_a(snapshot: CAMSnapshot) -> dict:
         "ratio_analysis": {
             "dscr_definition_used": ratios.dscr_definition_used.value,
             "average_dscr": _trace(ratios.average_dscr),
+            "first_year_dscr": _trace(ratios.first_year_dscr),
             "dscr_pat_dep_only": _trace(ratios.dscr_pat_dep_only),
             "breakeven_accounting": _trace(ratios.breakeven_accounting),
             "breakeven_operating_cashflow": _trace(ratios.breakeven_operating_cashflow),
@@ -247,6 +248,8 @@ def build_annexure_g(
         "agent_roles_executed": sorted(result.agent_outputs.keys()),
         "gemini_model": result.gemini_model,
         "schema_version": snapshot.schema_version,
+        # None for a report stored before 2026-11-25.
+        "calculation_versions": result.calculation_versions,
         "dscr_definition_used": snapshot.financial_ratios.dscr_definition_used.value,
         "readiness_score_mode": snapshot.readiness_assessment.score_mode,
         "readiness_status": snapshot.readiness_assessment.status.value,

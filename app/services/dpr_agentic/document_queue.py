@@ -50,7 +50,9 @@ def queue_analysis(
     """Queue the DPR analysis of a document already in hand; returns
     (analysis_status, run_id). Shared by the upload endpoints above and the
     email intake (app/services/intake/processor.py). NOT_QUEUED without the
-    DPR database or staging key; RATE_LIMITED past the per-customer daily cap.
+    DPR database or staging key; RATE_LIMITED past the per-customer daily cap;
+    ALREADY_ANALYSED when this exact document was already analysed (its run
+    is COMPLETED; re-uploading a FAILED one queues it again).
     Never runs analysis inline: scripts/dpr_worker.py picks it up."""
     key = settings.dpr_staging_encryption_key
     if engine is None or key is None:
@@ -60,25 +62,40 @@ def queue_analysis(
         mark_wallet_retry,
         mark_wallet_stored,
     )
-    from app.services.dpr_agentic.jobs import count_recent_submissions, submit
+    from app.services.dpr_agentic.jobs import get_run, requeue_failed, submit_capped
     from app.services.dpr_agentic.upload_staging import stage_upload
 
     # Per-customer cap, across all their services -- never blocks the
-    # Wallet write, only whether analysis gets queued.
-    recent = count_recent_submissions(
-        engine,
-        f"wallet-person-custom-field:{person_id}:%",
-        datetime.now(timezone.utc) - timedelta(hours=24),
-    )
-    if recent >= settings.dpr_agentic_daily_submission_limit:
-        return "RATE_LIMITED", None
+    # Wallet write, only whether analysis gets queued. Counted and inserted
+    # atomically (jobs.submit_capped).
     source_ref = f"wallet-person-custom-field:{person_id}:{code}"
-    run_id, _ = submit(
+    submitted = submit_capped(
         engine,
+        cap_prefix=f"wallet-person-custom-field:{person_id}:%",
+        since=datetime.now(timezone.utc) - timedelta(hours=24),
+        limit=settings.dpr_agentic_daily_submission_limit,
         service_request_id=f"{person_id}:{code}",
         document_sha256=hashlib.sha256(file.data).hexdigest(),
         source_reference=source_ref,
     )
+    if submitted is None:
+        return "RATE_LIMITED", None
+    run_id, created = submitted
+    if not created:
+        # The same document again: its run already exists (idempotency key).
+        existing = get_run(engine, run_id) or {}
+        state = existing.get("status")
+        if state == "COMPLETED":
+            # Already analysed: nothing to stage, the report is there.
+            return "ALREADY_ANALYSED", run_id
+        if state == "RUNNING":
+            # In progress, and it still has its staged bytes.
+            return "QUEUED", run_id
+        if state == "FAILED" and not requeue_failed(engine, run_id):
+            return "QUEUED", run_id  # requeued concurrently by another upload
+        # FAILED (now requeued) or QUEUED: (re)stage below. A QUEUED run
+        # with no staged bytes (stage_upload failed last time) is never
+        # listed for a worker until they are there.
     init_branches(engine, run_id)
     stage_upload(
         engine,

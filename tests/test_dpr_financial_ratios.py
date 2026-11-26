@@ -293,7 +293,9 @@ def test_assumptions_compare_with_the_references():
 def test_stress_box_names_the_most_sensitive_assumption():
     stress = cam_review.stress_test(_result(_fin()))
     assert float(stress.average_dscr) == 1.21
-    assert stress.most_sensitive.startswith("selling price (a 14.2% fall")
+    assert stress.most_sensitive.startswith(
+        "Your biggest risk is your selling price: it can fall about 14%"
+    )
 
 
 def test_the_page_prints_the_assumptions_and_stress():
@@ -302,9 +304,10 @@ def test_the_page_prints_the_assumptions_and_stress():
         result, report_id="r", report_version=1, analysis_run_id="run"
     )
     html = render_cam_report_html(snap, result=result)
-    assert "4% p.a." in html and "RBI inflation target" in html
-    assert "average DSCR becomes 1.21" in html
-    assert "Most sensitive assumption: selling price" in html
+    # In the applicant's words (2026-11-25).
+    assert "4% a year" in html and "Prices in India rise about 4% a year" in html
+    assert "drops to 1.21 in an average year" in html
+    assert "Your biggest risk is your selling price" in html
 
 
 def test_ratio_measures_do_not_move_the_readiness_score():

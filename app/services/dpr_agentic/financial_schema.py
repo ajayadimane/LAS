@@ -324,6 +324,51 @@ def normalize_year_numbers(financials: ProjectFinancials) -> ProjectFinancials:
     return fixed
 
 
+def _interest_paid(row: RepaymentInstalment) -> float:
+    if (row.principal or 0) < 0:
+        return 0.0  # capitalised, not paid
+    if row.instalment is not None:
+        return max(row.instalment - (row.principal or 0), 0.0)
+    return row.interest or 0.0
+
+
+_NO_TAX_TOLERANCE = 0.01  # lakh
+
+
+def fill_net_profit_from_pbt(financials: ProjectFinancials) -> ProjectFinancials:
+    """A year with profit before tax but no net profit gets one, when the
+    DPR itself fixes it: PBT minus that year's stated tax, or PBT as is when
+    the DPR charges no tax at all (every year with both figures shows them
+    equal, and no year states a tax). Seen live (91364956ce58, 2026-11-26):
+    one run read years 6-7 of a no-tax P&L as PBT only, so DSCR covered 5
+    of 7 years; the next run read the same figures as net profit."""
+    years = financials.years
+    gaps = [
+        y for y in years if y.net_profit is None and y.profit_before_tax is not None
+    ]
+    if not gaps:
+        return financials
+    paired = [
+        y for y in years if y.net_profit is not None and y.profit_before_tax is not None
+    ]
+    no_tax = (
+        bool(paired)
+        and all(
+            abs(y.net_profit - y.profit_before_tax) <= _NO_TAX_TOLERANCE for y in paired
+        )
+        and not any(y.tax_paid for y in years)
+    )
+    fixed = financials.model_copy(deep=True)
+    for y in fixed.years:
+        if y.net_profit is not None or y.profit_before_tax is None:
+            continue
+        if y.tax_paid is not None:
+            y.net_profit = round(y.profit_before_tax - y.tax_paid, 4)
+        elif no_tax:
+            y.net_profit = y.profit_before_tax
+    return fixed
+
+
 def aggregate_repayment_instalments(financials: ProjectFinancials) -> ProjectFinancials:
     """Builds yearly repayment_table rows from transcribed instalment rows
     -- the arithmetic the model is never asked to do. Only fills years the
@@ -331,17 +376,28 @@ def aggregate_repayment_instalments(financials: ProjectFinancials) -> ProjectFin
 
     Per loan year: principal_due = sum of positive principal components
     (negative ones are capitalised interest, not repayment); interest_due =
-    instalments paid minus that principal when the instalment column was
-    transcribed, otherwise the sum of interest on rows that repaid
-    principal. Converted to lakh from the printed unit; with no unit
-    recorded, nothing is aggregated rather than guessing one.
+    the interest actually paid over *every* row of the year -- a row's
+    instalment minus its principal when the instalment was transcribed,
+    else its interest -- including interest-only moratorium months. (Only
+    the principal-repaying rows were counted before, so a year of 6
+    interest-only and 6 repaying months showed half its interest and an
+    overstated DSCR.) Capitalised interest (negative principal) is not
+    paid. Converted to lakh from the printed unit; with no unit recorded,
+    nothing is aggregated rather than guessing one.
     """
     rows = financials.repayment_instalments
     unit = financials.repayment_amount_unit
     if not rows or unit is None:
         return financials
     divisor = RUPEES_PER_LAKH if unit == "rupee" else 1
-    existing = {r.year for r in financials.repayment_table}
+    # A table row only counts when it carries a figure: seen live (eval
+    # 2026-11-25), the model returned a row per year with every value null,
+    # which used to block the transcribed instalments and lose all DSCRs.
+    existing = {
+        r.year
+        for r in financials.repayment_table
+        if r.principal_due.value is not None or r.interest_due.value is not None
+    }
     by_year: dict[int, list[RepaymentInstalment]] = {}
     for row in rows:
         by_year.setdefault(row.loan_year, []).append(row)
@@ -349,16 +405,14 @@ def aggregate_repayment_instalments(financials: ProjectFinancials) -> ProjectFin
     for year, items in sorted(by_year.items()):
         if year in existing:
             continue
+        fixed.repayment_table = [r for r in fixed.repayment_table if r.year != year]
         paying = [r for r in items if (r.principal or 0) > 0]
         if not paying:
             # A moratorium year repays nothing: no row, so DSCR is not
             # computed against a zero debt service.
             continue
         principal = sum(r.principal for r in paying)
-        if all(r.instalment is not None for r in paying):
-            interest = sum(r.instalment for r in paying) - principal
-        else:
-            interest = sum(r.interest or 0 for r in paying)
+        interest = sum(_interest_paid(r) for r in items)
         page = next((r.page for r in items if r.page is not None), None)
         fixed.repayment_table.append(
             RepaymentTableRow(

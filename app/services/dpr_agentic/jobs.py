@@ -17,6 +17,52 @@ def engine_for(database_url: str):
     return create_engine(database_url, pool_pre_ping=True, future=True)
 
 
+def _key(
+    service_request_id: str,
+    source_reference: str,
+    document_sha256: str,
+    analysis_version: str,
+) -> str:
+    return (
+        f"{service_request_id}:{source_reference}:{document_sha256}:{analysis_version}"
+    )
+
+
+def _insert_run(
+    db,
+    *,
+    service_request_id: str,
+    document_sha256: str,
+    source_reference: str,
+    analysis_version: str,
+) -> tuple[str, bool]:
+    key = _key(service_request_id, source_reference, document_sha256, analysis_version)
+    row = db.execute(
+        text("""
+        INSERT INTO dpr_analysis_runs (run_id, idempotency_key, service_request_id,
+          source_reference, document_sha256, analysis_version, status)
+        VALUES (:id, :key, :sr, :ref, :sha, :version, 'QUEUED')
+        ON CONFLICT (idempotency_key) DO NOTHING
+        RETURNING run_id
+    """),
+        {
+            "id": str(uuid4()),
+            "key": key,
+            "sr": service_request_id,
+            "ref": source_reference,
+            "sha": document_sha256,
+            "version": analysis_version,
+        },
+    ).scalar_one_or_none()
+    if row:
+        return str(row), True
+    existing = db.execute(
+        text("SELECT run_id FROM dpr_analysis_runs WHERE idempotency_key=:key"),
+        {"key": key},
+    ).scalar_one()
+    return str(existing), False
+
+
 def submit(
     engine,
     *,
@@ -26,35 +72,75 @@ def submit(
     analysis_version: str = "v1",
 ) -> tuple[str, bool]:
     """Idempotent insert; returns (run_id, created). Payload is NOT stored here."""
-    run_id = str(uuid4())
-    key = (
-        f"{service_request_id}:{source_reference}:{document_sha256}:{analysis_version}"
-    )
+    with engine.begin() as db:
+        return _insert_run(
+            db,
+            service_request_id=service_request_id,
+            document_sha256=document_sha256,
+            source_reference=source_reference,
+            analysis_version=analysis_version,
+        )
+
+
+def submit_capped(
+    engine,
+    *,
+    cap_prefix: str,
+    since,
+    limit: int,
+    service_request_id: str,
+    document_sha256: str,
+    source_reference: str,
+    analysis_version: str = "v1",
+) -> tuple[str, bool] | None:
+    """submit(), unless `limit` runs matching `cap_prefix` (a source_reference
+    LIKE pattern, e.g. one customer's every service) were submitted since
+    `since`; then None. The count and the insert share one transaction under
+    an advisory lock on the prefix, so concurrent uploads for the same
+    customer (dashboard + BD + email) cannot all pass a check-then-insert."""
+    with engine.begin() as db:
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:prefix))"),
+            {"prefix": cap_prefix},
+        )
+        recent = db.execute(
+            text("""
+                SELECT COUNT(*) FROM dpr_analysis_runs
+                WHERE source_reference LIKE :prefix AND created_at >= :since
+            """),
+            {"prefix": cap_prefix, "since": since},
+        ).scalar_one()
+        if recent >= limit:
+            return None
+        return _insert_run(
+            db,
+            service_request_id=service_request_id,
+            document_sha256=document_sha256,
+            source_reference=source_reference,
+            analysis_version=analysis_version,
+        )
+
+
+def requeue_failed(engine, run_id: str) -> bool:
+    """Puts a FAILED run back in the queue with a fresh attempt budget -- the
+    same document uploaded again is the customer asking for a retry (its
+    idempotency key maps it to the failed run, so submit() makes no new
+    one). created_at moves to now: it is the latest submission again, and
+    counts against the daily cap. Only FAILED runs; a COMPLETED one already
+    has its report."""
     with engine.begin() as db:
         row = db.execute(
             text("""
-            INSERT INTO dpr_analysis_runs (run_id, idempotency_key, service_request_id,
-              source_reference, document_sha256, analysis_version, status)
-            VALUES (:id, :key, :sr, :ref, :sha, :version, 'QUEUED')
-            ON CONFLICT (idempotency_key) DO NOTHING
+            UPDATE dpr_analysis_runs SET status='QUEUED', attempts=0,
+              error_code=NULL, artifact_ref=NULL, lease_token=NULL,
+              lease_until=NULL, created_at=CURRENT_TIMESTAMP,
+              updated_at=CURRENT_TIMESTAMP
+            WHERE run_id=:id AND status='FAILED'
             RETURNING run_id
         """),
-            {
-                "id": run_id,
-                "key": key,
-                "sr": service_request_id,
-                "ref": source_reference,
-                "sha": document_sha256,
-                "version": analysis_version,
-            },
+            {"id": run_id},
         ).scalar_one_or_none()
-        if row:
-            return str(row), True
-        existing = db.execute(
-            text("SELECT run_id FROM dpr_analysis_runs WHERE idempotency_key=:key"),
-            {"key": key},
-        ).scalar_one()
-        return str(existing), False
+    return row is not None
 
 
 def claim(engine, run_id: str, *, lease_seconds: int = 900) -> str | None:
@@ -98,6 +184,30 @@ def renew_lease(engine, run_id: str, token: str, *, lease_seconds: int) -> bool:
     return row is not None
 
 
+def release(engine, run_id: str, token: str) -> bool:
+    """Hands a run this worker still holds back to the queue, unfinished --
+    for a deliberate stop (SIGTERM on deploy), so the run is picked up again
+    at once instead of after the lease expires. The interrupted attempt is
+    not counted against the attempt cap: it was our stop, not the run's
+    failure."""
+    try:
+        UUID(token)
+    except (ValueError, AttributeError, TypeError):
+        return False
+    with engine.begin() as db:
+        row = db.execute(
+            text("""
+            UPDATE dpr_analysis_runs SET status='QUEUED', lease_token=NULL,
+              lease_until=NULL, attempts=GREATEST(attempts - 1, 0),
+              updated_at=CURRENT_TIMESTAMP
+            WHERE run_id=:id AND lease_token=:token AND status='RUNNING'
+            RETURNING run_id
+        """),
+            {"id": run_id, "token": token},
+        ).scalar_one_or_none()
+    return row is not None
+
+
 def finish(
     engine,
     run_id: str,
@@ -136,30 +246,48 @@ def finish(
 
 def fail_stuck_run(engine, run_id: str, error_code: str) -> bool:
     """Terminal-fails a run that `finish()` cannot reach because it was never
-    claimed, or lost its lease, before raising -- e.g. a config error
-    evaluated while building `run_claimed_analysis()`'s own arguments, which
-    raises before `claim()` ever runs (see scripts/dpr_worker.py's
-    process_one(), the only caller). Without this, such a run stays QUEUED
-    forever and is retried identically by every poll cycle, rather than
-    ending up FAILED with a reason recorded.
+    claimed before raising -- e.g. a config error evaluated while building
+    `run_claimed_analysis()`'s own arguments, which raises before `claim()`
+    ever runs (see scripts/dpr_worker.py's process_one(), the only caller).
+    Without this, such a run stays QUEUED forever and is retried identically
+    by every poll cycle, rather than ending up FAILED with a reason recorded.
 
-    Deliberately ignores the lease token (there may be none to check): this
-    is a last-resort fallback the caller only reaches after its own
-    try/except around the whole claim-to-finish sequence, and it is a no-op
-    once a run is already COMPLETED or FAILED, so calling it after a normal
-    finish() (which already succeeded) is always safe.
+    Only touches a run nobody holds: QUEUED, or RUNNING with an expired
+    lease. A RUNNING run under a live lease belongs to another worker and is
+    never failed from here. A no-op once a run is COMPLETED or FAILED.
     """
     with engine.begin() as db:
         row = db.execute(
             text("""
             UPDATE dpr_analysis_runs SET status='FAILED', error_code=:error_code,
               lease_until=NULL, lease_token=NULL, updated_at=CURRENT_TIMESTAMP
-            WHERE run_id=:id AND status IN ('QUEUED','RUNNING')
+            WHERE run_id=:id AND (status='QUEUED'
+              OR (status='RUNNING' AND lease_until < CURRENT_TIMESTAMP))
             RETURNING run_id
         """),
             {"id": run_id, "error_code": error_code},
         ).scalar_one_or_none()
         return row is not None
+
+
+def _merge_by_role(old: dict | None, new: dict | None) -> dict | None:
+    """Adds one attempt's per-role usage onto what earlier attempts stored:
+    counts summed, cost_usd summed as Decimal strings."""
+    if not old:
+        return new
+    if not new:
+        return old
+    merged = {role: dict(row) for role, row in old.items()}
+    for role, row in new.items():
+        into = merged.setdefault(role, {})
+        for k, v in row.items():
+            if k == "cost_usd":
+                into[k] = str(Decimal(str(into.get(k) or 0)) + Decimal(str(v)))
+            elif isinstance(v, (int, float)) and not isinstance(v, bool):
+                into[k] = (into.get(k) or 0) + v
+            else:
+                into[k] = v
+    return merged
 
 
 def record_token_usage(
@@ -178,26 +306,54 @@ def record_token_usage(
     cost_inr: Decimal | None = None,
     usd_to_inr: float | None = None,
     price_rates: dict | None = None,
+    usage_by_role: dict | None = None,
 ) -> None:
-    """Persists the end-to-end Gemini token total for a run (migration 008)
-    and what it cost (013, run_cost.py; NULL when no rates are configured).
-    Deliberately unconditional -- no status or lease check, unlike finish()/
-    fail_stuck_run() -- because scripts/dpr_worker.py calls this from its own
-    `finally`, after the run has already reached whatever terminal state it's
-    going to reach (COMPLETED, FAILED via finish(), or FAILED via
-    fail_stuck_run()); there's nothing left to race against. Writing 0s for a
-    run that made no Gemini calls (e.g. failed before the first one) is
-    correct and distinct from a pre-migration row, which stays NULL. A
-    failed run is costed too: its calls were billed."""
+    """Adds one attempt's Gemini usage to a run (migration 008), with what it
+    cost (013, run_cost.py; NULL when no rates are configured) and the
+    per-role breakdown (016).
+
+    Additive, because a run can take more than one attempt (a stop on
+    deploy hands it back to the queue; a lost lease lets another worker
+    take it) and every attempt's calls were billed. The first call onto a
+    NULL row simply stores the values, so a single-attempt run reads the
+    same as before. scripts/dpr_worker.py calls this only for an attempt it
+    actually claimed, from its own `finally`; it never checks status or
+    lease. Writing 0s for an attempt that made no Gemini calls is correct and
+    distinct from a pre-migration row, which stays NULL. A failed run is
+    costed too: its calls were billed."""
     with engine.begin() as db:
+        old_by_role = db.execute(
+            text(
+                "SELECT usage_by_role FROM dpr_analysis_runs "
+                "WHERE run_id=:id FOR UPDATE"
+            ),
+            {"id": run_id},
+        ).scalar_one_or_none()
+        by_role = _merge_by_role(old_by_role, usage_by_role)
         db.execute(
             text("""
-            UPDATE dpr_analysis_runs SET gemini_calls=:calls, prompt_tokens=:prompt,
-              completion_tokens=:completion, total_tokens=:total,
-              thinking_tokens=:thinking, cached_tokens=:cached,
-              search_queries=:searches, gemini_model=:model,
-              cost_usd=:cost_usd, cost_inr=:cost_inr, usd_to_inr=:usd_to_inr,
-              price_rates=CAST(:rates AS JSONB),
+            UPDATE dpr_analysis_runs SET
+              gemini_calls=COALESCE(gemini_calls, 0) + :calls,
+              prompt_tokens=COALESCE(prompt_tokens, 0) + :prompt,
+              completion_tokens=COALESCE(completion_tokens, 0) + :completion,
+              total_tokens=COALESCE(total_tokens, 0) + :total,
+              thinking_tokens=CASE WHEN CAST(:thinking AS BIGINT) IS NULL
+                THEN thinking_tokens
+                ELSE COALESCE(thinking_tokens, 0) + :thinking END,
+              cached_tokens=CASE WHEN CAST(:cached AS BIGINT) IS NULL
+                THEN cached_tokens
+                ELSE COALESCE(cached_tokens, 0) + :cached END,
+              search_queries=CASE WHEN CAST(:searches AS BIGINT) IS NULL
+                THEN search_queries
+                ELSE COALESCE(search_queries, 0) + :searches END,
+              gemini_model=COALESCE(:model, gemini_model),
+              cost_usd=CASE WHEN CAST(:cost_usd AS NUMERIC) IS NULL THEN cost_usd
+                ELSE COALESCE(cost_usd, 0) + :cost_usd END,
+              cost_inr=CASE WHEN CAST(:cost_inr AS NUMERIC) IS NULL THEN cost_inr
+                ELSE COALESCE(cost_inr, 0) + :cost_inr END,
+              usd_to_inr=COALESCE(:usd_to_inr, usd_to_inr),
+              price_rates=COALESCE(CAST(:rates AS JSONB), price_rates),
+              usage_by_role=CAST(:by_role AS JSONB),
               updated_at=CURRENT_TIMESTAMP
             WHERE run_id=:id
         """),
@@ -215,6 +371,7 @@ def record_token_usage(
                 "cost_inr": cost_inr,
                 "usd_to_inr": usd_to_inr,
                 "rates": json.dumps(price_rates) if price_rates is not None else None,
+                "by_role": json.dumps(by_role) if by_role is not None else None,
             },
         )
 
@@ -263,17 +420,22 @@ def latest_run_for(engine, source_reference: str) -> dict | None:
 
 def list_claimable(engine, limit: int = 10) -> list[str]:
     """Run ids claim() could currently take: QUEUED, or RUNNING with an
-    expired lease and attempts still under the cap. For scripts/dpr_worker.py
-    to discover work -- claim() itself needs a run_id already in hand."""
+    expired lease and attempts still under the cap -- and only once the
+    upload is staged. submit() and stage_upload() are separate commits, so a
+    worker polling between them would otherwise claim a run with nothing to
+    read and fail it. For scripts/dpr_worker.py to discover work -- claim()
+    itself needs a run_id already in hand."""
     with engine.connect() as db:
         rows = (
             db.execute(
                 text("""
-                SELECT run_id FROM dpr_analysis_runs
-                WHERE (status='QUEUED'
-                       OR (status='RUNNING' AND lease_until < CURRENT_TIMESTAMP))
-                  AND attempts < 4
-                ORDER BY created_at ASC
+                SELECT r.run_id FROM dpr_analysis_runs r
+                WHERE (r.status='QUEUED'
+                       OR (r.status='RUNNING' AND r.lease_until < CURRENT_TIMESTAMP))
+                  AND r.attempts < 4
+                  AND EXISTS (SELECT 1 FROM dpr_upload_staging s
+                              WHERE s.run_id = r.run_id)
+                ORDER BY r.created_at ASC
                 LIMIT :limit
             """),
                 {"limit": limit},

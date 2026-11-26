@@ -379,7 +379,32 @@ SCHEDULE_ALREADY_READ = (
     "read and checked by code: leave repayment_instalments empty and do not "
     "transcribe or total its rows. Extract only the other fields."
 )
+# Every extraction prompt ends with this. Seen live (eval 2026-11-25): a
+# repayment transcription wrote 177589.00000000003000... until the token
+# cap, twice, and the DPR lost its repayment data (gemini.py also stops
+# and retries such a runaway number).
+NUMBER_FORMAT_RULE = (
+    " Write every number in plain decimal form: a rupee amount as a whole "
+    "number (or with its printed paise), a lakh amount with at most 5 "
+    "digits after the decimal point; never pad with trailing zeros or use "
+    "exponent notation."
+)
 RECOVERY_BUDGET = 2  # hard ceiling per DPR, even when every domain is empty
+_FUND_FLOW_PAGE = re.compile(
+    r"fund[\s-]*flow|sources?\s+(?:and|&)\s+(?:uses|applications?)\s+of\s+funds?|"
+    r"applications?\s+of\s+funds?",
+    re.I,
+)
+FUND_FLOW_ONLY_PROMPT = (
+    "These DPR pages include a fund-flow (sources and applications of "
+    "funds) statement. Copy ONLY its stated total of sources into "
+    "fund_flow_sources_total and its stated total of applications into "
+    "fund_flow_applications_total, each with its page and status "
+    "'extracted', in INR LAKHS (divide whole rupees by 100000). Never add "
+    "up rows yourself; leave a total missing if it is not printed. Leave "
+    "every other field empty."
+)
+
 RETRY_SUFFIX = (
     " Focus on financial fields still absent; return only source-stated values."
 )
@@ -512,8 +537,8 @@ async def extract_financial_sections(
     # Phase 1: every domain's first attempt, concurrently.
     def prompt_for(group: str) -> str:
         if group == "repayment" and schedule is not None:
-            return GROUP_PROMPTS[group] + SCHEDULE_ALREADY_READ
-        return GROUP_PROMPTS[group]
+            return GROUP_PROMPTS[group] + SCHEDULE_ALREADY_READ + NUMBER_FORMAT_RULE
+        return GROUP_PROMPTS[group] + NUMBER_FORMAT_RULE
 
     first = await asyncio.gather(
         *(
@@ -588,6 +613,43 @@ async def extract_financial_sections(
         if _has_group_data(group, part):
             output = merge_section_financials(output, part)
             recovered.append(group)
+
+    # Fund-flow totals: no section routes their page, so they come only when
+    # it sits among the cost/funding pages, and were read in one run and not
+    # the next (e3aae76bbdce, 2026-11-26). One small call on the pages that
+    # name a fund-flow statement, only when both totals are missing.
+    if (
+        output.fund_flow_sources_total.value is None
+        and output.fund_flow_applications_total.value is None
+    ):
+        fund_flow_pages = [p for p in pages if _FUND_FLOW_PAGE.search(p.text)][:3]
+        if fund_flow_pages:
+            part = await _call_group(
+                llm,
+                "cost_funding",
+                FUND_FLOW_ONLY_PROMPT + NUMBER_FORMAT_RULE,
+                {
+                    "project_context": project_context,
+                    "pages": [
+                        {"page": p.page, "text": p.text} for p in fund_flow_pages
+                    ],
+                    "section_index": [],
+                    "partial_source": True,
+                },
+            )
+            if part is not None and (
+                part.fund_flow_sources_total.value is not None
+                or part.fund_flow_applications_total.value is not None
+            ):
+                output = output.model_copy(
+                    update={
+                        "fund_flow_sources_total": part.fund_flow_sources_total,
+                        "fund_flow_applications_total": (
+                            part.fund_flow_applications_total
+                        ),
+                    }
+                )
+                recovered.append("fund_flow")
 
     # A group's first response can be incomplete and its retry then fill
     # it; report only groups still incomplete in the merged result, so a

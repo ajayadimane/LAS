@@ -5,10 +5,14 @@ interval arithmetic) is not portable to SQLite. See tests/conftest.py for how
 to point DPR_TEST_DATABASE_URL at one; otherwise these are skipped.
 """
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
+from cryptography.fernet import Fernet
 from sqlalchemy import text
 
+from app.services.documents import StoredFile
 from app.services.dpr_agentic.jobs import (
     claim,
     fail_stuck_run,
@@ -17,9 +21,24 @@ from app.services.dpr_agentic.jobs import (
     list_claimable,
     reap_exhausted,
     record_token_usage,
+    release,
     renew_lease,
+    requeue_failed,
     submit,
+    submit_capped,
 )
+from app.services.dpr_agentic.upload_staging import stage_upload
+
+KEY = Fernet.generate_key()
+
+
+def _stage(engine, run_id: str) -> None:
+    stage_upload(
+        engine,
+        run_id,
+        StoredFile(name="dpr.pdf", content_type="application/pdf", data=b"%PDF-1"),
+        KEY,
+    )
 
 
 def _submit(engine, **overrides):
@@ -186,9 +205,19 @@ def test_fail_stuck_run_terminal_fails_a_queued_run_with_no_lease(dpr_pg):
     assert row["error_code"] == "AttributeError"
 
 
-def test_fail_stuck_run_also_fails_a_running_run_ignoring_the_lease(dpr_pg):
+def test_fail_stuck_run_never_fails_a_run_under_a_live_lease(dpr_pg):
+    """A RUNNING run with a live lease belongs to another worker: a worker
+    whose own attempt raised must not fail it from under them."""
     run_id, _ = _submit(dpr_pg)
-    claim(dpr_pg, run_id)  # leaves it RUNNING, with an active lease
+    claim(dpr_pg, run_id)  # RUNNING, with an active lease
+    assert fail_stuck_run(dpr_pg, run_id, "RuntimeError") is False
+    assert get_run(dpr_pg, run_id)["status"] == "RUNNING"
+
+
+def test_fail_stuck_run_fails_a_running_run_whose_lease_expired(dpr_pg):
+    run_id, _ = _submit(dpr_pg)
+    claim(dpr_pg, run_id)
+    _expire(dpr_pg, run_id)  # nobody holds it any more
     assert fail_stuck_run(dpr_pg, run_id, "RuntimeError") is True
     row = get_run(dpr_pg, run_id)
     assert row["status"] == "FAILED"
@@ -271,6 +300,26 @@ def test_record_token_usage_stores_the_cost_and_the_rates_it_used(dpr_pg):
     assert rates == {"input_per_mtok_usd": "0.75"}
 
 
+def test_record_token_usage_stores_the_per_role_breakdown(dpr_pg):
+    run_id, _ = _submit(dpr_pg)
+    by_role = {"finance": {"calls": 2, "truncated_calls": 1, "cost_usd": "0.009"}}
+    record_token_usage(
+        dpr_pg,
+        run_id,
+        gemini_calls=2,
+        prompt_tokens=2000,
+        completion_tokens=600,
+        total_tokens=4000,
+        usage_by_role=by_role,
+    )
+    with dpr_pg.connect() as conn:
+        stored = conn.execute(
+            text("SELECT usage_by_role FROM dpr_analysis_runs WHERE run_id=:id"),
+            {"id": run_id},
+        ).scalar_one()
+    assert stored == by_role
+
+
 def test_record_token_usage_is_unconditional_and_never_checks_status_or_lease(dpr_pg):
     """Called from scripts/dpr_worker.py's own `finally`, after the run has
     already reached its terminal state (finish() or fail_stuck_run() already
@@ -310,14 +359,26 @@ def test_list_claimable_finds_queued_and_stale_running_runs(dpr_pg):
     _expire(dpr_pg, stale)
     held, _ = _submit(dpr_pg, document_sha256="c" * 64)
     claim(dpr_pg, held)  # fresh lease -- not claimable yet
+    for run_id in (queued, stale, held):
+        _stage(dpr_pg, run_id)
 
     claimable = list_claimable(dpr_pg)
 
     assert set(claimable) == {queued, stale}
 
 
+def test_list_claimable_skips_a_run_whose_upload_is_not_staged_yet(dpr_pg):
+    """submit() and stage_upload() are separate commits: a worker polling in
+    between must not claim (and fail) a run with nothing to read."""
+    run_id, _ = _submit(dpr_pg)
+    assert list_claimable(dpr_pg) == []
+    _stage(dpr_pg, run_id)
+    assert list_claimable(dpr_pg) == [run_id]
+
+
 def test_list_claimable_excludes_attempts_exhausted_runs(dpr_pg):
     run_id, _ = _submit(dpr_pg)
+    _stage(dpr_pg, run_id)
     for _ in range(4):
         claim(dpr_pg, run_id, lease_seconds=900)
         _expire(dpr_pg, run_id)
@@ -346,3 +407,111 @@ def test_reap_exhausted_leaves_runs_with_attempts_left_alone(dpr_pg):
 
     assert reap_exhausted(dpr_pg) == []
     assert get_run(dpr_pg, run_id)["status"] == "RUNNING"
+
+
+_CAP = dict(cap_prefix="wallet-person-custom-field:9000000013:%", limit=2)
+
+
+def _since():
+    return datetime.now(timezone.utc) - timedelta(hours=24)
+
+
+def test_submit_capped_refuses_past_the_limit(dpr_pg):
+    assert submit_capped(dpr_pg, since=_since(), **_CAP, **_defaults("a")) is not None
+    assert submit_capped(dpr_pg, since=_since(), **_CAP, **_defaults("b")) is not None
+    assert submit_capped(dpr_pg, since=_since(), **_CAP, **_defaults("c")) is None
+
+
+def test_submit_capped_holds_the_cap_under_concurrent_uploads(dpr_pg):
+    """Count and insert are one transaction under an advisory lock: eight
+    simultaneous uploads for one customer cannot all see "under the cap"."""
+
+    def upload(i: int):
+        return submit_capped(dpr_pg, since=_since(), **_CAP, **_defaults(str(i)))
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(upload, range(8)))
+
+    assert sum(r is not None for r in results) == 2
+    with dpr_pg.connect() as conn:
+        assert (
+            conn.execute(text("SELECT COUNT(*) FROM dpr_analysis_runs")).scalar() == 2
+        )
+
+
+def _defaults(seed: str) -> dict:
+    return dict(
+        service_request_id="SR-1",
+        document_sha256=(seed * 64)[:64],
+        source_reference="wallet-person-custom-field:9000000013:DPR_ANALYSIS",
+    )
+
+
+def test_requeue_failed_gives_a_failed_run_a_fresh_start(dpr_pg):
+    run_id, _ = _submit(dpr_pg)
+    token = claim(dpr_pg, run_id)
+    finish(dpr_pg, run_id, token, success=False, error_code="GeminiTransportError")
+
+    assert requeue_failed(dpr_pg, run_id) is True
+
+    row = get_run(dpr_pg, run_id)
+    assert row["status"] == "QUEUED"
+    assert row["attempts"] == 0 and row["error_code"] is None
+
+
+def test_requeue_failed_never_touches_a_completed_run(dpr_pg):
+    run_id, _ = _submit(dpr_pg)
+    token = claim(dpr_pg, run_id)
+    finish(dpr_pg, run_id, token, success=True, artifact_ref="report-1")
+    assert requeue_failed(dpr_pg, run_id) is False
+    assert get_run(dpr_pg, run_id)["status"] == "COMPLETED"
+
+
+def test_release_hands_the_run_back_without_spending_an_attempt(dpr_pg):
+    run_id, _ = _submit(dpr_pg)
+    token = claim(dpr_pg, run_id)
+    assert get_run(dpr_pg, run_id)["attempts"] == 1
+
+    assert release(dpr_pg, run_id, token) is True
+
+    row = get_run(dpr_pg, run_id)
+    assert row["status"] == "QUEUED" and row["attempts"] == 0
+    assert claim(dpr_pg, run_id) is not None  # claimable again at once
+
+
+def test_release_refuses_a_token_that_no_longer_holds_the_run(dpr_pg):
+    run_id, _ = _submit(dpr_pg)
+    claim(dpr_pg, run_id)
+    assert release(dpr_pg, run_id, "00000000-0000-0000-0000-000000000000") is False
+    assert get_run(dpr_pg, run_id)["status"] == "RUNNING"
+
+
+def test_record_token_usage_adds_every_attempt_together(dpr_pg):
+    """A run handed back on shutdown, or reclaimed, takes more than one
+    attempt; every attempt's calls were billed, so they add up."""
+    run_id, _ = _submit(dpr_pg)
+    for cost in ("0.010", "0.005"):
+        record_token_usage(
+            dpr_pg,
+            run_id,
+            gemini_calls=2,
+            prompt_tokens=100,
+            completion_tokens=10,
+            total_tokens=120,
+            thinking_tokens=5,
+            cost_usd=Decimal(cost),
+            usage_by_role={"finance": {"calls": 2, "cost_usd": cost}},
+        )
+    row = get_run(dpr_pg, run_id)
+    assert (row["gemini_calls"], row["total_tokens"], row["thinking_tokens"]) == (
+        4,
+        240,
+        10,
+    )
+    assert row["cost_usd"] == Decimal("0.015")
+    with dpr_pg.connect() as conn:
+        by_role = conn.execute(
+            text("SELECT usage_by_role FROM dpr_analysis_runs WHERE run_id=:id"),
+            {"id": run_id},
+        ).scalar_one()
+    assert by_role == {"finance": {"calls": 4, "cost_usd": "0.015"}}

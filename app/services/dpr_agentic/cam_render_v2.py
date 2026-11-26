@@ -17,10 +17,12 @@ invented.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from decimal import Decimal
 
-from .cam_snapshot import CAMSnapshot, Money, ReadinessStatus
+from .cam_snapshot import CAMSnapshot, Money, ReadinessStatus, ValueClassification
+from .financial_ratios import STRESS_DSCR_FLOOR
 
 PRODUCT_NAME = "LAS DPR Analyzer"
 ACCENT = "#1F6B4A"
@@ -69,7 +71,11 @@ ELIGIBLE_LABEL = {
     "no": "No",
     "not_assessed": "Not assessed",
 }
-MEASURE_STATUS = {"meets": "Meets", "below": "Below baseline", "pending": "Pending"}
+MEASURE_STATUS = {
+    "meets": "OK",
+    "below": "Below what the bank wants",
+    "pending": "Not enough information",
+}
 DOCUMENT_STATUS = {
     "available": "Available",
     "missing": "Missing",
@@ -264,20 +270,145 @@ def build_scheme_fit(snapshot: CAMSnapshot) -> dict:
     }
 
 
+# The action plan is read by the applicant. A calculated finding's own action
+# is written for the bank ("Verify this figure with the applicant."), so the
+# table says what the applicant should do instead.
+CUSTOMER_ACTION_DEFAULT = (
+    "Check this figure in your DPR and correct it, or add a note explaining "
+    "why it differs from our calculation."
+)
+EXCERPT_MAX_CHARS = 240
+
+
+def _plain_excerpt(text: str | None, max_chars: int = EXCERPT_MAX_CHARS) -> str:
+    """`text` cut to whole sentences that fit `max_chars`; a first sentence
+    longer than that is cut at a word boundary with an ellipsis."""
+    text = " ".join((text or "").split())
+    if len(text) <= max_chars:
+        return text
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    kept = ""
+    for sentence in sentences:
+        candidate = f"{kept} {sentence}".strip()
+        if len(candidate) > max_chars:
+            break
+        kept = candidate
+    if kept:
+        return kept
+    return text[:max_chars].rsplit(" ", 1)[0].rstrip(",;:") + "…"
+
+
+# Banking terms the code-written findings use, explained in brackets the
+# first time each appears in a row ("What we found", then "What to do").
+PLAIN_TERMS: tuple[tuple[re.Pattern, str], ...] = (
+    (
+        re.compile(r"\bDSCR\b"),
+        "DSCR (how many times your yearly earnings cover the loan instalments)",
+    ),
+    (re.compile(r"\btenor\b", re.I), "tenor (loan period)"),
+    (
+        re.compile(r"\bmoratorium\b", re.I),
+        "moratorium (months before repayment starts)",
+    ),
+    (re.compile(r"\bP&L\b"), "P&L (profit and loss statement)"),
+    (re.compile(r"\bOpEx\b"), "OpEx (running costs)"),
+)
+
+# Customer wording for recurring code-written findings whose own text is
+# written for the bank: title -> (title, what we found, what to do).
+CUSTOMER_TEXT: dict[str, tuple[str, str, str]] = {
+    "Stated DSCR does not follow the standard formula": (
+        "Your DSCR is worked out differently from the bank's way",
+        "The bank works out DSCR as (profit + depreciation + interest) ÷ "
+        "(loan principal + interest) for each year. The DSCR figures in your "
+        "DPR do not follow this, so the bank will get different numbers.",
+        "Work out DSCR again in your DPR for every year as (profit + "
+        "depreciation + interest) ÷ (loan principal + interest).",
+    ),
+}
+
+
+def _explain_terms(cells: list[str]) -> list[str]:
+    """Adds the plain meaning to the first use of each term across `cells`."""
+    out = list(cells)
+    for pattern, explained in PLAIN_TERMS:
+        for i, cell in enumerate(out):
+            if pattern.search(cell):
+                if explained not in cell:
+                    out[i] = pattern.sub(explained, cell, count=1)
+                break
+    return out
+
+
+def _is_calculated(f) -> bool:
+    return f.value_classification == ValueClassification.RECOMPUTED
+
+
+def _plain_title(f) -> str:
+    """Code-built titles like "Means Of Finance Total does not reconcile"
+    (a check name run through str.title()) in plain sentence case."""
+    title = f.title.replace(" does not reconcile", " does not add up")
+    # Seen live: the model wrote titles all in lower case.
+    title = title[:1].upper() + title[1:]
+    if _is_calculated(f):
+        words = title.split(" ")
+        # Lower-case the capitalised filler of "Means Of Finance Total".
+        title = " ".join(
+            [words[0]]
+            + [
+                w.lower() if w[:1].isupper() and w[1:].islower() else w
+                for w in words[1:]
+            ]
+        )
+    return title
+
+
+def _found(f) -> str:
+    if _is_calculated(f) and f.dpr_reported_value and f.recomputed_value:
+        return (
+            f"Your DPR: {f.dpr_reported_value.rstrip('.')}. "
+            f"Should be: {f.recomputed_value.rstrip('.')}."
+        )
+    if f.explanation:
+        return _plain_excerpt(f.explanation)
+    return "Not found anywhere in your DPR."
+
+
+def _customer_action(f) -> str:
+    action = " ".join((f.suggested_action or "").split())
+    if (
+        not action
+        or "applicant" in action.casefold()
+        or action.startswith("No action needed")
+    ):
+        return CUSTOMER_ACTION_DEFAULT
+    return _plain_excerpt(action)
+
+
 def build_action_plan(snapshot: CAMSnapshot) -> dict:
+    """One row per finding the applicant must act on: what is wrong (and
+    why it matters), what we found in their DPR, and what to do -- plain
+    sentences, not the raw quote and terse target the table used to show
+    (hard to follow, user feedback on PSR/2026/000010)."""
     ordered = sorted(
         _actionable(snapshot), key=lambda f: PRIORITY_ORDER.get(f.priority.value, 9)
     )
     rows = []
     for i, f in enumerate(ordered, start=1):
+        custom = CUSTOMER_TEXT.get(f.title) if _is_calculated(f) else None
+        if custom:
+            title, found, todo = custom
+        else:
+            title, found, todo = _plain_title(f), _found(f), _customer_action(f)
+        found, todo = _explain_terms([found, todo])
         rows.append(
             {
                 "n": i,
-                "title": f.title,
+                "title": title,
                 "why": f.why_it_matters or WHY_BY_CATEGORY.get(f.category, DEFAULT_WHY),
-                "pages": ", ".join(str(p) for p in f.source_pages) or "—",
-                "dpr": f.dpr_reported_value or "—",
-                "should_be": f.should_be or f.recomputed_value or "—",
+                "pages": ", ".join(str(p) for p in f.source_pages),
+                "found": found,
+                "todo": todo,
                 "priority": PRIORITY_LABEL.get(f.priority.value, f.priority.value),
                 "chip": PRIORITY_CHIP.get(f.priority.value, "imp"),
             }
@@ -285,55 +416,188 @@ def build_action_plan(snapshot: CAMSnapshot) -> dict:
     return {"rows": rows}
 
 
-def build_financials(snapshot: CAMSnapshot) -> dict:
-    measures = [
-        {
-            "measure": m.measure,
-            "dpr": m.dpr_value or "—",
-            "recomputed": m.recomputed or "—",
-            "baseline": m.baseline,
-            "status": MEASURE_STATUS[m.status],
-            "chip": m.status,
-        }
-        for m in snapshot.financial_review
-    ]
-    stress = snapshot.stress_test
+# Section 3 in the applicant's words (user, 2026-11-25): the snapshot keeps
+# the bank's labels (stored report data, also used by the bank-facing CAM);
+# only what the page prints is translated. A label not listed prints as is.
+# measure -> (plain label, one-line meaning or "").
+MEASURE_PLAIN: dict[str, tuple[str, str]] = {
+    "Total project cost (₹ lakh)": (
+        "Total project cost (₹ lakh)",
+        "Everything you need to buy and set up",
+    ),
+    "Term loan (₹ lakh)": ("Bank loan you are asking for (₹ lakh)", ""),
+    "Your contribution (%)": (
+        "Your own money (% of the cost)",
+        "The share you pay yourself",
+    ),
+    "Subsidy (₹ lakh)": ("Government subsidy (₹ lakh)", ""),
+    "Average DSCR": (
+        "Ability to repay, average year (DSCR)",
+        "How many times your yearly earnings cover the loan instalments; "
+        "1.25 means ₹1.25 earned for every ₹1 due",
+    ),
+    "Minimum DSCR": (
+        "Ability to repay, weakest year (DSCR)",
+        "The same figure in your hardest year",
+    ),
+    "Project IRR (%)": (
+        "Yearly return on the project (IRR, %)",
+        "What the project earns each year on the money put into it",
+    ),
+    "Cash break-even (% capacity)": (
+        "Break-even point (% of full capacity)",
+        "How much of the machine's work you need just to cover your costs",
+    ),
+    "Debt : equity": (
+        "Loan compared with your own money",
+        "Rupees of loan for every ₹1 you put in",
+    ),
+    "Fixed asset coverage": (
+        "Asset cover for the loan",
+        "Value of your machine and other assets for every ₹1 of loan still owed",
+    ),
+    "Payback period (years)": ("Time to earn back the cost (years)", ""),
+}
+ASSUMPTION_PLAIN = {
+    "Selling price": "Your price or rate",
+    "Capacity utilisation, Yr 1–3": "How much of full capacity you use, years 1–3",
+    "Yield / output per unit": "Output per day or per unit",
+    "Input cost escalation": "Yearly rise in your costs",
+    "Interest rate": "Loan interest rate",
+    "Depreciation method / rate": "Yearly wear and tear (depreciation)",
+}
+# Whole phrases first, then the symbol and abbreviation rules below.
+_PLAIN_PHRASES: tuple[tuple[re.Pattern, str], ...] = tuple(
+    (re.compile(pattern), plain)
+    for pattern, plain in (
+        (
+            r"^Within unit-cost norms$",
+            "In line with usual costs for this kind of project",
+        ),
+        (r"^As per scheme$", "As the scheme allows"),
+        (r"\(scheme ceiling\)", "(scheme limit)"),
+        (r"^≤ scheme ceiling$", "Within the scheme's limit"),
+        (r"^≥ scheme minimum$", "At least the scheme's minimum"),
+        (r"\(your loan rate\)", "(your loan interest rate)"),
+        (r"^> cost of capital$", "More than the cost of borrowing"),
+        (r"^≤ (\d+(?:\.\d+)?)–(\d+(?:\.\d+)?)%$", r"\1–\2% or less"),
+        (r"(\d+(?:\.\d+)?):1$", r"\1 to 1"),
+        (r"^< loan tenure \((\S+) yrs\)$", r"Shorter than the loan period (\1 years)"),
+        (r"^< loan tenure$", "Shorter than the loan period"),
+        (
+            r"^Typical ramp-up (\S+) · (\S+) · (\S+)$",
+            r"Usually \1 in year 1, \2 in year 2, \3 in year 3",
+        ),
+        (
+            r"^RBI inflation target (\S+)% p\.a\.$",
+            r"Prices in India rise about \1% a year (RBI target)",
+        ),
+        (
+            r"^Income Tax: plant (\S+)% WDV, building (\S+)% WDV; "
+            r"Companies Act: plant about \S+% SLM$",
+            r"Tax rules: machines \1% a year, buildings \2% a year, on the value "
+            r"left after earlier years",
+        ),
+        (
+            r"^Use (\S+)% WDV \(or SLM over the useful life\)$",
+            r"Use \1% a year on the value left (or spread it evenly over the "
+            r"machine's life)",
+        ),
+        (
+            r"^No benchmark for this sector yet$",
+            "We have no standard figure for this type of project yet",
+        ),
+        (r"^No change$", "Fine as it is"),
+        (r"^State year-wise utilisation$", "Show the % for each year"),
+        (r"^State the rate and its basis$", "Write the rate and where it comes from"),
+        (r"^State the method and rate$", "Write the method and the rate"),
+        (r"^State it in the assumptions$", "Write it in your assumptions"),
+        (r"^State it; ", "Write it down; "),
+        (
+            r"^Support it with buyer or mandi rates$",
+            "Back it with buyer or mandi rates",
+        ),
+        (r"^≥ ", "At least "),
+        (r"^≤ ", "Not more than "),
+        (r"^> ", "More than "),
+        (r"^< ", "Less than "),
+        (r"\bp\.a\.", "a year"),
+        (r"\byrs\b", "years"),
+    )
+)
+
+
+def _plain_text(text: str | None) -> str:
+    if not text:
+        return "—"
+    for pattern, plain in _PLAIN_PHRASES:
+        text = pattern.sub(plain, text)
+    return text
+
+
+# Stress test: a weakest year at or above the bank's floor still repays.
+STRESS_FLOOR = Decimal(f"{STRESS_DSCR_FLOOR:.2f}")
+
+
+def _stress_text(stress) -> str:
     if stress is None:
-        stress_text = (
-            "Pending: the DPR does not give the yearly figures a stress test needs."
+        return (
+            "We could not test this: your DPR does not give the yearly figures needed."
         )
-    else:
-        parts = []
-        if stress.average_dscr is not None:
-            parts.append(f"average DSCR becomes {stress.average_dscr:g}")
-        if stress.minimum_dscr is not None:
-            parts.append(
-                f"the lowest yearly DSCR becomes {stress.minimum_dscr:g}"
-                + (f" ({stress.minimum_year})" if stress.minimum_year else "")
-            )
-        stress_text = (
-            f"If your selling price falls {stress.price_fall_pct}%, "
-            + " and ".join(parts)
-            + " (the bank expects at least 1.10)."
-            + (
-                f" Most sensitive assumption: {stress.most_sensitive}."
-                if stress.most_sensitive
-                else ""
-            )
+    figures = []
+    if stress.average_dscr is not None:
+        figures.append(f"{stress.average_dscr:g} in an average year")
+    if stress.minimum_dscr is not None:
+        figures.append(
+            f"{stress.minimum_dscr:g} in your weakest year"
+            + (f" ({stress.minimum_year})" if stress.minimum_year else "")
+        )
+    lowest = (
+        stress.minimum_dscr if stress.minimum_dscr is not None else stress.average_dscr
+    )
+    verdict = (
+        "so you would still be able to repay."
+        if lowest is not None and lowest >= STRESS_FLOOR
+        else "so at that price you would struggle to pay your instalments."
+    )
+    text = (
+        f"If your selling price falls {stress.price_fall_pct}%, your ability to "
+        f"repay (DSCR) drops to {' and '.join(figures)}. Banks want at least "
+        f"{STRESS_FLOOR}, {verdict}"
+    )
+    if stress.most_sensitive:
+        text += f" {stress.most_sensitive}"
+    return text
+
+
+def build_financials(snapshot: CAMSnapshot) -> dict:
+    measures = []
+    for m in snapshot.financial_review:
+        label, meaning = MEASURE_PLAIN.get(m.measure, (m.measure, ""))
+        measures.append(
+            {
+                "measure": label,
+                "meaning": meaning,
+                "dpr": m.dpr_value or "—",
+                "recomputed": m.recomputed or "—",
+                "baseline": _plain_text(m.baseline),
+                "status": MEASURE_STATUS[m.status],
+                "chip": m.status,
+            }
         )
     return {
         "measures": measures,
         "assumptions": [
             {
-                "assumption": a.assumption,
-                "dpr": a.dpr_value or "—",
-                "reference": a.reference or "—",
-                "suggested": a.suggested or "—",
+                "assumption": ASSUMPTION_PLAIN.get(a.assumption, a.assumption),
+                "dpr": _plain_text(a.dpr_value),
+                "reference": _plain_text(a.reference),
+                "suggested": _plain_text(a.suggested),
                 "flagged": a.flagged,
             }
             for a in snapshot.assumption_review
         ],
-        "stress": stress_text,
+        "stress": _stress_text(snapshot.stress_test),
     }
 
 

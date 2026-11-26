@@ -25,8 +25,16 @@ from .financial_schema import RepaymentInstalment
 
 _PERIOD = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[-' ]?\d{2,4}"
 _ROW = re.compile(rf"^\s*({_PERIOD})\s+(.+?)\s*$", re.IGNORECASE)
-_NUMBER = re.compile(r"^\(?-?[\d,]+(?:\.\d+)?\)?$|^-$")
-_YEAR_HEADER = re.compile(r"\bYear\s*[-:]?\s*([IVXLC]+|\d{1,2})\b", re.IGNORECASE)
+# Must start with a digit: a lone "," (OCR noise) matched and crashed
+# float("") in _amount, failing the whole extraction.
+_NUMBER = re.compile(r"^\(?-?\d[\d,]*(?:\.\d+)?\)?$|^-$")
+# A header line, not prose: "Year - 1", "YEAR II", "Loan Year 3 (2026-27)".
+# Searching anywhere matched sentences like "... per Year: 9", which put
+# every following row into loan year 9.
+_YEAR_HEADER = re.compile(
+    r"^\s*(?:loan\s+)?Year\s*[-:]?\s*([IVXLC]+|\d{1,2})\b\s*[:.-]?\s*(?:\([^)]*\))?\s*$",
+    re.IGNORECASE,
+)
 _ROMAN = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100}
 _MONTHS = (
     "jan",

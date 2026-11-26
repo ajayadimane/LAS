@@ -123,8 +123,12 @@ class CamEngineOutputs(BaseModel):
     feasible_acres_per_year: CalculationTrace | None = None
     fund_flow_gap: CalculationTrace | None = None
     tax_rate: CalculationTrace | None = None
+    # Despite the names: the debt service of the first year that repays
+    # principal (`debt_service_year`), which is year 1 unless a moratorium
+    # covers it. DSCR, break-even and scenarios all use that year.
     year1_principal_due: str | None = None
     year1_interest_due: str | None = None
+    debt_service_year: int | None = None
     scenarios: list[ScenarioOutput] = Field(default_factory=list)
 
     # --- Cost of project / means of finance (closes the milestone-4 gap:
@@ -167,12 +171,21 @@ def _calculated_finding(
     unit: str = " lakh",
     show_value_pair: bool = True,
     category: str = "financial_calculation",
+    cautious: bool = False,
 ) -> Finding:
+    """`cautious`: the DPR errs on the safe side (costs higher, plans
+    smaller than the recomputation) -- worth correcting, never a must-fix."""
     priority, rule = priority_for_calculation(
         check=check,
         computed_value=float(computed_value),
         stated_value=float(stated_value) if stated_value is not None else None,
     )
+    if cautious and priority == "must_fix":
+        priority = "should_fix"
+        rule = (
+            "SHOULD_FIX: the gap is on the cautious side (the DPR's figure is "
+            "the safer one), so it is not a must-fix. " + rule
+        )
     finding = Finding(
         category=category,
         severity="high" if priority == "must_fix" else "medium",
@@ -205,7 +218,8 @@ def _loan_terms(fin: ProjectFinancials) -> LoanTerms | None:
         principal=principal,
         annual_rate_pct=rate,
         tenor_years=int(tenor_value),
-        moratorium_years=int(moratorium_value) if moratorium_value is not None else 0,
+        # Kept fractional: int() turned a 6-month moratorium into none.
+        moratorium_years=moratorium_value if moratorium_value is not None else 0,
     )
 
 
@@ -359,9 +373,15 @@ def _fuel_finding(fin: ProjectFinancials) -> Finding | None:
         or abs(trace.computed_value - stated) <= MONEY_TOLERANCE
     ):
         return None
+    understated = trace.computed_value > stated
     return _calculated_finding(
         check="fuel_cost_reconciliation",
-        title="Fuel cost does not match acres x litres/acre x price",
+        title=(
+            "Fuel cost understated versus acres x litres/acre x price"
+            if understated
+            else "Fuel cost higher than acres x litres/acre x price"
+        ),
+        cautious=not understated,
         explanation=(
             f"{trace.formula} = {trace.computed_value} lakh; the document "
             f"states {stated} lakh."
@@ -397,9 +417,15 @@ def _crew_wage_finding(fin: ProjectFinancials) -> Finding | None:
     )
     if abs(trace.computed_value - stated) <= MONEY_TOLERANCE:
         return None
+    understated = per_staffing > stated
     return _calculated_finding(
         check="crew_wage_reconciliation",
-        title="Crew wages understated versus the staffing plan",
+        title=(
+            "Crew wages understated versus the staffing plan"
+            if understated
+            else "Crew wages in the P&L exceed the staffing plan"
+        ),
+        cautious=not understated,
         explanation=(
             f"Annexure staffing plan totals {per_staffing} lakh; the P&L "
             f"states {stated} lakh."
@@ -458,12 +484,15 @@ def run_harvester_engine(
 
     terms = _loan_terms(fin)
     schedule = equal_principal_amortization_schedule(terms) if terms else []
-    year1_amort = schedule[0] if schedule else None
+    # The first year that repays principal: an interest-only moratorium
+    # year's "DSCR" is not the loan's (seen: 5.07 with a 1-year moratorium).
+    year1_amort = next((a for a in schedule if a.principal_due > 0), None)
     if year1_amort:
         outputs.year1_principal_due = str(year1_amort.principal_due)
         outputs.year1_interest_due = str(year1_amort.interest_due)
+        outputs.debt_service_year = year1_amort.year
 
-    year1 = _year(fin, 1)
+    year1 = _year(fin, year1_amort.year if year1_amort else 1)
     net_profit = _dec(year1.net_profit) if year1 else None
     depreciation = _dec(year1.depreciation) if year1 else None
     interest_on_loan = (
@@ -583,10 +612,16 @@ def run_harvester_engine(
         ):
             feasible_whole = feasible.quantize(Decimal("1"))
             acres_stated_whole = acres_stated.quantize(Decimal("1"))
+            overclaimed = acres_stated > feasible
             findings.append(
                 _calculated_finding(
                     check="acres_per_year_feasibility",
-                    title="Claimed annual acreage exceeds plausible machine throughput",
+                    title=(
+                        "Claimed annual acreage exceeds plausible machine throughput"
+                        if overclaimed
+                        else "Planned annual acreage is well below machine capacity"
+                    ),
+                    cautious=not overclaimed,
                     explanation=(
                         f"{outputs.feasible_acres_per_year.formula} = "
                         f"{feasible_whole} acres/year; the document plans "

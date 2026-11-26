@@ -31,7 +31,7 @@ from app.services.dpr_agentic.gemini import (
 )
 from app.services.dpr_agentic.jobs import get_run, submit
 from app.services.dpr_agentic.orchestrator import analyze
-from app.services.dpr_agentic.schemas import AgentOutput, AnalysisInput
+from app.services.dpr_agentic.schemas import AgentOutput, AnalysisInput, ChecklistAnswer
 from app.services.dpr_agentic.upload_staging import stage_upload
 
 _WORKER_SPEC = importlib.util.spec_from_file_location(
@@ -279,7 +279,14 @@ def test_process_one_sets_current_run_id_for_the_whole_call_chain(dpr_pg):
     class RecordingGemini:
         async def generate(self, prompt, context):
             seen_run_ids.append(CURRENT_RUN_ID.get())
-            return AgentOutput(summary="checked")
+            return AgentOutput(
+                summary="checked",
+                # Answer the checklist, or generate_role asks again.
+                checks=[
+                    ChecklistAnswer(check_id=c["id"], status="ok")
+                    for c in context.get("checklist", [])
+                ],
+            )
 
         async def extract(self, prompt, context):
             seen_run_ids.append(CURRENT_RUN_ID.get())

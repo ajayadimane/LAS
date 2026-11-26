@@ -156,3 +156,107 @@ def test_truncation_retry_doubles_the_output_cap_and_usage_still_counts():
     # The truncated (but billed) call is in the usage log too.
     assert [u["finish_reason"] for u in usage] == ["MAX_TOKENS", "STOP"]
     assert usage[0]["total_tokens"] == 4196
+
+
+def test_finance_starts_with_extra_thinking_room():
+    """Finance truncated at 6,144 + 8,192 on 3 of 15 eval DPRs and paid for
+    the call twice; it now starts at 6,144 + 12,288. Other MEDIUM roles keep
+    the level's allowance."""
+    from app.services.dpr_agentic.gemini import CURRENT_ROLE
+
+    caps = {}
+
+    def handler(request):
+        caps[current] = json.loads(request.content)["generationConfig"][
+            "maxOutputTokens"
+        ]
+        return httpx.Response(200, json=GOOD)
+
+    async def go(role):
+        token = CURRENT_ROLE.set(role)
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(handler)
+            ) as http:
+                client = GeminiAgentClient(
+                    http, "fake-key", "gemini-3.8-flash", max_output_tokens=6144
+                )
+                await client.generate("Prompt", {"dpr": "x"})
+        finally:
+            CURRENT_ROLE.reset(token)
+
+    for current in ("finance", "verifier"):
+        asyncio.run(go(current))
+    assert caps == {"finance": 6144 + 12288, "verifier": 6144 + 8192}
+
+
+# --- runaway numbers (eval 2026-11-25) ---------------------------------------
+
+
+def _text_response(text, finish="STOP"):
+    return {
+        "candidates": [{"finishReason": finish, "content": {"parts": [{"text": text}]}}]
+    }
+
+
+def _capture(responses, call="generate"):
+    """Serves `responses`; returns (result, [request bodies])."""
+    queue = list(responses)
+    bodies = []
+
+    def handler(request):
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json=queue.pop(0))
+
+    async def go():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            client = GeminiAgentClient(http, "fake-key", "gemini-3.8-flash")
+            try:
+                if call == "ocr":
+                    return await client.ocr_page(b"png")
+                return await client.generate("Prompt", {"dpr": "x"})
+            except GeminiAgentError as exc:
+                return exc
+
+    return asyncio.run(go()), bodies
+
+
+# What the stop sequence leaves: the answer cut off inside the number.
+CUT_BY_STOP = _text_response('{"summary": "ok", "x": 177589.00000000003')
+# What happened live: no stop sequence, zeros until the cap.
+RAN_TO_CAP = _text_response('{"x": 177589.00000000003' + "0" * 400, "MAX_TOKENS")
+
+
+def test_structured_calls_stop_at_a_run_of_zeros():
+    _, bodies = _capture([GOOD])
+    assert bodies[0]["generationConfig"]["stopSequences"] == ["0" * 30]
+
+
+def test_ocr_never_gets_the_stop_sequence():
+    _, bodies = _capture([_text_response('{"text": "page"}')], call="ocr")
+    assert "stopSequences" not in bodies[0]["generationConfig"]
+
+
+@pytest.mark.parametrize("runaway", [CUT_BY_STOP, RAN_TO_CAP])
+def test_a_runaway_number_is_retried_at_the_same_cap_with_a_note(runaway):
+    result, bodies = _capture([runaway, GOOD])
+    assert result.summary == "ok"
+    first, retry = bodies
+    caps = [b["generationConfig"]["maxOutputTokens"] for b in bodies]
+    assert caps[0] == caps[1]  # not doubled: more room only buys more zeros
+    note = "stuck repeating digits"
+    assert note not in first["systemInstruction"]["parts"][0]["text"]
+    assert note in retry["systemInstruction"]["parts"][0]["text"]
+
+
+def test_a_runaway_number_twice_fails():
+    result, bodies = _capture([CUT_BY_STOP, CUT_BY_STOP])
+    assert isinstance(result, GeminiAgentError)
+    assert len(bodies) == 2
+
+
+def test_an_ordinary_truncation_still_doubles_the_cap():
+    _, bodies = _capture([TRUNCATED, GOOD])
+    caps = [b["generationConfig"]["maxOutputTokens"] for b in bodies]
+    assert caps[1] == 2 * caps[0]
+    assert "stuck" not in bodies[1]["systemInstruction"]["parts"][0]["text"]

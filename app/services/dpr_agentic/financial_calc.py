@@ -19,6 +19,38 @@ from .schemas import Finding
 TOLERANCE = 0.01  # lakh
 
 DSCR_TOLERANCE = 0.05  # ratio points
+
+# Bumped whenever a check's result changes, like
+# cam_financial_engine.CALCULATION_VERSION; recorded on every result.
+# 1.1.0 (2026-11-25): one-decimal DSCR tolerance; interest-only instalment
+#   years skipped; exact year-1 DSCR match.
+CALCULATION_VERSION = "1.1.0"
+
+
+def calculation_versions() -> dict[str, str]:
+    """The versions of the deterministic calculations, stored on every
+    AnalysisResult so Annexure G can say which arithmetic a report used."""
+    from .cam_financial_engine import CALCULATION_VERSION as ENGINE
+    from .unit_economics import CALCULATION_VERSION as UNIT_ECONOMICS
+    from .yearly_rows import CALCULATION_VERSION as YEARLY_ROWS
+
+    return {
+        "financial_calc": CALCULATION_VERSION,
+        "cam_financial_engine": ENGINE,
+        "unit_economics": UNIT_ECONOMICS,
+        "yearly_rows": YEARLY_ROWS,
+    }
+
+
+def _dscr_tolerance(stated: float) -> float:
+    """A DSCR printed to one decimal (2.3) stands for anything from 2.25 to
+    2.35, so half a printed unit is added to the usual tolerance; otherwise
+    a DPR rounding 2.26 to 2.3 read as "overstated". (A float cannot tell
+    2.30 from 2.3, so a two-decimal 2.30 gets the same allowance.)"""
+    one_decimal = abs(stated * 10 - round(stated * 10)) < 1e-9
+    return DSCR_TOLERANCE + (0.05 if one_decimal else 0.0)
+
+
 RATE_TOLERANCE = 0.1  # percentage points
 
 
@@ -115,6 +147,32 @@ def _debt_service_for_year(
     return principal, interest
 
 
+def _uses_instalment(y: YearFinancials) -> bool:
+    """True when the year's `total_instalment` really is principal +
+    interest. Some DPRs (equal-principal loans) print an "instalment"
+    column that is the principal alone, with interest in its own row: the
+    figure then equals `principal_repayment` while interest is non-zero.
+    Seen live (eval 2026-11-25): instalment 4.07 = principal 4.07, interest
+    4.71, so dividing by the "instalment" alone overstated year 1's DSCR at
+    5.03 (true 2.33). Such a year goes through the principal + interest
+    branch instead."""
+    if y.total_instalment is None:
+        return False
+    interest = (
+        y.interest_repayment
+        if y.interest_repayment is not None
+        else y.interest_on_term_loan
+    )
+    principal_only = (
+        y.principal_repayment is not None
+        and y.principal_repayment > TOLERANCE
+        and abs(y.total_instalment - y.principal_repayment) <= TOLERANCE
+        and interest is not None
+        and interest > TOLERANCE
+    )
+    return not principal_only
+
+
 def _dscr_on_instalment(y: YearFinancials) -> list[CalculationResult]:
     """DSCR when the DPR prints the full instalment (principal + interest):
     (net profit + depreciation + interest) / instalment. Nothing for a
@@ -126,15 +184,21 @@ def _dscr_on_instalment(y: YearFinancials) -> list[CalculationResult]:
     )
     if None in (y.net_profit, y.depreciation, add_back) or not y.total_instalment:
         return []
+    if y.principal_repayment == 0 or y.total_instalment <= add_back + TOLERANCE:
+        # Interest-only: a moratorium year repays no principal, and a ratio
+        # over interest alone is not the loan's DSCR (same rule as the
+        # principal branch of dscr_per_year).
+        return []
     dscr = round((y.net_profit + y.depreciation + add_back) / y.total_instalment, 2)
     if y.stated_dscr is None:
         return [CalculationResult(f"dscr_year_{y.year}", dscr, None, True, None)]
     discrepancy = round(dscr - y.stated_dscr, 2)
-    matched = abs(discrepancy) <= DSCR_TOLERANCE
+    tolerance = _dscr_tolerance(y.stated_dscr)
+    matched = abs(discrepancy) <= tolerance
     no_addback = round((y.net_profit + y.depreciation) / y.total_instalment, 2)
     note = (
         "no_interest_addback"
-        if not matched and abs(no_addback - y.stated_dscr) <= DSCR_TOLERANCE
+        if not matched and abs(no_addback - y.stated_dscr) <= tolerance
         else None
     )
     return [
@@ -160,7 +224,7 @@ def dscr_per_year(fin: ProjectFinancials) -> list[CalculationResult]:
     figures instead of asserting ours as the only one."""
     results = []
     for y in fin.years:
-        if y.total_instalment is not None:
+        if _uses_instalment(y):
             results.extend(_dscr_on_instalment(y))
             continue
         principal, interest = _debt_service_for_year(fin, y)
@@ -188,7 +252,8 @@ def dscr_per_year(fin: ProjectFinancials) -> list[CalculationResult]:
             )
         else:
             discrepancy = round(dscr - y.stated_dscr, 2)
-            matched = abs(discrepancy) <= DSCR_TOLERANCE
+            tolerance = _dscr_tolerance(y.stated_dscr)
+            matched = abs(discrepancy) <= tolerance
             note = None
             if not matched:
                 numerator = y.net_profit + y.depreciation + add_back
@@ -202,7 +267,7 @@ def dscr_per_year(fin: ProjectFinancials) -> list[CalculationResult]:
                         name
                         for name, value in candidates.items()
                         if value is not None
-                        and abs(round(value, 2) - y.stated_dscr) <= DSCR_TOLERANCE
+                        and abs(round(value, 2) - y.stated_dscr) <= tolerance
                     ),
                     None,
                 )
@@ -239,7 +304,7 @@ def dscr_parts(fin: ProjectFinancials) -> list[tuple[int, float, float, float | 
     skips (moratorium years, missing figures)."""
     parts = []
     for y in fin.years:
-        if y.total_instalment is not None:
+        if _uses_instalment(y):
             add_back = (
                 y.interest_on_term_loan
                 if y.interest_on_term_loan is not None

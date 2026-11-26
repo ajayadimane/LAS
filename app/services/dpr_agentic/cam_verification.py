@@ -191,6 +191,7 @@ def _iter_calculation_traces(
     ratios = snapshot.financial_ratios
     for name in (
         "average_dscr",
+        "first_year_dscr",
         "breakeven_accounting",
         "breakeven_operating_cashflow",
         "breakeven_debt_service_threshold",

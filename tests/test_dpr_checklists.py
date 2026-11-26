@@ -1,12 +1,17 @@
 """Fixed per-role checklists (checklists.py): same questions every run;
 code sets each finding's title, category, severity and priority."""
 
+import re
+
 import pytest
 
 from app.services.dpr_agentic.checklists import (
     CHECKLIST_INSTRUCTION,
     CHECKLISTS,
     MAX_EXTRA_FINDINGS,
+    PLAIN_LANGUAGE_INSTRUCTION,
+    TOPIC_TERMS,
+    WHY_AND_SHOULD_BE,
     apply_checklist,
 )
 from app.services.dpr_agentic.evaluation import stability
@@ -97,14 +102,70 @@ class _Recorder:
 async def test_generate_role_sends_the_checklist_and_converts_answers():
     llm = _Recorder()
     out = await generate_role(llm, "finance", {"dpr": {}})
-    assert llm.seen["prompt"] == PROMPTS["finance"] + CHECKLIST_INSTRUCTION
+    assert llm.seen["prompt"] == (
+        PROMPTS["finance"] + PLAIN_LANGUAGE_INSTRUCTION + CHECKLIST_INSTRUCTION
+    )
     assert [c["id"] for c in llm.seen["context"]["checklist"]] == [
         i.id for i in CHECKLISTS["finance"]
     ]
     assert [f.check_id for f in out.findings] == ["FIN_TAX"]
     await generate_role(llm, "planner", {"dpr": {}})
-    assert llm.seen["prompt"] == PROMPTS["planner"]
+    assert llm.seen["prompt"] == PROMPTS["planner"] + PLAIN_LANGUAGE_INSTRUCTION
     assert "checklist" not in llm.seen["context"]
+
+
+class _SkipsChecklistOnce:
+    """Seen live: an agent returned findings but no checklist answers."""
+
+    def __init__(self, second):
+        self.calls = 0
+        self.second = second
+
+    async def generate(self, prompt, context):
+        self.calls += 1
+        if self.calls == 1:
+            return AgentOutput(findings=[_free("x")])
+        return self.second
+
+
+def _all_answered(role, status="ok"):
+    return AgentOutput(
+        checks=[ChecklistAnswer(check_id=i.id, status=status) for i in CHECKLISTS[role]]
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_unanswered_checklist_is_asked_once_more():
+    llm = _SkipsChecklistOnce(_all_answered("finance", "issue"))
+    out = await generate_role(llm, "finance", {"dpr": {}})
+    assert llm.calls == 2
+    assert {f.check_id for f in out.findings} >= {i.id for i in CHECKLISTS["finance"]}
+
+
+@pytest.mark.asyncio
+async def test_a_worse_retry_keeps_the_first_answer():
+    llm = _SkipsChecklistOnce(AgentOutput(findings=[_free("y")]))
+    out = await generate_role(llm, "finance", {"dpr": {}})
+    assert llm.calls == 2
+    assert [f.title for f in out.findings] == ["x"]
+
+
+@pytest.mark.asyncio
+async def test_a_fully_answered_checklist_is_not_asked_again():
+    class Once:
+        calls = 0
+
+        async def generate(self, prompt, context):
+            self.calls += 1
+            return _all_answered("sector")
+
+    llm = Once()
+    await generate_role(llm, "sector", {"dpr": {}})
+    assert llm.calls == 1
+
+
+def test_the_verifier_judges_checklist_findings_by_their_explanation():
+    assert "judge the explanation, not the title" in PROMPTS["verifier"]
 
 
 def _checklist_finding(check_id="FIN_TAX", role="finance"):
@@ -260,7 +321,9 @@ async def test_only_checklist_roles_are_offered_the_checks_field():
         gemini = GeminiAgentClient(client, "fake-key", "gemini-3.8-flash")
         await generate_role(gemini, "risk", {"dpr": {}})
         await generate_role(gemini, "planner", {"dpr": {}})
-    assert "checks" in schemas[0] and "checks" not in schemas[1]
+    # The risk call is asked twice: this fake never answers the checklist.
+    assert "checks" in schemas[0] and "checks" in schemas[1]
+    assert "checks" not in schemas[2]
 
 
 def test_the_risk_agent_sees_dpr_pages_for_its_checklist():
@@ -301,3 +364,199 @@ def test_demand_evidence_is_a_sector_presence_item():
     item = next(i for i in CHECKLISTS["sector"] if i.id == "SEC_DEMAND_EVIDENCE")
     assert item.absence and item.priority == "should_fix"
     assert "letters of intent" in item.question
+
+
+# --- plain language (user feedback on PSR/2026/000010, 2026-11-25) ----------
+
+_JARGON = re.compile(
+    r"pro[\s-]*forma|collateral|\bDSCR\b|\bP&L\b|sensitivity|premises|"
+    r"evidenced|unsanctioned|\bpromoter\b|reconcile",
+    re.I,
+)
+
+
+def _finding_items():
+    return [i for items in CHECKLISTS.values() for i in items if not i.report_only]
+
+
+def test_every_checklist_finding_reads_in_plain_language():
+    for item in _finding_items():
+        why, _ = WHY_AND_SHOULD_BE[item.id]
+        for text in (item.title, why, item.action):
+            assert not _JARGON.search(text), (item.id, text)
+        # Sentence case, not Title Case.
+        words = item.title.split()
+        assert sum(w[:1].isupper() for w in words[1:]) <= 1, item.title
+
+
+def test_restated_insurance_and_wage_findings_fold_into_checklist_topics():
+    assert TOPIC_TERMS["RISK_SINGLE_ASSET"].search(
+        "Single High-Value Asset Risk Without Stated Insurance"
+    )
+    assert any(
+        pattern.search("Omission of Machine Insurance and Operator Wages")
+        for pattern in TOPIC_TERMS.values()
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_verifier_is_asked_for_plain_language_too():
+    from app.services.dpr_agentic.orchestrator import judge_role
+
+    class Judge:
+        async def judge(self, prompt, context):
+            self.prompt = prompt
+            return AgentOutput()
+
+    llm = Judge()
+    await judge_role(llm, {})
+    assert llm.prompt.endswith(PLAIN_LANGUAGE_INSTRUCTION)
+
+
+# --- items added 2026-11-25: recurring topics asked every run ---------------
+
+NEW_ITEMS = (
+    "DOC_QUOTATION_FIRM",
+    "DOC_ASSET_SAME",
+    "FIN_YEARS_CURRENT",
+    "FIN_COST_COMPLETE",
+    "FIN_LOAN_REPAID",
+    "FIN_INTEREST_SUBSIDY",
+    "FIN_REVENUE_BUILT_UP",
+    "SEC_FUEL_REALISTIC",
+    "SEC_MAINTENANCE_RISES",
+)
+
+
+def _topic_of(title):
+    from app.services.dpr_agentic.checklists import TOPIC_PRECEDENCE
+
+    hits = [k for k, p in TOPIC_TERMS.items() if p.search(title)]
+    return min(hits, key=TOPIC_PRECEDENCE.get) if hits else None
+
+
+def test_every_new_item_has_wording_and_topic_words():
+    items = {i.id: i for items in CHECKLISTS.values() for i in items}
+    for item_id in NEW_ITEMS:
+        assert item_id in items
+        assert item_id in WHY_AND_SHOULD_BE
+        assert item_id in TOPIC_TERMS
+
+
+@pytest.mark.parametrize(
+    "title, item_id",
+    [
+        # Real free-form titles from saved eval runs.
+        (
+            "Indicative Ex-Works Quotation Lacks Price Firmness and Freight",
+            "DOC_QUOTATION_FIRM",
+        ),
+        (
+            "Harvester quotation is indicative and subject to price changes",
+            "DOC_QUOTATION_FIRM",
+        ),
+        ("Vendor quotation or pro-forma invoice missing", "DOC_QUOTATION"),
+        ("Conflicting Harvester Model Specifications", "DOC_ASSET_SAME"),
+        (
+            "Harvester Model Discrepancy Between Project Summary and Asset Quotation",
+            "DOC_ASSET_SAME",
+        ),
+        ("Outdated Base Financial Years in Operational Schedules", "FIN_YEARS_CURRENT"),
+        ("expense and balance sheet tables skip alternate years", "FIN_YEARS_CURRENT"),
+        ("GPS and fuel sensors omitted from project cost", "FIN_COST_COMPLETE"),
+        (
+            "Equipment freight and transit costs omitted from project cost",
+            "FIN_COST_COMPLETE",
+        ),
+        ("Incomplete Term Loan Amortization", "FIN_LOAN_REPAID"),
+        ("Negative debt amortization during off-season months", "FIN_LOAN_REPAID"),
+        (
+            "Interest subsidy is assumed without specifying any government scheme",
+            "FIN_INTEREST_SUBSIDY",
+        ),
+        (
+            "Revenue projection lacks a detailed calculation buildup",
+            "FIN_REVENUE_BUILT_UP",
+        ),
+        (
+            "Aggressive dual escalation of acreage and hiring tariffs",
+            "FIN_REVENUE_BUILT_UP",
+        ),
+        (
+            "Understated fuel consumption rate for heavy combine harvester",
+            "SEC_FUEL_REALISTIC",
+        ),
+        ("Fixed maintenance budget ignores machine aging", "SEC_MAINTENANCE_RISES"),
+        # 2026-11-26 run: each sat beside its item's own finding.
+        (
+            "Machinery price quote excludes transport and transit insurance",
+            "DOC_QUOTATION_FIRM",
+        ),
+        ("Machinery make and specifications are not mentioned", "DOC_ASSET_SAME"),
+        ("Revenue does not show billing rates or acreage", "FIN_REVENUE_BUILT_UP"),
+        # 2026-11-26 second double run.
+        ("Term loan is not fully paid off in seven years", "FIN_LOAN_REPAID"),
+        (
+            "Variable cost per acre conflicts across your report",
+            "FIN_STATEMENTS_CONSISTENT",
+        ),
+        (
+            "Stated average DSCR conflicts with project tables",
+            "FIN_STATEMENTS_CONSISTENT",
+        ),
+        (
+            "Direct variable cost differs between break-even and cost sheet",
+            "FIN_BREAKEVEN_BASIS",
+        ),
+        # Kept off the new items.
+        ("Project premises or shed arrangements not evidenced", "DOC_PREMISES"),
+    ],
+)
+def test_restated_titles_land_on_the_most_specific_item(title, item_id):
+    assert _topic_of(title) == item_id
+
+
+def test_amortization_wording_about_disagreeing_tables_is_not_an_unpaid_loan():
+    assert not TOPIC_TERMS["FIN_LOAN_REPAID"].search(
+        "Balance sheet loan liability conflicts with amortization schedule"
+    )
+
+
+def test_new_items_do_not_claim_the_other_items_titles():
+    titles = {i.id: i.title for items in CHECKLISTS.values() for i in items}
+    for item_id in NEW_ITEMS:
+        for other, title in titles.items():
+            if other != item_id:
+                assert not TOPIC_TERMS[item_id].search(title), (item_id, title)
+
+
+def test_the_years_question_goes_to_the_agent_that_sees_the_tables():
+    # 2026-11-25: asked of the document agent (opening and quotation pages
+    # only) it answered "ok" once and "cannot_tell" once for the same DPR.
+    assert "FIN_YEARS_CURRENT" in {i.id for i in CHECKLISTS["finance"]}
+    assert "FIN_YEARS_CURRENT" not in {i.id for i in CHECKLISTS["document"]}
+
+
+def test_the_document_agent_sees_machine_model_lines_from_every_page():
+    from types import SimpleNamespace
+
+    from app.services.dpr_agentic.context_router import select_context
+
+    pages = [SimpleNamespace(page=n, text=f"Page {n} narrative") for n in range(1, 12)]
+    pages[6] = SimpleNamespace(page=7, text="Harvester model: DASMESH-7100")
+    ctx = select_context(
+        "document", SimpleNamespace(pages=pages, project_context={}), {}, []
+    )
+    lines = {m["page"]: m["lines"] for m in ctx["dpr"]["identity_mentions"]}
+    assert lines[7] == ["Harvester model: DASMESH-7100"]
+
+
+@pytest.mark.asyncio
+async def test_code_answered_items_are_not_asked_and_win():
+    llm = _Recorder()
+    code = {"FIN_TAX": ChecklistAnswer(check_id="FIN_TAX", status="ok")}
+    out = await generate_role(llm, "finance", {"dpr": {}}, code)
+    asked = [c["id"] for c in llm.seen["context"]["checklist"]]
+    assert "FIN_TAX" not in asked
+    # The agent's "issue" for FIN_TAX loses to code's "ok".
+    assert "FIN_TAX" not in {f.check_id for f in out.findings}

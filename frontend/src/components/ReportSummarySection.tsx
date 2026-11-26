@@ -90,7 +90,7 @@ export function ReportSummarySection({
 
   const readiness = READINESS_COPY[summary.readiness_status];
   const fo = summary.financial_overview;
-  const averageDscr = parseFinancialNumber(fo.average_dscr?.computed_value);
+  const firstYearDscr = parseFinancialNumber(fo.first_year_dscr?.computed_value);
 
   return (
     <div className="mt-3 space-y-4">
@@ -116,9 +116,9 @@ export function ReportSummarySection({
           <Overview label="Requested loan" money={fo.requested_loan} />
           <Overview label="Promoter contribution" money={fo.promoter_contribution} />
           <div>
-            <p className="text-xs text-muted-foreground">Average DSCR</p>
+            <p className="text-xs text-muted-foreground">First repayment year DSCR</p>
             <p className="font-semibold tabular-nums">
-              {averageDscr !== null ? averageDscr.toFixed(2) : "Not computable"}
+              {firstYearDscr !== null ? firstYearDscr.toFixed(2) : "Not computable"}
             </p>
           </div>
         </div>

@@ -113,7 +113,7 @@ export interface DocumentUploadResponse {
 export interface DocumentWithAnalysisResponse {
   wallet_storage_status: "STORED" | "FAILED";
   wallet_error: string | null;
-  analysis_status: "QUEUED" | "NOT_QUEUED" | "RATE_LIMITED";
+  analysis_status: "QUEUED" | "NOT_QUEUED" | "RATE_LIMITED" | "ALREADY_ANALYSED";
   report_status: "NOT_PUBLISHED";
   run_id: string | null;
 }
@@ -180,7 +180,8 @@ export interface ReportSummary {
     requested_loan: Money | null;
     promoter_contribution: Money | null;
     funding_gap: CalculationTrace | null;
-    average_dscr: CalculationTrace | null;
+    /** DSCR of the first year that repays principal (not an average). */
+    first_year_dscr: CalculationTrace | null;
   };
 }
 

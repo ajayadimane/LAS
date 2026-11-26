@@ -150,6 +150,46 @@ def test_action_plan_orders_by_priority_and_explains_why():
     assert rows[1]["why"] == "Revenue may be overstated"
 
 
+def test_action_plan_rows_say_what_we_found_and_what_to_do():
+    f = _finding("should_fix", "Your experience in this work is not shown", "risk")
+    f.explanation = "The DPR lists only your schooling. " * 2
+    f.suggested_action = "Describe your experience or training in this kind of work."
+    [row] = build_action_plan(_snap(_result(findings=[f])))["rows"]
+    assert row["pages"] == "3"
+    assert row["found"].startswith("The DPR lists only your schooling.")
+    assert row["todo"] == f.suggested_action
+    assert "dpr" not in row and "should_be" not in row
+
+
+def test_a_calculated_row_shows_both_figures_and_a_customer_action():
+    f = _finding("must_fix", "Means Of Finance Total does not reconcile")
+    f.provenance = "calculated"
+    f.dpr_stated_value = "70.00"
+    f.recomputed_display_value = "105.00"
+    f.suggested_action = "Verify this figure with the applicant."
+    [row] = build_action_plan(_snap(_result(findings=[f])))["rows"]
+    assert row["title"] == "Means of finance total does not add up"
+    assert row["found"] == "Your DPR: 70.00. Should be: 105.00."
+    assert "applicant" not in row["todo"]
+
+
+def test_a_long_explanation_is_cut_at_a_sentence_boundary():
+    from app.services.dpr_agentic.cam_render_v2 import _plain_excerpt
+
+    text = "First point is short. " + "Second sentence is very long " * 20 + "."
+    assert _plain_excerpt(text) == "First point is short."
+    one_long = "word " * 100
+    cut = _plain_excerpt(one_long)
+    assert cut.endswith("…") and len(cut) <= 241 and not cut.endswith(" …")
+
+
+def test_the_html_has_the_plain_column_headings():
+    html = render_cam_report_html(_snap(_result(findings=[_finding("must_fix")])))
+    for heading in ("What's wrong", "What we found in your DPR", "What to do"):
+        assert heading in html
+    assert "Should be" not in html
+
+
 def test_recomputed_figures_come_from_the_code_checks():
     result = _result(
         calculations=[
@@ -324,3 +364,92 @@ def test_stored_reports_print_their_row_number(dpr_pg):
         ).one()
     year = datetime.now(timezone.utc).year
     assert reference == f"PSR/{year}/{row_id:06d}"
+
+
+def test_banking_terms_are_explained_once_per_row():
+    f = _finding("should_fix", "Repayment fails if the price falls 10%")
+    f.provenance = "calculated"
+    f.explanation = "Year-2 DSCR falls to 0.9."
+    f.suggested_action = "Lengthen the tenor so the DSCR stays above 1."
+    [row] = build_action_plan(_snap(_result(findings=[f])))["rows"]
+    assert row["found"].count("how many times your yearly earnings") == 1
+    assert "how many times" not in row["todo"]  # already explained
+    assert "tenor (loan period)" in row["todo"]
+
+
+def test_the_stated_dscr_finding_reads_in_customer_words():
+    f = _finding("should_fix", "Stated DSCR does not follow the standard formula")
+    f.provenance = "calculated"
+    f.explanation = "DSCR recomputed as (net profit + depreciation) / ..."
+    [row] = build_action_plan(_snap(_result(findings=[f])))["rows"]
+    assert row["title"].startswith("Your DSCR is worked out differently")
+    assert "recomputed as" not in row["found"]
+
+
+def test_a_lower_case_title_starts_with_a_capital():
+    f = _finding("should_fix", "transport cost from Bhopal is not budgeted")
+    [row] = build_action_plan(_snap(_result(findings=[f])))["rows"]
+    assert row["title"] == "Transport cost from Bhopal is not budgeted"
+
+
+# --- section 3 in plain words (2026-11-25) ----------------------------------
+
+
+def test_measures_print_plain_labels_and_what_they_mean():
+    from types import SimpleNamespace
+
+    from app.services.dpr_agentic.cam_render_v2 import build_financials
+
+    def row(measure, baseline, status="meets"):
+        return SimpleNamespace(
+            measure=measure,
+            dpr_value="2.0",
+            recomputed="2.1",
+            baseline=baseline,
+            status=status,
+        )
+
+    snap = SimpleNamespace(
+        financial_review=[
+            row("Average DSCR", "≥ 1.25"),
+            row("Debt : equity", "≤ 3:1", "below"),
+            row("Payback period (years)", "< loan tenure (7 yrs)", "pending"),
+            row("Something new", "≥ 2"),
+        ],
+        assumption_review=[],
+        stress_test=None,
+    )
+    fin = build_financials(snap)
+    by_label = {m["measure"]: m for m in fin["measures"]}
+    dscr = by_label["Ability to repay, average year (DSCR)"]
+    assert dscr["baseline"] == "At least 1.25" and "instalments" in dscr["meaning"]
+    de = by_label["Loan compared with your own money"]
+    assert de["baseline"] == "Not more than 3 to 1"
+    assert de["status"] == "Below what the bank wants"
+    payback = by_label["Time to earn back the cost (years)"]
+    assert payback["baseline"] == "Shorter than the loan period (7 years)"
+    assert payback["status"] == "Not enough information"
+    assert by_label["Something new"]["baseline"] == "At least 2"  # passes through
+    assert fin["stress"].startswith("We could not test this")
+
+
+def test_the_stress_box_says_whether_you_could_still_repay():
+    from decimal import Decimal
+    from types import SimpleNamespace
+
+    from app.services.dpr_agentic.cam_render_v2 import _stress_text
+
+    def stress(lowest):
+        return SimpleNamespace(
+            price_fall_pct=10,
+            average_dscr=Decimal("2.26"),
+            minimum_dscr=Decimal(lowest),
+            minimum_year="year 1",
+            most_sensitive="Your biggest risk is your selling price.",
+        )
+
+    ok = _stress_text(stress("1.88"))
+    assert "drops to 2.26 in an average year and 1.88 in your weakest year" in ok
+    assert "so you would still be able to repay." in ok
+    assert ok.endswith("Your biggest risk is your selling price.")
+    assert "would struggle to pay your instalments" in _stress_text(stress("0.95"))

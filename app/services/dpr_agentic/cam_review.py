@@ -1064,21 +1064,28 @@ def stress_test(result: AnalysisResult) -> StressTest | None:
     sensitive = None
     if room and room.get("price_fall_pct") is not None:
         price, cost = room["price_fall_pct"], room.get("cost_rise_pct")
+        # Plain words: the applicant reads this (2.x page 4, user 2026-11-25).
         if price == 0:
             sensitive = (
-                f"selling price -- the average DSCR is below {STRESS_DSCR_FLOOR:.2f} "
-                "even before any fall"
+                "Your biggest risk is your selling price: even at today's price "
+                "your ability to repay is below the bank's minimum of "
+                f"{STRESS_DSCR_FLOOR:.2f}."
             )
         elif cost is None or price <= cost:
             sensitive = (
-                f"selling price (a {price:g}% fall takes the average DSCR to "
-                f"{STRESS_DSCR_FLOOR:.2f}"
-                + (f"; costs can rise {cost:g}%)" if cost is not None else ")")
+                "Your biggest risk is your selling price: it can fall about "
+                f"{price:.0f}% before you reach the bank's minimum."
+                + (
+                    f" Your costs can rise about {cost:.0f}%."
+                    if cost is not None
+                    else ""
+                )
             )
         else:
             sensitive = (
-                f"operating costs (a {cost:g}% rise takes the average DSCR to "
-                f"{STRESS_DSCR_FLOOR:.2f}; the price can fall {price:g}%)"
+                "Your biggest risk is your running costs: they can rise about "
+                f"{cost:.0f}% before you reach the bank's minimum. Your selling "
+                f"price can fall about {price:.0f}%."
             )
     return StressTest(
         price_fall_pct=10,

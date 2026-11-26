@@ -107,19 +107,19 @@
 
 {# ---------------- 2. Action plan ---------------- #}
 <section class="section">
-  <div class="sh"><div class="bd">2</div><div><h2>What to fix in your DPR</h2><div class="sub">Work through Must fix first. Tick each item as you correct it; we recheck all of them at re-review.</div></div></div>
+  <div class="sh"><div class="bd">2</div><div><h2>What to fix in your DPR</h2><div class="sub">Start with the Must fix items. Tick each one when you have corrected it; we check them all again when you send the corrected DPR.</div></div></div>
   <div class="legend">
     <span><span class="chip must">Must fix</span> bank is likely to return the DPR</span>
     <span><span class="chip should">Should fix</span> bank is likely to query</span>
     <span><span class="chip imp">Can improve</span> strengthens the proposal</span>
   </div>
   <table class="plan">
-    <thead><tr><th style="width:28px"></th><th style="width:26px">#</th><th>Issue and why it matters</th><th style="width:46px">DPR page</th><th style="width:118px">Your DPR</th><th style="width:118px">Should be</th><th style="width:96px">Priority</th></tr></thead>
+    <thead><tr><th style="width:24px"></th><th style="width:20px">#</th><th style="width:21%">What's wrong</th><th>What we found in your DPR</th><th style="width:23%">What to do</th><th style="width:80px">Priority</th></tr></thead>
     <tbody>
       {% for r in plan.rows %}
-      <tr><td><span class="cb"></span></td><td>{{ r.n }}</td><td>{{ r.title }}<span class="why">{{ r.why }}</span></td><td>{{ r.pages }}</td><td>{{ r.dpr }}</td><td>{{ r.should_be }}</td><td><span class="chip {{ r.chip }}">{{ r.priority }}</span></td></tr>
+      <tr><td><span class="cb"></span></td><td>{{ r.n }}</td><td><b>{{ r.title }}</b><span class="why">{{ r.why }}</span></td><td>{% if r.pages %}<span class="pg">Page {{ r.pages }}:</span> {% endif %}{{ r.found }}</td><td>{{ r.todo }}</td><td><span class="chip {{ r.chip }}">{{ r.priority }}</span></td></tr>
       {% else %}
-      <tr><td colspan="7" class="ph">Nothing to fix was found.</td></tr>
+      <tr><td colspan="6" class="ph">Nothing to fix was found.</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -127,19 +127,19 @@
 
 {# ---------------- 3. Financial corrections ---------------- #}
 <section class="section">
-  <div class="sh"><div class="bd">3</div><div><h2>Your figures, recomputed</h2><div class="sub">We recalculated every figure from your own projections and compared it with the bank's baseline.</div></div></div>
+  <div class="sh"><div class="bd">3</div><div><h2>Your numbers, checked</h2><div class="sub">We redid the calculations from the figures in your own DPR and compared them with what banks usually look for.</div></div></div>
   <table class="tight">
-    <thead><tr><th>Measure</th><th class="n" style="width:92px">In your DPR</th><th class="n cor" style="width:100px">Recomputed</th><th style="width:130px">Bank baseline</th><th style="width:104px">Status</th></tr></thead>
+    <thead><tr><th>What we checked</th><th class="n" style="width:80px">Your DPR</th><th class="n cor" style="width:88px">Our calculation</th><th style="width:128px">What the bank looks for</th><th style="width:136px">Result</th></tr></thead>
     <tbody>
       {% for m in fin.measures %}
-      <tr><td>{{ m.measure }}</td><td class="n">{{ m.dpr }}</td><td class="n cor">{{ m.recomputed }}</td><td>{{ m.baseline }}</td><td><span class="chip {{ m.chip }}">{{ m.status }}</span></td></tr>
+      <tr><td>{{ m.measure }}{% if m.meaning %}<span class="why">{{ m.meaning }}</span>{% endif %}</td><td class="n">{{ m.dpr }}</td><td class="n cor">{{ m.recomputed }}</td><td>{{ m.baseline }}</td><td><span class="chip {{ m.chip }}">{{ m.status }}</span></td></tr>
       {% endfor %}
     </tbody>
   </table>
 
-  <div class="h3">Assumptions to revise</div>
+  <div class="h3">Assumptions to check</div>
   <table class="tight">
-    <thead><tr><th style="width:118px">Assumption</th><th style="width:130px">Your DPR</th><th>Reference</th><th style="width:130px">Suggested</th></tr></thead>
+    <thead><tr><th style="width:118px">Assumption</th><th style="width:130px">Your DPR</th><th>What is usual</th><th style="width:130px">What we suggest</th></tr></thead>
     <tbody>
       {% for a in fin.assumptions %}
       <tr><td>{{ a.assumption }}</td><td>{{ a.dpr }}</td><td>{{ a.reference }}</td><td{% if a.flagged %} class="cor"{% endif %}>{{ a.suggested }}</td></tr>
@@ -147,7 +147,7 @@
     </tbody>
   </table>
 
-  <div class="box amber"><div class="t">How the bank will stress-test this</div><div class="b">{{ fin.stress }}</div></div>
+  <div class="box amber"><div class="t">What if things go worse than planned?</div><div class="b">{{ fin.stress }}</div></div>
 </section>
 
 {# ---------------- 4-5. Verification and documents ---------------- #}

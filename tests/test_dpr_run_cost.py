@@ -81,3 +81,26 @@ def test_prices_need_all_four_rates():
 def test_rupees_only_when_a_rate_is_set():
     assert to_inr(Decimal("1.5"), None) is None
     assert to_inr(Decimal("1.5"), 88.5) == Decimal("132.7500")
+
+
+def test_usage_by_role_splits_tokens_cost_and_truncations_per_role():
+    from app.services.dpr_agentic.run_cost import usage_by_role
+
+    log = [
+        {**_call(prompt_tokens=1000, completion_tokens=100, thinking_tokens=900),
+         "role": "finance", "finish_reason": "MAX_TOKENS"},
+        {**_call(prompt_tokens=1000, completion_tokens=500, thinking_tokens=500),
+         "role": "finance", "finish_reason": "STOP"},
+        {**_call(prompt_tokens=200, search_queries=4), "role": "policy",
+         "finish_reason": "STOP"},
+    ]
+    out = usage_by_role(log, PRICES)
+    assert list(out) == ["finance", "policy"]
+    assert out["finance"]["calls"] == 2
+    assert out["finance"]["truncated_calls"] == 1
+    assert out["finance"]["thinking_tokens"] == 1400
+    # 2,000 in x 0.75 + 2,000 out x 3.75, per million.
+    assert out["finance"]["cost_usd"] == "0.009000"
+    # 200 in x 0.75 / 1M + 4 searches x 14 / 1k.
+    assert out["policy"]["cost_usd"] == "0.056150"
+    assert "cost_usd" not in usage_by_role(log, None)["finance"]

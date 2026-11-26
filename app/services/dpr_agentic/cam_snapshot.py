@@ -207,9 +207,14 @@ class DscrDefinition(str, Enum):
 
 class FinancialRatios(BaseModel):
     dscr_definition_used: DscrDefinition
+    # Reports frozen before 2026-11-25 hold the first repaying year's DSCR
+    # here under the wrong name; newer ones use `first_year_dscr` and leave
+    # this empty until a real multi-year average is computed.
     average_dscr: CalculationTrace | None = None
+    # DSCR of the first year that repays principal (standard formula).
+    first_year_dscr: CalculationTrace | None = None
     # The document's own convention (PAT + Depreciation only, no interest
-    # added back) -- shown alongside `average_dscr` (the standard formula)
+    # added back) -- shown alongside `first_year_dscr` (the standard formula)
     # so a reader can see why the two differ, never to replace it.
     dscr_pat_dep_only: CalculationTrace | None = None
     breakeven_accounting: CalculationTrace | None = None

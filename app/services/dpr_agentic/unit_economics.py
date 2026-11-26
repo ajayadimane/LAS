@@ -29,12 +29,17 @@ change them; priorities come from finding_rules.priority_for_calculation.
 Pure functions; no LLM, no I/O.
 """
 
+
 from __future__ import annotations
 
 from .financial_calc import CalculationResult
 from .financial_schema import ExtractedValue, ProjectFinancials, UnitEconomics
 from .finding_rules import compute_dedup_key, priority_for_calculation
 from .schemas import Finding
+
+# 1.1.0 (2026-11-25): revenue rebuilt with the DPR's price escalation; the
+#   worst year, not the first, rates the revenue finding.
+CALCULATION_VERSION = "1.1.0"
 
 RUPEES_PER_LAKH = 100_000
 # Year-1 utilisation at or above this is "full capacity from day one".
@@ -108,6 +113,15 @@ def _utilisation_by_year(ue: UnitEconomics, capacity: float | None) -> dict[int,
         elif y.units_sold is not None and capacity:
             out[y.year] = round(y.units_sold / capacity * 100, 1)
     return out
+
+
+def _price_escalation(fin) -> float:
+    """The DPR's own yearly price escalation in percent, 0 when not printed."""
+    ratios = getattr(fin, "stated_ratios", None)
+    ev = getattr(ratios, "price_escalation_pct", None) if ratios else None
+    if ev is None or ev.status != "extracted" or ev.value is None:
+        return 0.0
+    return float(ev.value)
 
 
 def _page(ue: UnitEconomics, year: int | None = None) -> int | None:
@@ -261,11 +275,15 @@ def run_unit_economics(
 
     if price is not None:
         stated = {y.year: y.revenue for y in fin.years if y.revenue is not None}
+        escalation = _price_escalation(fin)
         gaps = []
         for year, sold in sorted(units.items()):
             if year not in stated or not stated[year]:
                 continue
-            rebuilt = round(sold * price / RUPEES_PER_LAKH, 2)
+            # The printed price is year 1's; the DPR's own escalation
+            # applies after that (6%/yr read as "revenue overstated" before).
+            year_price = price * (1 + escalation / 100) ** (year - 1)
+            rebuilt = round(sold * year_price / RUPEES_PER_LAKH, 2)
             matched = abs(rebuilt - stated[year]) <= REVENUE_TOLERANCE * abs(
                 stated[year]
             )
@@ -280,7 +298,10 @@ def run_unit_economics(
             if not matched:
                 gaps.append(r)
         if gaps:
-            first = gaps[0]
+            # The worst year rates the finding, not merely the first one.
+            first = max(
+                gaps, key=lambda g: abs(g.discrepancy) / max(abs(g.stated_value), 1e-9)
+            )
             summary = CalculationResult(
                 "revenue_rebuild",
                 first.computed_value,
@@ -301,8 +322,13 @@ def run_unit_economics(
                     title="Revenue does not match volume x price",
                     explanation=(
                         f"Revenue rebuilt from the document's own volume and price "
-                        f"({price:g} rupees per {unit}) differs from the revenue it "
-                        f"states, in lakh ({listed})."
+                        f"({price:g} rupees per {unit}"
+                        + (
+                            f", rising {escalation:g}% a year as the DPR states"
+                            if escalation
+                            else ""
+                        )
+                        + f") differs from the revenue it states, in lakh ({listed})."
                         + (
                             " The stated revenue is higher than its own volume and "
                             "price support."

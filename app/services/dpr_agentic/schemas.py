@@ -221,3 +221,7 @@ class AnalysisResult(BaseModel):
     # `.model` attribute; never guessed from current config, since config
     # may have changed since a past run.
     gemini_model: str | None = None
+    # {module: version} of the deterministic calculations this result used
+    # (financial_calc.calculation_versions()), for Annexure G. None for a
+    # result stored before 2026-11-25 -- never filled from current code.
+    calculation_versions: dict[str, str] | None = None
